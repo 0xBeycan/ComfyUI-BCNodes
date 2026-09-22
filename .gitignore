@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.DS_Store
+.claude/
+node_modules/
+# keep the luts/ folder but ignore user-dropped cube files
+luts/*.cube

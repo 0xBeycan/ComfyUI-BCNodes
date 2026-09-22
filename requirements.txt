@@ -1,0 +1,3 @@
+# Backs the PostFx and Caption Audit nodes; everything else ships with ComfyUI.
+postfx>=1.1.0
+caption-audit>=1.3

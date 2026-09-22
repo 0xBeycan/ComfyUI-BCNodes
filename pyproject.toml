@@ -1,0 +1,21 @@
+[project]
+name = "comfyui-bcnodes"
+version = "2.0.0"
+description = "Utility nodes for ComfyUI: logic, mask, image, PostFx film looks, dataset analysis (Caption Audit, Image Quality Gate), Social Media Export, SeedVR2 streaming, loaders and workflow helpers (AutoBypass, Anything Everywhere, comparers)."
+authors = [{ name = "0xBeycan" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+# postfx and caption-audit back the PostFx and Caption Audit nodes; everything else ships with ComfyUI.
+dependencies = ["postfx>=1.1.0", "caption-audit>=1.3"]
+
+[project.urls]
+Homepage = "https://github.com/0xBeycan/ComfyUI-BCNodes"
+Repository = "https://github.com/0xBeycan/ComfyUI-BCNodes"
+"Bug Tracker" = "https://github.com/0xBeycan/ComfyUI-BCNodes/issues"
+
+# ComfyUI Registry metadata (https://docs.comfy.org/registry/publishing)
+[tool.comfy]
+PublisherId = "0xbeycan"
+DisplayName = "ComfyUI-BCNodes"
+Icon = ""

@@ -1,0 +1,12 @@
+{
+  "commands": {
+    "BCNodes_Align_Left": { "label": "Align left" },
+    "BCNodes_Align_CenterH": { "label": "Align horizontal centers" },
+    "BCNodes_Align_Right": { "label": "Align right" },
+    "BCNodes_Align_Top": { "label": "Align top" },
+    "BCNodes_Align_CenterV": { "label": "Align vertical centers" },
+    "BCNodes_Align_Bottom": { "label": "Align bottom" },
+    "BCNodes_Align_DistributeH": { "label": "Distribute horizontally" },
+    "BCNodes_Align_DistributeV": { "label": "Distribute vertically" }
+  }
+}

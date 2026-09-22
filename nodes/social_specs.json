@@ -1,0 +1,150 @@
+{
+  "_comment": "Platform specs for the SocialMediaExport ComfyUI node. Keys beginning with '_' are metadata/comments and are ignored by the loader (they are not selectable platforms). Each platform is an aspect-ratio BAND (ar_min..ar_max), a pixel envelope (max_w x max_h), an optional upscale floor (min_w), an output format, and an optional byte cap (max_bytes). See README.md for the meaning of every field and the verification status of every number. Edit this file freely; it is re-read on every node execution (no restart needed).",
+  "_schema": {
+    "ar_min": "float, smallest allowed width/height ratio (tallest image) before cropping",
+    "ar_max": "float, largest allowed width/height ratio (widest image) before cropping",
+    "max_w": "int, maximum output width in pixels (envelope)",
+    "max_h": "int, maximum output height in pixels (envelope)",
+    "min_w": "int, optional; upscale floor, only used when allow_upscale=True",
+    "format": "string, 'jpg' or 'webp' or 'png'",
+    "max_bytes": "int, optional; encoder steps quality down (floor 70) to fit under this",
+    "_source": "official documentation URL, or 'UNVERIFIED' when core geometry is a best estimate",
+    "_verified": "ISO date the _source was checked",
+    "_note": "optional; design decisions and which specific fields are best estimates"
+  },
+
+  "instagram_feed": {
+    "ar_min": 0.8,
+    "ar_max": 1.91,
+    "max_w": 1440,
+    "max_h": 1800,
+    "min_w": 1080,
+    "format": "jpg",
+    "max_bytes": 8388608,
+    "_source": "https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-user/media/",
+    "_verified": "2026-07-23",
+    "_note": "VERIFIED: AR 4:5 (0.8) to 1.91:1, 8 MB max, min width 320 / max width 1440 (API scales up to 1440), sRGB. min_w=1080 is a quality floor (official minimum is 320); max_h=1800 = 4:5 at 1440 wide."
+  },
+
+  "instagram_story": {
+    "ar_min": 0.5625,
+    "ar_max": 0.5625,
+    "max_w": 1080,
+    "max_h": 1920,
+    "min_w": 1080,
+    "format": "jpg",
+    "max_bytes": 8388608,
+    "_source": "https://help.instagram.com/1038071743007909",
+    "_verified": "2026-07-23",
+    "_note": "VERIFIED: full-screen story/reel is 9:16 (0.5625) at 1080x1920. The band is intentionally a single point (ar_min==ar_max) because a story is a fixed full-screen format: anything not 9:16 is minimally cropped (or padded) to 9:16. max_bytes reuses Instagram's 8 MB image limit."
+  },
+
+  "x_timeline": {
+    "ar_min": 0.75,
+    "ar_max": 2.0,
+    "max_w": 2048,
+    "max_h": 2048,
+    "format": "jpg",
+    "max_bytes": 5242880,
+    "_source": "https://help.x.com/en/using-x/x-gifs-and-pictures",
+    "_verified": "2026-07-23",
+    "_note": "VERIFIED: single photos with aspect ratios between 3:4 (0.75) and 2:1 (2.0) display in full; formats JPG/PNG/GIF. ESTIMATED: max_w/max_h (2048) and max_bytes (5 MB) — X's developer media-spec pages were not machine-accessible (HTTP 402/403) at verification time; 5 MB still-image cap and ~2048 px display width are the widely-reported values."
+  },
+
+  "tiktok_photo": {
+    "ar_min": 0.4545,
+    "ar_max": 2.2,
+    "max_w": 1080,
+    "max_h": 1920,
+    "format": "jpg",
+    "_source": "https://developers.tiktok.com/doc/content-posting-api-reference-photo-post",
+    "_verified": "2026-07-23",
+    "_note": "VERIFIED: Content Posting API photo aspect ratio must be between 1/2.2 (0.4545) and 2.2. ESTIMATED: max_w/max_h (1080x1920, TikTok's portrait-first canvas) — the photo file-size/resolution restrictions doc was not accessible. No max_bytes set (unknown), so no byte cap is enforced."
+  },
+
+  "tiktok_vertical": {
+    "ar_min": 0.5625,
+    "ar_max": 0.5625,
+    "max_w": 1080,
+    "max_h": 1920,
+    "min_w": 1080,
+    "format": "jpg",
+    "_source": "https://developers.tiktok.com/doc/content-posting-api-reference-photo-post",
+    "_verified": "2026-07-23",
+    "_note": "DESIGN: full-screen vertical 9:16 (0.5625) at 1080x1920 — the TikTok feed canvas. Unlike 'tiktok_photo' (which keeps whatever ratio TikTok accepts, 0.4545..2.2, so a square stays square), this variant forces the full-screen portrait shape, the way instagram_story/facebook_story do. Use it when you want the image to fill the TikTok feed with no letterboxing added by TikTok. Single-point band (ar_min==ar_max). Same estimated pixel envelope as tiktok_photo; no max_bytes (TikTok's photo size limit is undocumented)."
+  },
+
+  "pinterest_pin": {
+    "ar_min": 0.476,
+    "ar_max": 0.6667,
+    "max_w": 1000,
+    "max_h": 1500,
+    "min_w": 1000,
+    "format": "jpg",
+    "max_bytes": 20971520,
+    "_source": "https://help.pinterest.com/en/article/review-pin-specs",
+    "_verified": "2026-07-23",
+    "_note": "VERIFIED: recommended 2:3 (0.6667) at 1000x1500; pins taller than 2:4.2 (0.476) are truncated in feed; formats include JPEG/PNG; 20 MB web upload limit. DESIGN: band spans the truncation floor (0.476) up to the recommended 2:3 (0.6667), so wider masters crop toward the native portrait pin."
+  },
+
+  "facebook_feed": {
+    "ar_min": 0.8,
+    "ar_max": 1.91,
+    "max_w": 1440,
+    "max_h": 1800,
+    "min_w": 1080,
+    "format": "jpg",
+    "max_bytes": 31457280,
+    "_source": "https://www.facebook.com/business/help/103816146375741",
+    "_verified": "2026-07-23",
+    "_note": "VERIFIED: supported feed image AR 1.91:1 to 4:5 (0.8) with 3% tolerance; recommended 1440x1800 (4:5); 30 MB max file size; JPG/PNG. min_w=1080 is a quality floor (official minimum width is 600)."
+  },
+
+  "facebook_story": {
+    "ar_min": 0.5625,
+    "ar_max": 0.5625,
+    "max_w": 1080,
+    "max_h": 1920,
+    "min_w": 1080,
+    "format": "jpg",
+    "max_bytes": 31457280,
+    "_source": "https://www.facebook.com/business/help/103816146375741",
+    "_verified": "2026-07-23",
+    "_note": "VERIFIED: Facebook Stories placement is 9:16 (0.5625) at 1080x1920; 30 MB max file size. Single-point band for the same reason as instagram_story."
+  },
+
+  "threads_feed": {
+    "ar_min": 0.01,
+    "ar_max": 10.0,
+    "max_w": 1080,
+    "max_h": 1920,
+    "format": "jpg",
+    "max_bytes": 8388608,
+    "_source": "https://developers.facebook.com/docs/threads",
+    "_verified": "2026-07-23",
+    "_note": "VERIFIED: Threads image posts accept AR between 0.01:1 and 10:1 (9:16 recommended to avoid cropping/blank space), JPEG/PNG, 8 MB max, sRGB. The very wide band means Threads almost never needs cropping — the node just scales. ESTIMATED: max_w/max_h (1080x1920) — Threads publishes no pixel-dimension limits, only the 8 MB + AR + sRGB constraints."
+  },
+
+  "bluesky": {
+    "ar_min": 0.5,
+    "ar_max": 2.0,
+    "max_w": 2000,
+    "max_h": 2000,
+    "format": "jpg",
+    "max_bytes": 1000000,
+    "_source": "https://docs.bsky.app/docs/advanced-guides/posts",
+    "_verified": "2026-07-23",
+    "_note": "VERIFIED: individual images are hard-capped at 1,000,000 bytes (decimal, not 2^20); metadata should be stripped (this node does). ESTIMATED: AR band (0.5..2.0) and max_w/max_h (2000) — the AT Protocol imposes no aspect-ratio or dimension limit and the app's in-feed crop threshold is undocumented. The 1 MB cap makes the encoder's quality-stepping loop the important behavior here."
+  },
+
+  "reddit": {
+    "ar_min": 0.5,
+    "ar_max": 1.91,
+    "max_w": 1200,
+    "max_h": 1600,
+    "format": "jpg",
+    "_source": "UNVERIFIED",
+    "_verified": "2026-07-23",
+    "_note": "UNVERIFIED: Reddit publishes no accessible image-post spec (reddit.com is blocked to crawlers; support.reddithelp.com documents only avatars/banners/community assets). All numbers here are best estimates for a feed-friendly image post. No max_bytes enforced."
+  }
+}
