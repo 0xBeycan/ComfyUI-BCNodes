@@ -86,9 +86,68 @@ def split_terms(text):
     return [t.strip() for t in str(text).split(",") if t.strip()]
 
 
+# Widget values come out of the workflow JSON, so a path the node resolves and
+# nothing else would let any graph you open read .txt sidecars anywhere on the
+# machine and hand their names and contents straight back out through
+# report_text / report_json. The caption set is therefore confined to the
+# ComfyUI tree plus whatever roots the host - never the graph - names in
+# BC_CAPTION_ROOTS: datasets live outside ComfyUI, and that is the one place
+# the person running the server can say so.
+ROOTS_ENV = "BC_CAPTION_ROOTS"
+
+
+def allowed_roots():
+    """Directories a caption widget may point at, resolved and de-duplicated."""
+    roots = []
+    try:
+        import folder_paths
+        roots.append(getattr(folder_paths, "base_path", None)
+                     or os.path.dirname(folder_paths.models_dir))
+        for getter in ("get_input_directory", "get_output_directory", "get_user_directory"):
+            fn = getattr(folder_paths, getter, None)
+            if fn is not None:
+                roots.append(fn())
+    except Exception:  # outside ComfyUI (tests, a bare import): the cwd only
+        roots.append(os.getcwd())
+    roots.extend(os.environ.get(ROOTS_ENV, "").split(os.pathsep))
+
+    out = []
+    for root in roots:
+        root = str(root or "").strip()
+        if not root:
+            continue
+        real = os.path.realpath(os.path.expanduser(root))
+        if real not in out:
+            out.append(real)
+    return out
+
+
+def within(path, root):
+    """Is `path` inside `root`? Both must already be realpath'd."""
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:  # different drives on Windows
+        return False
+
+
 def resolve_dir(path):
-    """Expand ~ and relative paths; '' means the ComfyUI process cwd."""
-    return os.path.abspath(os.path.expanduser(str(path or "").strip() or os.getcwd()))
+    """Expand ~ and relative paths; '' means the ComfyUI process cwd.
+
+    realpath, not abspath: '..' segments and symlinks are collapsed before the
+    result is checked against allowed_roots(). A path outside them raises
+    ValueError naming the roots, which the node draws as an error card like any
+    other audit failure.
+    """
+    raw = str(path or "").strip()
+    resolved = os.path.realpath(os.path.expanduser(raw) or os.getcwd())
+    roots = allowed_roots()
+    if any(within(resolved, root) for root in roots):
+        return resolved
+    raise ValueError(
+        "%s is outside the folders this node may read (%s). Put the dataset "
+        "under one of them, or name its root in the %s environment variable "
+        "('%s'-separated) and restart ComfyUI."
+        % (resolved, ", ".join(roots), ROOTS_ENV, os.pathsep))
 
 
 def build_args(directory, trigger="", images_dir="", class_words="", fuse="",
@@ -843,24 +902,33 @@ class CaptionAudit:
         # Captions are edited outside the graph, so widget values alone do not
         # say whether a re-run is needed. Fingerprint the .txt files instead:
         # an untouched dataset still hits the execution cache.
-        return dir_fingerprint(resolve_dir(directory), recursive)
+        try:
+            resolved = resolve_dir(directory)
+        except ValueError as exc:
+            # A rejected path is a stable state, not a change: returning the
+            # message keeps the node cached on the error card it already drew.
+            return "rejected:%s" % exc
+        return dir_fingerprint(resolved, recursive)
 
     def audit(self, directory, trigger, class_words, fuse, critical_threshold,
               warn_threshold, info_threshold, ngram_max, no_stopwords,
               recursive, table_rows, images_dir=""):
-        resolved = resolve_dir(directory)
-        args = build_args(
-            resolved, trigger=trigger, images_dir=images_dir,
-            class_words=class_words, fuse=fuse,
-            critical_threshold=critical_threshold,
-            warn_threshold=warn_threshold, info_threshold=info_threshold,
-            ngram_max=ngram_max, no_stopwords=no_stopwords, recursive=recursive)
-
+        # resolve_dir rejects a path outside the allowed roots, so it belongs
+        # inside the same try as the audit: both end on the error card.
+        shown = str(directory or "").strip()
         try:
+            resolved = resolve_dir(directory)
+            shown = resolved
+            args = build_args(
+                resolved, trigger=trigger, images_dir=images_dir,
+                class_words=class_words, fuse=fuse,
+                critical_threshold=critical_threshold,
+                warn_threshold=warn_threshold, info_threshold=info_threshold,
+                ngram_max=ngram_max, no_stopwords=no_stopwords, recursive=recursive)
             rep = run_audit(resolved, args)
         except Exception as exc:  # never raise into the graph; show the failure
             img = render_error_card("%s: %s" % (type(exc).__name__, exc),
-                                         resolved, table_rows)
+                                         shown, table_rows)
             ui, _path = save_temp_preview(img)
             text = "caption-audit: %s" % exc
             # critical=1 so a gate wired to it stops the workflow: a caption set

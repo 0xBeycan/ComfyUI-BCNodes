@@ -480,6 +480,26 @@ def main():
     os.utime(os.path.join(ds, "0.txt"), None)
     check("CaptionAudit IS_CHANGED moves when a caption is edited", lambda: ca.CaptionAudit.IS_CHANGED(ds) != fp0 or _fail())
 
+    # A widget path comes from the workflow JSON, so it is confined to the
+    # ComfyUI tree plus the roots named in BC_CAPTION_ROOTS.
+    outside = tempfile.mkdtemp(prefix="bcnodes_outside_")
+    with open(os.path.join(outside, "0.txt"), "w") as fh:
+        fh.write("sks1 woman, red scarf, studio lighting")
+    check("CaptionAudit outside the allowed roots -> error card, critical 1, no raise",
+          lambda: (lambda r: r["result"][3] == 1 and r["result"][2] == "{}")(node.audit(outside, **audit_kw)) or _fail())
+    check("CaptionAudit resolve_dir rejects an outside path", lambda: _raises(ValueError, lambda: ca.resolve_dir(outside)))
+    check("CaptionAudit resolve_dir rejects '..' back out of a root",
+          lambda: _raises(ValueError, lambda: ca.resolve_dir(os.path.join(ds, "..", "..", "..", "etc"))))
+    check("CaptionAudit IS_CHANGED on a rejected path is stable, not a raise",
+          lambda: (lambda v: isinstance(v, str) and v.startswith("rejected:") and v == ca.CaptionAudit.IS_CHANGED(outside))(ca.CaptionAudit.IS_CHANGED(outside)) or _fail())
+    os.environ[ca.ROOTS_ENV] = outside
+    try:
+        check("CaptionAudit BC_CAPTION_ROOTS opens a root outside ComfyUI",
+              lambda: ca.resolve_dir(outside) == os.path.realpath(outside) or _fail())
+        check("CaptionAudit an opened root audits normally", lambda: node.audit(outside, **audit_kw)["result"][2] != "{}" or _fail())
+    finally:
+        del os.environ[ca.ROOTS_ENV]
+
     # --- Social Media Export ------------------------------------------------
     sme = m["social_media_export"].SocialMediaExport()
     req = sme.INPUT_TYPES()["required"]

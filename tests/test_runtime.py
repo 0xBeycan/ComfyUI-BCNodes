@@ -369,7 +369,10 @@ async def main():
 
     # Caption Audit: an output node over a folder; the card lands in temp/ and
     # comes back through "ui"; the folder fingerprint keeps it cached.
+    # The node only reads under the ComfyUI tree plus BC_CAPTION_ROOTS, and a
+    # temp dataset is outside both; the server reads the variable at audit time.
     dataset = tempfile.mkdtemp(prefix="bcnodes_captions_")
+    os.environ["BC_CAPTION_ROOTS"] = dataset
     for i, text in enumerate(["sks1 woman, red scarf, studio", "sks1 woman, red scarf, beach", "sks1 woman, red scarf, street"]):
         with open(os.path.join(dataset, f"{i}.txt"), "w") as fh:
             fh.write(text)
