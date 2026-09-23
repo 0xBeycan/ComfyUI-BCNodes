@@ -305,6 +305,20 @@ def main():
     check("Downloader empty list", lambda: dl.download("[]")["ui"]["text"] == ["no models listed"] or _fail())
     check("Downloader None entries", lambda: dl.download(None)["ui"]["text"] == ["no models listed"] or _fail())
     check("Downloader blank line ignored", lambda: m["downloader"].parse_entries(json.dumps([{"url": " ", "dir": ""}])) == [] or _fail())
+    dm = m["downloader"]
+    check("Downloader host: exact and subdomain match, lookalikes do not",
+          lambda: [dm.service_of(u) for u in ("https://huggingface.co/a/b", "https://cdn-lfs.huggingface.co/x", "https://civitai.com/api/download/models/1",
+                                               "https://evilhuggingface.co/a", "https://huggingface.co.evil.com/a", "https://evilcivitai.com/a",
+                                               "https://user@evilhuggingface.co/a", "http://192.168.1.10/m.safetensors")]
+          == ["huggingface", "huggingface", "civitai", None, None, None, None, None] or _fail())
+    check("Downloader refuses a host outside the allow-list",
+          lambda: _raises(ValueError, lambda: dm.resolve_entry({"url": "http://192.168.1.10/m.safetensors", "dir": "checkpoints"})))
+    check("Downloader refuses an encoded separator in the URL file name",
+          lambda: all(_raises(ValueError, lambda n=n: dm.resolve_entry({"url": f"https://huggingface.co/o/r/resolve/main/{n}", "dir": "checkpoints"}))
+                      for n in ("..%2F..%2Fx.json", "..%5C..%5Cx.json", "%2E%2E%2Fx.safetensors")))
+    check("Downloader keeps a plain URL file name under models/",
+          lambda: dm.resolve_entry({"url": "https://huggingface.co/o/r/resolve/main/m.safetensors", "dir": "checkpoints"})["path"]
+          == os.path.join(os.path.abspath(sys.modules["folder_paths"].models_dir), "checkpoints", "m.safetensors") or _fail())
 
     sr = m["seedvr2"].SeedVR2Resize()
     check("SeedVR2Resize None -> ValueError", lambda: _raises(ValueError, lambda: sr.resize(None, 2.0, 0.5, 0, False)))

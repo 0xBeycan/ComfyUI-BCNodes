@@ -41,6 +41,10 @@ EVENT = "bcnodes.downloader"
 CHUNK = 1 << 20
 USER_AGENT = "ComfyUI-BCNodes/2.0"
 MODEL_EXTS = (".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx", ".pkl", ".msgpack", ".yaml", ".json")
+# The only hosts a line may download from, and the service whose token they get.
+# A shared workflow carries its URLs, so anything else - a lookalike domain, a
+# machine on the local network - is refused.
+HOSTS = {"huggingface.co": "huggingface", "civitai.com": "civitai"}
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +83,9 @@ def resolve_entry(entry):
         raise ValueError(f"directory is empty for {url}")
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError(f"not an http(s) URL: {url}")
+    service = service_of(url)
+    if service is None:
+        raise ValueError(f"only Hugging Face and Civitai URLs are allowed: {url}")
 
     import folder_paths
 
@@ -89,12 +96,20 @@ def resolve_entry(entry):
         rel_dir, filename = target, filename_from_url(url)
     if not filename.lower().endswith(MODEL_EXTS):
         raise ValueError(f"cannot tell the file name from {url}; write it after the directory, e.g. {target}/model.safetensors")
+    # The URL name is decoded after the split, so "%2F" or "%5C" can smuggle a separator in.
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise ValueError(f"invalid file name {filename!r} from {url}")
 
     models_dir = os.path.abspath(folder_paths.models_dir)
     dest_dir = os.path.abspath(os.path.join(models_dir, rel_dir))
     if os.path.commonpath([dest_dir, models_dir]) != models_dir:
         raise ValueError(f"directory must stay under models/: {target}")
-    service = service_of(url)
+    # The final file must land in dest_dir itself. Compared against dest_dir's
+    # realpath rather than models/, so a models/ subfolder symlinked to another volume
+    # (common on pods) still works.
+    real_dir = os.path.realpath(dest_dir)
+    if os.path.commonpath([os.path.realpath(os.path.join(dest_dir, filename)), real_dir]) != real_dir:
+        raise ValueError(f"file must stay under models/{rel_dir}: {filename}")
     legacy = bool(entry.get("token"))  # older lines carried one flag; the host said which token
     return {
         "url": url, "dir": rel_dir.replace(os.sep, "/"), "filename": filename, "path": os.path.join(dest_dir, filename),
@@ -105,11 +120,11 @@ def resolve_entry(entry):
 
 
 def service_of(url):
-    host = urllib.parse.urlparse(url).netloc.lower()
-    if host.endswith("huggingface.co"):
-        return "huggingface"
-    if host.endswith("civitai.com"):
-        return "civitai"
+    """The HOSTS service for url's exact host or a subdomain of it, else None."""
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    for domain, service in HOSTS.items():
+        if host == domain or host.endswith("." + domain):
+            return service
     return None
 
 
