@@ -7,105 +7,12 @@ stubbed. Needs torch and numpy.
     python tests/test_nodes.py
 """
 
-import importlib
 import json
 import os
 import sys
 import tempfile
-import types
 
-PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PKG_NAME = "bcnodes_under_test"
-
-
-def stub_comfy(tmp):
-    fp = types.ModuleType("folder_paths")
-    fp.models_dir = os.path.join(tmp, "models")
-    fp.get_user_directory = lambda: os.path.join(tmp, "user")
-    fp.folder_names_and_paths = {}
-
-    def add_model_folder_path(name, path, is_default=False):
-        fp.folder_names_and_paths.setdefault(name, ([], set()))[0].append(path)
-
-    def get_full_path(name, filename):
-        for p in fp.folder_names_and_paths.get(name, ([], set()))[0]:
-            f = os.path.join(p, filename)
-            if os.path.isfile(f):
-                return f
-        return None
-
-    fp.add_model_folder_path = add_model_folder_path
-    fp.get_full_path = get_full_path
-    fp.get_filename_list = lambda name: []
-    fp.get_output_directory = lambda: os.path.join(tmp, "output")
-    fp.get_temp_directory = lambda: os.path.join(tmp, "temp")
-
-    def get_save_image_path(filename_prefix, output_dir, image_width=0, image_height=0):
-        subfolder, filename = os.path.split(os.path.normpath(filename_prefix))
-        full_output_folder = os.path.join(output_dir, subfolder)
-        return full_output_folder, filename, 1, subfolder, filename_prefix
-
-    fp.get_save_image_path = get_save_image_path
-    sys.modules["folder_paths"] = fp
-
-    comfy = types.ModuleType("comfy")
-    mm = types.ModuleType("comfy.model_management")
-    cu = types.ModuleType("comfy.utils")
-    import torch
-
-    mm.get_torch_device = lambda: torch.device("cpu")
-    mm.vae_device = lambda: torch.device("cpu")
-    mm.soft_empty_cache = lambda: None
-    mm.load_models_gpu = lambda models, **kw: None
-    mm.get_free_memory = lambda device=None, torch_free_too=False: 2 ** 40
-    mm.unload_all_models = lambda: None
-
-    import contextlib
-    mm.cuda_device_context = lambda device: contextlib.nullcontext()
-
-    # comfy.ldm.seedvr: what the SeedVR2 decode / post-process nodes import lazily.
-    ldm = types.ModuleType("comfy.ldm")
-    seedvr = types.ModuleType("comfy.ldm.seedvr")
-    constants = types.ModuleType("comfy.ldm.seedvr.constants")
-    constants.BYTEDANCE_VAE_SCALING_FACTOR = 0.9152
-    constants.BYTEDANCE_VAE_SHIFTING_FACTOR = 0.0
-    vae_mod = types.ModuleType("comfy.ldm.seedvr.vae")
-
-    class MemoryState:
-        DISABLED, INITIALIZING, ACTIVE = 0, 1, 2
-
-    vae_mod.MemoryState = MemoryState
-    color_fix = types.ModuleType("comfy.ldm.seedvr.color_fix")
-    color_fix.lab_color_transfer = lambda content, style: content
-    color_fix.wavelet_color_transfer = lambda content, style: content
-    color_fix.adain_color_transfer = lambda content, style: style
-    for name, mod in (("comfy.ldm", ldm), ("comfy.ldm.seedvr", seedvr), ("comfy.ldm.seedvr.constants", constants),
-                      ("comfy.ldm.seedvr.vae", vae_mod), ("comfy.ldm.seedvr.color_fix", color_fix)):
-        sys.modules[name] = mod
-
-    class ProgressBar:
-        def __init__(self, total):
-            pass
-
-        def update(self, n):
-            pass
-
-    cu.ProgressBar = ProgressBar
-    comfy.model_management = mm
-    comfy.utils = cu
-    sys.modules["comfy"] = comfy
-    sys.modules["comfy.model_management"] = mm
-    sys.modules["comfy.utils"] = cu
-
-
-def load_package():
-    pkg = types.ModuleType(PKG_NAME)
-    pkg.__path__ = [PKG_DIR]
-    sys.modules[PKG_NAME] = pkg
-    return {name: importlib.import_module(f"{PKG_NAME}.nodes.{name}")
-            for name in ("logic", "mask", "image_scale", "lists", "birefnet", "downloader", "math_expression", "prompt_list", "any_switch", "seed", "show_text",
-                         "image_comparer", "video_comparer", "power_lora_loader", "everywhere", "seedvr2",
-                         "postfx", "caption_audit", "social_media_export", "social_export_core", "image_quality_gate", "save_image", "skin_texture")}
+from _harness import load_package, stub_comfy
 
 
 def main():
@@ -243,7 +150,7 @@ def main():
 
     # The matte options run on a synthetic matte: a white image, a 16x16 matte
     # that is 1 in the centre 8x8 square and 0 outside.
-    finish = m["birefnet"].finish
+    finish = m["pipelines.matting"].finish
     rgb = torch.ones((1, 16, 16, 3))
     matte = torch.zeros((1, 16, 16))
     matte[:, 4:12, 4:12] = 1.0
@@ -286,7 +193,7 @@ def main():
     check("VideoComparer nothing wired", lambda: vc.compare() == {"ui": {"bc_video": []}} or _fail())
     check("VideoComparer empty batches", lambda: vc.compare(24.0, torch.zeros((0, 8, 8, 3)), torch.zeros((0, 8, 8, 3))) == {"ui": {"bc_video": []}} or _fail())
     check("VideoComparer fps None", lambda: vc.compare(None) == {"ui": {"bc_video": []}} or _fail())
-    fit = m["video_comparer"]._fit
+    fit = m["libs.video"].fit_frame
     check("VideoComparer fit: larger clip is cropped, not scaled", lambda: (lambda x: torch.equal(fit(x, 64, 32), x[:32, :64, :3]))(torch.rand(33, 65, 4)) or _fail())
     check("VideoComparer fit: smaller clip letterboxed, aspect kept", lambda: (lambda f: f.shape == (720, 1280, 3) and f[:, :16].abs().sum() == 0 and f[:, -16:].abs().sum() == 0 and f[:, 16:-16].abs().sum() > 0)(fit(torch.ones(480, 832, 3), 1280, 720)) or _fail())
 
@@ -304,10 +211,10 @@ def main():
     check("Downloader empty entries", lambda: dl.download("")["ui"]["text"] == ["no models listed"] or _fail())
     check("Downloader empty list", lambda: dl.download("[]")["ui"]["text"] == ["no models listed"] or _fail())
     check("Downloader None entries", lambda: dl.download(None)["ui"]["text"] == ["no models listed"] or _fail())
-    check("Downloader blank line ignored", lambda: m["downloader"].parse_entries(json.dumps([{"url": " ", "dir": ""}])) == [] or _fail())
-    dm = m["downloader"]
+    check("Downloader blank line ignored", lambda: m["pipelines.model_download"].parse_entries(json.dumps([{"url": " ", "dir": ""}])) == [] or _fail())
+    dm = m["pipelines.model_download"]
     check("Downloader host: exact and subdomain match, lookalikes do not",
-          lambda: [dm.service_of(u) for u in ("https://huggingface.co/a/b", "https://cdn-lfs.huggingface.co/x", "https://civitai.com/api/download/models/1",
+          lambda: [m["libs.download"].service_of(u) for u in ("https://huggingface.co/a/b", "https://cdn-lfs.huggingface.co/x", "https://civitai.com/api/download/models/1",
                                                "https://evilhuggingface.co/a", "https://huggingface.co.evil.com/a", "https://evilcivitai.com/a",
                                                "https://user@evilhuggingface.co/a", "http://192.168.1.10/m.safetensors")]
           == ["huggingface", "huggingface", "civitai", None, None, None, None, None] or _fail())
@@ -479,7 +386,7 @@ def main():
     out = node.audit(ds, **audit_kw)
     check("CaptionAudit -> ui payload + 5 results", lambda: (set(out) == {"ui", "result"} and len(out["result"]) == 5) or _fail())
     check("CaptionAudit card is (1, H, 1280, 3) with H from table_rows",
-          lambda: out["result"][0].shape == (1, ca.card_size(12)[1], 1280, 3) or _fail())
+          lambda: out["result"][0].shape == (1, m["pipelines.caption_audit.card"].card_size(12)[1], 1280, 3) or _fail())
     check("CaptionAudit 'red scarf' in every caption -> critical >= 1", lambda: (out["result"][3] >= 1 and "red scarf" in out["result"][1]) or _fail())
     check("CaptionAudit report_json parses", lambda: json.loads(out["result"][2])["summary"]["critical"] == out["result"][3] or _fail())
     check("CaptionAudit fuse='red scarf' -> critical 0", lambda: node.audit(ds, **dict(audit_kw, fuse="red scarf"))["result"][3] == 0 or _fail())
@@ -501,18 +408,18 @@ def main():
         fh.write("sks1 woman, red scarf, studio lighting")
     check("CaptionAudit outside the allowed roots -> error card, critical 1, no raise",
           lambda: (lambda r: r["result"][3] == 1 and r["result"][2] == "{}")(node.audit(outside, **audit_kw)) or _fail())
-    check("CaptionAudit resolve_dir rejects an outside path", lambda: _raises(ValueError, lambda: ca.resolve_dir(outside)))
+    check("CaptionAudit resolve_dir rejects an outside path", lambda: _raises(ValueError, lambda: m["pipelines.caption_audit.audit"].resolve_dir(outside)))
     check("CaptionAudit resolve_dir rejects '..' back out of a root",
-          lambda: _raises(ValueError, lambda: ca.resolve_dir(os.path.join(ds, "..", "..", "..", "etc"))))
+          lambda: _raises(ValueError, lambda: m["pipelines.caption_audit.audit"].resolve_dir(os.path.join(ds, "..", "..", "..", "etc"))))
     check("CaptionAudit IS_CHANGED on a rejected path is stable, not a raise",
           lambda: (lambda v: isinstance(v, str) and v.startswith("rejected:") and v == ca.CaptionAudit.IS_CHANGED(outside))(ca.CaptionAudit.IS_CHANGED(outside)) or _fail())
-    os.environ[ca.ROOTS_ENV] = outside
+    os.environ[m["pipelines.caption_audit.audit"].ROOTS_ENV] = outside
     try:
         check("CaptionAudit BC_CAPTION_ROOTS opens a root outside ComfyUI",
-              lambda: ca.resolve_dir(outside) == os.path.realpath(outside) or _fail())
+              lambda: m["pipelines.caption_audit.audit"].resolve_dir(outside) == os.path.realpath(outside) or _fail())
         check("CaptionAudit an opened root audits normally", lambda: node.audit(outside, **audit_kw)["result"][2] != "{}" or _fail())
     finally:
-        del os.environ[ca.ROOTS_ENV]
+        del os.environ[m["pipelines.caption_audit.audit"].ROOTS_ENV]
 
     # --- Social Media Export ------------------------------------------------
     sme = m["social_media_export"].SocialMediaExport()
@@ -522,11 +429,11 @@ def main():
     master = torch.rand(1, 90, 160, 3)
     check("SocialMediaExport no platform -> ValueError", lambda: _raises(ValueError, lambda: sme.export(master, "crop", 92, False, "social/export")))
     r = sme.export(master, "crop", 92, False, "social/export", instagram_feed=True)
-    check("SocialMediaExport passes the input through and returns a report", lambda: (r["result"][0] is master and r["result"][1].startswith(m["social_export_core"].REPORT_HEADER.split("\n")[0])) or _fail())
+    check("SocialMediaExport passes the input through and returns a report", lambda: (r["result"][0] is master and r["result"][1].startswith(m["pipelines.social_export"].REPORT_HEADER.split("\n")[0])) or _fail())
     check("SocialMediaExport writes output/social/export_instagram_feed_00001_.jpg",
           lambda: os.path.isfile(os.path.join(tmp, "output", "social", "export_instagram_feed_00001_.jpg")) or _fail())
     check("SocialMediaExport pad mode, two platforms, batch of 2 -> 4 report lines",
-          lambda: len(sme.export(torch.rand(2, 90, 160, 3), "pad", 80, True, "social/pad", instagram_feed=True, instagram_story=True)["result"][1].splitlines()) == 1 + 4 + len(m["social_export_core"].REPORT_HEADER.splitlines()) - 1 or _fail())
+          lambda: len(sme.export(torch.rand(2, 90, 160, 3), "pad", 80, True, "social/pad", instagram_feed=True, instagram_story=True)["result"][1].splitlines()) == 1 + 4 + len(m["pipelines.social_export"].REPORT_HEADER.splitlines()) - 1 or _fail())
 
     # --- Save Image ---------------------------------------------------------
     si = m["save_image"]
@@ -540,23 +447,23 @@ def main():
         "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "blurry", "clip": ["4", 1]}},
         "9": {"class_type": "LoraLoader", "inputs": {"lora_name": "style.safetensors", "cfg": 3.5}},
     }
-    name = lambda keys, prefix="", named=False: si.custom_name([k.strip() for k in keys.split(",")], prefix, "-", sample_prompt, "512x768", ts, named)
+    name = lambda keys, prefix="", named=False: m["pipelines.save_image"].custom_name([k.strip() for k in keys.split(",")], prefix, "-", sample_prompt, "512x768", ts, named)
     check("SaveImage name: widget keys, highest node wins, float trimmed", lambda: name("sampler_name, cfg, steps", "ComfyUI") == "ComfyUI-euler-3.5-20" or _fail())
     check("SaveImage name: 3.cfg picks node 3; unknown node falls back", lambda: name("3.cfg, 99.cfg") == "7.0-3.5" or _fail())
     check("SaveImage name: strftime, quoted literal, resolution, unknown key literal", lambda: name("%F %H-%M-%S, 'fixed', resolution, nope") == "2024-05-22 09-13-58-'fixed'-512x768-nope" or _fail())
     check("SaveImage name: ckpt_name strips the extension, ckpt_path is its folder, lora_name", lambda: name("ckpt_name, ckpt_path, lora_name") == "base_v1-sdxl-style" or _fail())
     check("SaveImage name: /sub steps into a folder, named_keys", lambda: name("seed, /steps", named=True) == os.sep.join(["seed=5", "steps=20"]) or _fail())
     check("SaveImage name: ../ climbs, illegal characters dropped", lambda: name("../seed, 'a:b?'") == os.sep.join(["..", "5-'ab'"]) or _fail())
-    check("SaveImage name: no prompt -> prefix only", lambda: si.custom_name(["cfg"], "x", "-", None, "1x1", ts, False) == "x" or _fail())
+    check("SaveImage name: no prompt -> prefix only", lambda: m["pipelines.save_image"].custom_name(["cfg"], "x", "-", None, "1x1", ts, False) == "x" or _fail())
     cdir = os.path.join(tmp, "counter")
     os.makedirs(cdir)
     for f in ("img-0001.webp", "img-0007.webp", "other-0009.webp", "0003.webp", "0002-img.webp"):
         open(os.path.join(cdir, f), "w").close()
-    check("SaveImage counter: last -> 8", lambda: si.latest_counter(cdir, "img", 4, "last", ".webp") == 8 or _fail())
-    check("SaveImage counter: first -> 3", lambda: si.latest_counter(cdir, "img", 4, "first", ".webp") == 3 or _fail())
+    check("SaveImage counter: last -> 8", lambda: m["libs.files"].latest_counter(cdir, "img", 4, "last", ".webp") == 8 or _fail())
+    check("SaveImage counter: first -> 3", lambda: m["libs.files"].latest_counter(cdir, "img", 4, "first", ".webp") == 3 or _fail())
     check("SaveImage counter: no name -> 4; other ext -> 1; missing dir -> 1",
-          lambda: (si.latest_counter(cdir, "", 4, "last", ".webp") == 4 and si.latest_counter(cdir, "img", 4, "last", ".png") == 1
-                   and si.latest_counter(os.path.join(tmp, "nope"), "img", 4, "last", ".webp") == 1) or _fail())
+          lambda: (m["libs.files"].latest_counter(cdir, "", 4, "last", ".webp") == 4 and m["libs.files"].latest_counter(cdir, "img", 4, "last", ".png") == 1
+                   and m["libs.files"].latest_counter(os.path.join(tmp, "nope"), "img", 4, "last", ".webp") == 1) or _fail())
     node = si.SaveImage()
     save_kw = dict(filename_prefix="shot", filename_keys="sampler_name, 3.cfg", foldername_prefix="", foldername_keys="ckpt_name", delimiter="-",
                    save_job_data="basic, models, sampler, prompt", job_data_per_image=False, job_custom_text="note", save_metadata=True,
@@ -599,7 +506,7 @@ def main():
     check("SaveImage None / empty batch -> no files, no raise",
           lambda: (node.save_images(None, **save_kw) == {"ui": {"images": []}} and node.save_images(torch.zeros(0, 8, 8, 3), **save_kw) == {"ui": {"images": []}}) or _fail())
     check("SaveImage output_ext combo has the base formats, .webp default",
-          lambda: (lambda spec: set(si.BASE_EXTENSIONS) <= set(spec[0]) and spec[1]["default"] == ".webp")(si.SaveImage.INPUT_TYPES()["required"]["output_ext"]) or _fail())
+          lambda: (lambda spec: set(m["libs.image_write"].BASE_EXTENSIONS) <= set(spec[0]) and spec[1]["default"] == ".webp")(si.SaveImage.INPUT_TYPES()["required"]["output_ext"]) or _fail())
 
     # --- Image Quality Gate -------------------------------------------------
     iqg = m["image_quality_gate"].ImageQualityGate()
@@ -638,8 +545,8 @@ def main():
     check("SkinTexture: deterministic in the seed", lambda: torch.equal(node.run(src, mask=ones, **kw)[0], node.run(src, mask=ones, **kw)[0]) or _fail())
     check("SkinTexture: another seed, another field", lambda: not torch.equal(node.run(src, mask=ones, **dict(kw, seed=4))[0], r[0]) or _fail())
     check("SkinTexture: black stays black (luma gate)", lambda: torch.allclose(node.run(torch.zeros(1, 64, 80, 3), mask=ones, **kw)[0], torch.zeros(1, 64, 80, 3), atol=1e-6) or _fail())
-    check("SkinTexture: face gate — no face = 1, small face fades", lambda: (st.face_gate(None, 100) == 1.0 and st.face_gate(torch.zeros(100, 100), 100) == 1.0
-          and 0 < st.face_gate((lambda f: (f.__setitem__((slice(40, 50), slice(0, 10)), 1.0), f)[1])(torch.zeros(100, 100)), 100) < 1.0) or _fail())
+    check("SkinTexture: face gate — no face = 1, small face fades", lambda: (m["pipelines.skin_texture"].face_gate(None, 100) == 1.0 and m["pipelines.skin_texture"].face_gate(torch.zeros(100, 100), 100) == 1.0
+          and 0 < m["pipelines.skin_texture"].face_gate((lambda f: (f.__setitem__((slice(40, 50), slice(0, 10)), 1.0), f)[1])(torch.zeros(100, 100)), 100) < 1.0) or _fail())
     check("SkinTexture: batch of 3 with one mask", lambda: node.run(torch.rand(3, 64, 80, 3), mask=ones, **kw)[0].shape == (3, 64, 80, 3) or _fail())
 
     if failures:

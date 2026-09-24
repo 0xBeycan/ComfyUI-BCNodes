@@ -9,10 +9,11 @@ returning `(None, None, None, 0, 0)`. PIL is imported inside the
 function.
 """
 
-import math
-
 import numpy as np
 import torch
+
+from ..libs.geometry import round_up_to_multiple, target_size
+from ..libs.image import fit_image, pil_to_tensor_hwc
 
 RATIOS = ["original", "custom", "1:1", "3:2", "4:3", "16:9", "2:3", "3:4", "9:16"]
 FITS = ["letterbox", "crop", "fill"]
@@ -25,88 +26,6 @@ SIDES = ["None", "longest", "shortest", "width", "height", "total_pixel(kilo pix
 PLACEHOLDER_MASK_SHAPE = (64, 64)
 
 
-def round_up_to_multiple(number, multiple):
-    if number % multiple == 0:
-        return number
-    return ((number + multiple - 1) // multiple) * multiple
-
-
-def target_size(orig_width, orig_height, ratio, scale_to_side, scale_to_length):
-    """Output (width, height) before rounding. Every branch truncates with
-    int(), and the expressions are kept in the original's operand order so the
-    float results (and therefore the truncation) match it exactly."""
-    if ratio > 1:
-        if scale_to_side == "longest":
-            width = scale_to_length
-            height = int(width / ratio)
-        elif scale_to_side == "shortest":
-            height = scale_to_length
-            width = int(height * ratio)
-        elif scale_to_side == "width":
-            width = scale_to_length
-            height = int(width / ratio)
-        elif scale_to_side == "height":
-            height = scale_to_length
-            width = int(height * ratio)
-        elif scale_to_side == "total_pixel(kilo pixel)":
-            width = math.sqrt(ratio * scale_to_length * 1000)
-            height = width / ratio
-            width, height = int(width), int(height)
-        else:
-            width = orig_width
-            height = int(width / ratio)
-    else:
-        if scale_to_side == "longest":
-            height = scale_to_length
-            width = int(height * ratio)
-        elif scale_to_side == "shortest":
-            width = scale_to_length
-            height = int(width / ratio)
-        elif scale_to_side == "width":
-            width = scale_to_length
-            height = int(width / ratio)
-        elif scale_to_side == "height":
-            height = scale_to_length
-            width = int(height * ratio)
-        elif scale_to_side == "total_pixel(kilo pixel)":
-            width = math.sqrt(ratio * scale_to_length * 1000)
-            height = width / ratio
-            width, height = int(width), int(height)
-        else:
-            height = orig_height
-            width = int(height * ratio)
-    return width, height
-
-
-def fit_image(image, target_width, target_height, fit, sampler, background):
-    """letterbox: whole image inside the target, `background` around it.
-    crop: centre crop to the target ratio, then resize. fill: plain resize."""
-    from PIL import Image
-
-    orig_width, orig_height = image.size
-    if fit == "letterbox":
-        if orig_width / orig_height > target_width / target_height:
-            fit_width = target_width
-            fit_height = int(target_width / orig_width * orig_height)
-        else:
-            fit_height = target_height
-            fit_width = int(target_height / orig_height * orig_width)
-        resized = image.resize((fit_width, fit_height), sampler)
-        out = Image.new(image.mode, (target_width, target_height), color=background)
-        out.paste(resized, box=((target_width - fit_width) // 2, (target_height - fit_height) // 2))
-        return out
-    if fit == "crop":
-        if orig_width / orig_height > target_width / target_height:
-            fit_width = int(orig_height * target_width / target_height)
-            left = (orig_width - fit_width) // 2
-            image = image.crop((left, 0, left + fit_width, orig_height))
-        else:
-            fit_height = int(orig_width * target_height / target_width)
-            top = (orig_height - fit_height) // 2
-            image = image.crop((0, top, orig_width, top + fit_height))
-    return image.resize((target_width, target_height), sampler)
-
-
 def _to_pil(frame):
     """float (H, W) or (H, W, C) in 0..1 -> 8-bit PIL image (truncated, as the
     original does)."""
@@ -115,10 +34,6 @@ def _to_pil(frame):
     if frame.ndim == 3 and frame.shape[-1] == 1:
         frame = frame[..., 0]
     return Image.fromarray(np.clip(255.0 * frame.float().cpu().numpy(), 0, 255).astype(np.uint8))
-
-
-def _to_tensor(image):
-    return torch.from_numpy(np.array(image).astype(np.float32) / 255.0)
 
 
 class ImageScaleByAspectRatio:
@@ -204,12 +119,12 @@ class ImageScaleByAspectRatio:
         out_images = None
         if frames:
             out_images = torch.stack([
-                _to_tensor(fit_image(_to_pil(f).convert("RGB"), target_width, target_height, fit, sampler, background_color))
+                pil_to_tensor_hwc(fit_image(_to_pil(f).convert("RGB"), target_width, target_height, fit, sampler, background_color))
                 for f in frames
             ])
         if mask_frames:
             out_masks = torch.stack([
-                _to_tensor(fit_image(_to_pil(m).convert("L"), target_width, target_height, fit, sampler, "black"))
+                pil_to_tensor_hwc(fit_image(_to_pil(m).convert("L"), target_width, target_height, fit, sampler, "black"))
                 for m in mask_frames
             ])
         else:

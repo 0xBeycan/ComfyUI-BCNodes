@@ -130,7 +130,7 @@ The backend accepts any number of `InN` inputs, so API prompts can list `In3`, `
 
 Options, applied to the matte in this order: `sensitivity` (below 1 the matte is amplified, so faint areas count as foreground), `mask_blur` (Gaussian blur of the edges, pixels), `mask_offset` (grow / shrink by one pixel per step), `invert_output` (keep the background instead), `refine_foreground` (hardens the matte edge and scales the colours by it, for cleaner cut-outs on transparent output), `background` (`Alpha` → RGBA output; `Color` → RGB output over `background_color`), `background_color` (colour picker, `#rrggbb`; the picker needs frontend 1.28 or newer — older frontends show the input as a socket and the default `#222222` is used).
 
-The BiRefNet architecture lives in [`birefnet/`](birefnet/) as a plain `nn.Module` and the weights are loaded straight from safetensors — no `transformers`, no `trust_remote_code`, no `timm`.
+The BiRefNet architecture lives in [`models/birefnet/arch/`](models/birefnet/arch/) as a plain `nn.Module` and the weights are loaded straight from safetensors — no `transformers`, no `trust_remote_code`, no `timm`.
 
 | Model | Backbone | Inference size |
 | --- | --- | --- |
@@ -148,7 +148,7 @@ The BiRefNet architecture lives in [`birefnet/`](birefnet/) as a plain `nn.Modul
 
 Weights are fetched from Hugging Face on the node's first run — never at import — into `ComfyUI/models/background_removal/<name>.safetensors` (ComfyUI's own folder for its core BiRefNet nodes, so the weights are shared), through the pack's own downloader (resumable). The model stays loaded between runs and is swapped when a different one is selected. fp16 on CUDA, fp32 elsewhere.
 
-Licenses: the BiRefNet and Swin Transformer code is MIT (see [`birefnet/LICENSE`](birefnet/LICENSE)); the checkpoints are published under MIT by their authors.
+Licenses: the BiRefNet and Swin Transformer code is MIT (see [`models/birefnet/arch/LICENSE`](models/birefnet/arch/LICENSE)); the checkpoints are published under MIT by their authors.
 
 ### `BC_MathExpression` — Math Expression
 
@@ -458,18 +458,64 @@ ComfyUI-BCNodes/
     power_lora_loader.py   BC_PowerLoraLoader
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
     seedvr2.py             BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess
-    common.py              wildcard type + flexible optional inputs
-    birefnet.py            BC_BiRefNetRemoveBackground (download, load, run)
+    common.py              wildcard type + flexible optional inputs + slot order
+    birefnet.py            BC_BiRefNetRemoveBackground
     downloader.py          BC_AutoModelDownloader + its HTTP routes
     postfx.py              BC_PostFxApply, BC_PostFxTheme, BC_PostFxCustomLook, BC_PostFxLut, BC_PostFxSignatureSheet
-    caption_audit.py       BC_CaptionAudit (audit plumbing, the fixed-size card, the node)
+    caption_audit.py       BC_CaptionAudit
     social_media_export.py BC_SocialMediaExport (the ComfyUI adapter)
-    social_export_core.py  its geometry / encoding engine, no ComfyUI or torch imports
     social_specs.json      the platform table it reads on every run
     image_quality_gate.py  BC_ImageQualityGate
     save_image.py          BC_SaveImage
-    skin_texture.py        BC_SkinTexture (SAM 3 skin mask + texture engine)
-  birefnet/                BiRefNet + Swin v1 architecture (see LICENSE in the folder)
+    skin_texture.py        BC_SkinTexture
+  pipelines/               flows that combine models and libs; no ComfyUI node classes
+    matting.py             the BiRefNet matte, then the matte options
+    model_download.py      downloader lines resolved to files under ComfyUI/models, token gate
+    postfx.py              the postfx adapter: dropdown catalogs, looks, apply, contact sheet
+    skin_texture.py        SAM 3 prompts, face gate, mask assembly, texture call
+    quality_gate.py        shot profiles, the three-tier checks, verdict, report, badge
+    social_export.py       Social Media Export geometry / encoding engine, no ComfyUI or torch imports
+    save_image.py          Save Image name grammar, job JSON, save loop
+    caption_audit/
+      audit.py             audit plumbing: package guard, allowed roots, run_audit, reports
+      card.py              the fixed-size card
+    seedvr2/
+      resize.py            BC_SeedVR2Resize flow
+      encode.py            streaming tiled VAE encode
+      decode.py            streaming tiled VAE decode
+      postprocess.py       per-frame colour correction
+      progress.py          progress bar + timed log lines of the slice loops
+  models/                  one package per model; __init__.py imports those that register
+    common/
+      registry.py          model families: register / names / get
+      download.py          weight download with console progress
+    birefnet/
+      checkpoints.py       the 11 checkpoints, registered as matting models
+      weights.py           weights folder (ComfyUI/models/background_removal) and download
+      loader.py            one model loaded at a time
+      inference.py         resize, normalise, run, matte back to size
+      arch/                BiRefNet + Swin v1 architecture (see LICENSE in the folder)
+    seedvr2/               adapters over ComfyUI's SeedVR2 VAE
+      vae.py               VAE check + VRAM room
+      tiling.py            tile plan + blend weights
+      frames.py            shortest-edge resize, pad, 4n+1 frame count
+    sam3/                  adapter over ComfyUI's SAM 3
+      checkpoint.py        default checkpoint, combo list, path (downloads the default)
+      loader.py            one checkpoint held at a time
+      detect.py            text detection through ComfyUI's SAM3_Detect
+  libs/                    model-independent helpers
+    image.py               IMAGE frame <-> PIL, fit into a target size
+    geometry.py            integer size arithmetic for resizing
+    filters.py             the two separable Gaussians (reflect, replicate)
+    mask.py                fill holes, grow / blur, offset, refine foreground, fit a mask batch
+    color.py               hex colour parser, sRGB <-> linear
+    texture.py             the skin-texture engine
+    image_metrics.py       blur / sharpness / noise / clipping / entropy
+    video.py               side-by-side geometry + the MP4 writer
+    math_expression.py     the whitelisted expression evaluator
+    download.py            HTTP download with resume, allowed hosts, token store
+    files.py               the next image counter from the files in a folder
+    image_write.py         Save Image formats, metadata, writer
   luts/                    drop .cube LUTs here for PostFx LUT (gitignored)
   web/js/
     auto_bypass.js         the BC_AutoBypass virtual node
@@ -491,7 +537,10 @@ ComfyUI-BCNodes/
     test_nodes.py          every node with None / empty input, plus numeric goldens
                            for MaskGrow and Image Scale By Aspect Ratio
     test_runtime.py        headless ComfyUI: real validation + execution
-    test_social_export.py  the Social Media Export planner and encoder, plain pytest
+    test_layers.py         layer rule + module-level import rule, checked statically
+    layers/                pytest files per layer (nodes/, pipelines/, models/, libs/): output goldens and
+                           unit tests, incl. the Social Media Export planner and encoder
+    conftest.py _harness.py _golden.py  ComfyUI stubs, package binding, golden helpers
     parity_seedvr2_video.py  BC_SeedVR2VAEEncode / VAEDecode / PostProcess vs ComfyUI's own nodes, numerically
 ```
 
@@ -501,20 +550,22 @@ Tests:
 python tests/test_import_time.py                  # import budget and heavy-module ban
 python tests/test_nodes.py                        # None / empty input never raises unexpectedly
 COMFYUI_DIR=../ComfyUI python tests/test_runtime.py   # nodes through ComfyUI's validate_prompt + PromptExecutor
-python -m pytest tests/test_social_export.py      # Social Media Export geometry / encoding
+python -m pytest tests -q                         # layer rule, per-layer goldens, Social Media Export
 python tests/parity_seedvr2_video.py --comfy ../ComfyUI --vae ../ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors   # SeedVR2 VAE Encode / Decode / PostProcess against ComfyUI's nodes (GPU for the VAE)
 ```
 
+The tests need `postfx` and `caption-audit` importable: `pip install -r requirements.txt`, or `PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts. The golden files are pinned to the environment they were recorded in (`ENV`); on another platform or with other package versions they fail and name the difference.
+
 The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, and that a genuine type mismatch is still rejected.
 
-Node modules import only `torch`, `numpy` and the standard library at module level; `scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*` and the pip packages `postfx` / `caption_audit` are imported inside the functions that use them (the downloader also touches `server` / `aiohttp`, which ComfyUI has loaded already), so the pack adds nothing to ComfyUI's startup. `python tests/test_import_time.py` checks that.
+Every module in `nodes/`, `pipelines/`, `models/` and `libs/` imports only `torch`, `numpy` and the standard library at module level; `scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*` and the pip packages `postfx` / `caption_audit` are imported inside the functions that use them (the downloader also touches `server` / `aiohttp`, which ComfyUI has loaded already), so the pack adds nothing to ComfyUI's startup. `python tests/test_import_time.py` checks that.
 
 ## Third-party code
 
-- `birefnet/` — the BiRefNet architecture and its Swin v1 backbone, MIT, notices in [`birefnet/LICENSE`](birefnet/LICENSE).
+- `models/birefnet/arch/` — the BiRefNet architecture and its Swin v1 backbone, MIT, notices in [`models/birefnet/arch/LICENSE`](models/birefnet/arch/LICENSE).
 
 Everything else in this pack is BCNodes' own code.
 
 ## License
 
-MIT. The code in `birefnet/` keeps its own MIT notice, in `birefnet/LICENSE`.
+MIT. The code in `models/birefnet/arch/` keeps its own MIT notice, in `models/birefnet/arch/LICENSE`.

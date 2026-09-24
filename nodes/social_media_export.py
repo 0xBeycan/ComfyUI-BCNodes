@@ -9,7 +9,7 @@ Runs beside (never touches) the normal master save node.
 
 This module is the ComfyUI adapter: it converts torch IMAGE tensors to PIL,
 writes files and builds the report. All geometry and encoding live in
-social_export_core (no ComfyUI or torch imports, unit-tested standalone);
+pipelines/social_export.py (no ComfyUI or torch imports, unit-tested standalone);
 the platform table is nodes/social_specs.json, re-read on every execution.
 
 PIL and folder_paths are imported inside the methods; the torch IMAGE tensor
@@ -21,7 +21,7 @@ import os
 
 import numpy as np
 
-from . import social_export_core as core
+from ..pipelines import social_export as core
 
 _SPECS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "social_specs.json")
 
@@ -67,11 +67,8 @@ def _tensor_to_pil(image):
     if channels == 1:
         return Image.fromarray(arr[:, :, 0], "L").convert("RGB")
     if channels == 4:
-        # Flatten alpha onto white; core also guards this, but keep it explicit.
-        rgba = Image.fromarray(arr, "RGBA")
-        bg = Image.new("RGB", rgba.size, (255, 255, 255))
-        bg.paste(rgba, mask=rgba.split()[-1])
-        return bg
+        # Flatten alpha onto white.
+        return core.flatten_to_rgb(Image.fromarray(arr, "RGBA"))
     return Image.fromarray(arr[:, :, :3], "RGB")
 
 

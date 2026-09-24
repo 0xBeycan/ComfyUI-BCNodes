@@ -18,7 +18,7 @@ from __future__ import annotations
 import functools
 import io
 import json
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, TypedDict
 
 
 @functools.lru_cache(maxsize=None)
@@ -36,6 +36,35 @@ def _srgb_icc() -> Optional[bytes]:
 # Byte-cap quality stepping.
 _QUALITY_STEP = 5
 _QUALITY_FLOOR = 70
+
+
+# --------------------------------------------------------------------------- #
+# Contracts (annotation only: both stay plain dicts)
+# --------------------------------------------------------------------------- #
+
+class PlatformSpec(TypedDict, total=False):
+    """One platform of social_specs.json, keys in the order of its "_schema". ar_min, ar_max,
+    max_w and max_h are indexed; min_w, format (default "jpg") and max_bytes are read only
+    when present. The '_'-prefixed notes beside them (_source, _verified, _note) are not read."""
+    ar_min: float
+    ar_max: float
+    max_w: int
+    max_h: int
+    min_w: int
+    format: str
+    max_bytes: int
+
+
+class RenderMeta(TypedDict):
+    """render's metadata dict, keys in the order both of its producers build them. A dict,
+    not a dataclass: format_report_line and the tests index it."""
+    platform: str
+    input: Tuple[int, int]
+    crop: Tuple[int, int]
+    out: Tuple[int, int]
+    crop_pct: float
+    strategy: str  # 'scale' | 'crop' | 'crop!' | 'pad'
+    over: bool
 
 
 # --------------------------------------------------------------------------- #
@@ -68,7 +97,7 @@ def platform_names(specs: Dict[str, dict]) -> list:
     return [k for k in specs.keys() if not k.startswith("_")]
 
 
-def get_spec(specs: Dict[str, dict], platform: str) -> dict:
+def get_spec(specs: Dict[str, dict], platform: str) -> PlatformSpec:
     """Fetch a platform spec, raising UnknownPlatformError (listing valid keys)
     if it is missing or is a metadata key."""
     if platform.startswith("_") or platform not in specs:
@@ -86,7 +115,7 @@ def get_spec(specs: Dict[str, dict], platform: str) -> dict:
 def plan(
     w: int,
     h: int,
-    spec: dict,
+    spec: PlatformSpec,
     anchor: float = 0.4,
     allow_upscale: bool = False,
 ) -> Tuple[Tuple[int, int, int, int], Tuple[int, int]]:
@@ -130,7 +159,7 @@ def crop_fraction(w: int, h: int, cw: int, ch: int) -> float:
 # Pad fallback  (blurred cover-scale letterbox — never flat black bars)
 # --------------------------------------------------------------------------- #
 
-def pad_box(w: int, h: int, spec: dict, allow_upscale: bool = False) -> Tuple[int, int]:
+def pad_box(w: int, h: int, spec: PlatformSpec, allow_upscale: bool = False) -> Tuple[int, int]:
     """Compute the output canvas for the pad strategy: the largest box of the
     nearest band-edge aspect ratio that fits inside the pixel envelope. When
     upscaling is disallowed the box is shrunk (preserving AR) so it never
@@ -157,7 +186,7 @@ def pad_composite(img: Image.Image, box_w: int, box_h: int, allow_upscale: bool 
     background is a Gaussian-blurred, cover-scaled copy of the same image."""
     from PIL import Image, ImageFilter
 
-    img = _to_rgb(img)
+    img = flatten_to_rgb(img)
 
     # Background: cover-scale to fill the box, center-crop, blur.
     cover = max(box_w / img.width, box_h / img.height)
@@ -188,14 +217,14 @@ def pad_composite(img: Image.Image, box_w: int, box_h: int, allow_upscale: bool 
 
 def render(
     img: Image.Image,
-    spec: dict,
+    spec: PlatformSpec,
     *,
     anchor: float = 0.4,
     allow_upscale: bool = False,
     max_crop_ratio: float = 0.15,
     overflow_strategy: str = "error",
     platform: str = "",
-) -> Tuple[Image.Image, dict]:
+) -> Tuple[Image.Image, RenderMeta]:
     """Produce the platform derivative image and a metadata dict.
 
     meta keys: platform, input (w,h), crop (w,h), out (w,h), crop_pct (float),
@@ -267,7 +296,7 @@ def _overflow_message(platform, spec, w, h, cw, ch, frac, max_crop_ratio) -> str
 # Encoding
 # --------------------------------------------------------------------------- #
 
-def _to_rgb(img: Image.Image) -> Image.Image:
+def flatten_to_rgb(img: Image.Image) -> Image.Image:
     """Flatten to RGB, compositing any alpha onto white. Derivatives published to
     third parties are always opaque RGB."""
     from PIL import Image
@@ -284,7 +313,7 @@ def _to_rgb(img: Image.Image) -> Image.Image:
 
 def encode(
     img: Image.Image,
-    spec: dict,
+    spec: PlatformSpec,
     *,
     quality: int = 92,
     chroma_444: bool = True,
@@ -303,7 +332,7 @@ def encode(
     """
     fmt = str(spec.get("format", "jpg")).lower()
     max_bytes = spec.get("max_bytes")
-    rgb = _to_rgb(img)
+    rgb = flatten_to_rgb(img)
 
     if fmt == "png":
         # Lossless: quality/subsampling are irrelevant; no quality loop.

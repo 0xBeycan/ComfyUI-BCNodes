@@ -35,3 +35,8 @@ class FlexibleOptionalInputType(dict):
 
     def __contains__(self, key):
         return True
+
+
+def slot_index(pattern, name):
+    m = pattern.match(name)
+    return int(m.group(1)) if m else float("inf")

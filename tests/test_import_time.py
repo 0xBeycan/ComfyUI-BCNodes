@@ -9,7 +9,10 @@ before custom nodes are imported):
 
   * the whole package, once, in this process — must stay under BUDGET_S and
     must not pull in any of the HEAVY modules;
-  * each node module on its own, cold, in a fresh subprocess.
+  * each module of nodes/, pipelines/, models/ and libs/ on its own, cold, in a
+    fresh subprocess whose sys.path does not hold the repo root
+    (PYTHONSAFEPATH=1), as under ComfyUI: an absolute `import libs` fails here
+    too instead of passing by accident.
 
 Exits non-zero when the budget or the heavy-module rule is broken.
 """
@@ -26,6 +29,8 @@ import types
 PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PKG_NAME = "bcnodes_under_test"
 BUDGET_S = 0.1
+LAYERS = ("nodes", "pipelines", "models", "libs")
+# Node modules the walk must find (the registered nodes live in them).
 NODE_MODULES = ["logic", "mask", "image_scale", "lists", "birefnet", "downloader", "math_expression", "prompt_list", "any_switch", "seed", "show_text",
                 "image_comparer", "video_comparer", "power_lora_loader", "everywhere", "seedvr2",
                 "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "skin_texture"]
@@ -54,7 +59,21 @@ def bind_package(execute_init):
     return module
 
 
-def time_node_module(name):
+def layer_modules():
+    """Every module of the four layers as a dotted path under the package, packages
+    (their __init__.py) included, in walk order."""
+    found = []
+    for layer in LAYERS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(PKG_DIR, layer)):
+            dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+            for f in sorted(filenames):
+                if f.endswith(".py"):
+                    parts = os.path.relpath(os.path.join(dirpath, f), PKG_DIR)[:-3].split(os.sep)
+                    found.append(".".join(parts[:-1] if parts[-1] == "__init__" else parts))
+    return found
+
+
+def time_module(module):
     code = (
         "import sys, time; import torch, numpy\n"
         f"sys.path.insert(0, {json.dumps(os.path.dirname(os.path.abspath(__file__)))})\n"
@@ -62,14 +81,15 @@ def time_node_module(name):
         "t.bind_package(execute_init=False)\n"
         "before = set(sys.modules)\n"
         "t0 = time.perf_counter()\n"
-        f"import importlib; importlib.import_module(t.PKG_NAME + '.nodes.{name}')\n"
+        f"import importlib; importlib.import_module(t.PKG_NAME + '.{module}')\n"
         "dt = time.perf_counter() - t0\n"
         "heavy = sorted(m for m in set(sys.modules) - before if m.split('.')[0] in t.HEAVY)\n"
         "print(__import__('json').dumps({'seconds': dt, 'heavy': heavy}))\n"
     )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=PKG_DIR)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=PKG_DIR,
+                         env={**os.environ, "PYTHONSAFEPATH": "1"})
     if out.returncode != 0:
-        raise RuntimeError(f"nodes.{name} failed to import:\n{out.stderr}")
+        raise RuntimeError(f"{module} failed to import:\n{out.stderr}")
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
@@ -92,11 +112,15 @@ def main():
     if heavy:
         failures.append(f"package import pulled in heavy modules: {', '.join(heavy)}")
 
-    for name in NODE_MODULES:
-        r = time_node_module(name)
-        print(f"{'nodes.' + name:<28}{r['seconds']:>12.4f}  {', '.join(r['heavy']) or '-'}")
+    modules = layer_modules()
+    missing = [name for name in NODE_MODULES if f"nodes.{name}" not in modules]
+    if missing:
+        failures.append(f"node modules not found under nodes/: {', '.join(missing)}")
+    for module in modules:
+        r = time_module(module)
+        print(f"{module:<28}{r['seconds']:>12.4f}  {', '.join(r['heavy']) or '-'}")
         if r["heavy"]:
-            failures.append(f"nodes.{name} pulled in heavy modules: {', '.join(r['heavy'])}")
+            failures.append(f"{module} pulled in heavy modules: {', '.join(r['heavy'])}")
 
     expected = {
         "BC_LogicBoolean", "BC_IsMaskEmpty", "BC_MaskFillHoles", "BC_MaskGrow", "BC_ImageScaleByAspectRatio",

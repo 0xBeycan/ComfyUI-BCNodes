@@ -7,14 +7,9 @@ out. Nothing connected -> None.
 
 import re
 
-from .common import ANY, FlexibleOptionalInputType
+from .common import ANY, FlexibleOptionalInputType, slot_index
 
 _SLOT = re.compile(r"^any_(\d+)$")
-
-
-def _slot_index(name):
-    m = _SLOT.match(name)
-    return int(m.group(1)) if m else float("inf")
 
 
 class AnySwitch:
@@ -32,7 +27,7 @@ class AnySwitch:
     SEARCH_ALIASES = ['BCNodes', 'any switch', 'switch', 'fallback']
 
     def switch(self, **kwargs):
-        for name in sorted(kwargs, key=_slot_index):
+        for name in sorted(kwargs, key=lambda name: slot_index(_SLOT, name)):
             if _SLOT.match(name) and kwargs[name] is not None:
                 return (kwargs[name],)
         return (None,)

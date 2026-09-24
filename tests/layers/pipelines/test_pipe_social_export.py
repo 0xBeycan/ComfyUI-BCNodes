@@ -3,24 +3,25 @@ Tests for the Social Media Export planner and encoder.
 
 Runnable with plain pytest, no ComfyUI or torch import:
 
-    python -m pytest tests/test_social_export.py
+    python -m pytest tests/layers/pipelines/test_pipe_social_export.py
 
-Only ``nodes/social_export_core.py`` (Pillow-only) is exercised here. Specs are defined inline so the
+Only ``pipelines/social_export.py`` (Pillow-only) is exercised here. Specs are defined inline so the
 tests do not depend on the (editable, changing) values in social_specs.json,
 except for two integration tests that load the shipped file directly.
 """
 
 import io
 import os
-import sys
 
 import pytest
 from PIL import Image, JpegImagePlugin
 
-NODES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "nodes")
-sys.path.insert(0, NODES)
+from _harness import PKG_DIR, bind_package
 
-import social_export_core as core  # noqa: E402
+NODES = os.path.join(PKG_DIR, "nodes")
+# Through a package binding, not sys.path: a layer directory on sys.path would shadow the pip
+# packages postfx and caption_audit with the pack's modules of the same name.
+core = bind_package("bcnodes_social_under_test")["pipelines.social_export"]
 
 
 # --- inline specs -------------------------------------------------------------

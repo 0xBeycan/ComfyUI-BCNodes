@@ -5,14 +5,9 @@
 
 import re
 
-from .common import FlexibleOptionalInputType
+from .common import FlexibleOptionalInputType, slot_index
 
 _SLOT = re.compile(r"^In(\d+)$")
-
-
-def _slot_index(name):
-    m = _SLOT.match(name)
-    return int(m.group(1)) if m else float("inf")
 
 
 class JoinImageLists:
@@ -44,7 +39,7 @@ class JoinImageLists:
     def join_lists(self, **kwargs):
         sizes = []
         joined = []
-        for name in sorted(kwargs, key=_slot_index):
+        for name in sorted(kwargs, key=lambda name: slot_index(_SLOT, name)):
             images = kwargs[name]
             if images is None:
                 continue
