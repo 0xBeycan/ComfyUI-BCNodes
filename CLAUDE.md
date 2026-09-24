@@ -106,6 +106,9 @@ or Pillow fail before any other work. Keep them where they are.
 
 ## Coding style
 
+- Before writing new code, search the pack for code that already does the same work (grep for
+  the operation, not only the name). If it exists, call it. If the same code would end up in
+  two places, move it into one function and call that from both. Never write a second copy.
 - Small functions with one job; explicit data contracts (a dataclass inside, a TypedDict for a
   dict that goes over the wire or into tests); errors that say what to do; no silent defaults.
 - A new function exists only when identical code already lives in 2+ places (reduce it to one)
