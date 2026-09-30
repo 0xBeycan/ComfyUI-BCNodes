@@ -14,6 +14,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_MathExpression` | Math Expression | Arithmetic over `a`, `b`, `c` without `eval()` |
 | `BC_PromptList` | Prompt List | One prompt per line, as a list |
 | `BC_AnySwitch` | Any Switch | First connected non-None input, any type, unlimited inputs |
+| `BC_SelectSwitch` | Select Switch | Input of the selected named option, any type; only the selected branch runs |
 | `BC_Seed` | Seed | Seed widget; `-1` draws a new random seed on every run |
 | `BC_ShowText` | Show Text | Shows incoming text on the node, passes it on |
 | `BC_ImageComparer` | Image Comparer | Two images on the node, compared with a sliding divider |
@@ -22,6 +23,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_AnythingEverywhere` | Anything Everywhere | Feeds unconnected inputs of a type at prompt time |
 | `BC_FastGroupsBypasser` | Fast Groups Bypasser | One bypass toggle per group |
 | `BC_BiRefNetRemoveBackground` | BiRefNet Remove Background | Background removal with BiRefNet, plain torch |
+| `BC_DepthAnythingV2` | Depth Anything V2 | Depth map with Depth Anything V2 Small (Apache-2.0), near = white, plain torch |
 | `BC_SeedVR2Resize` | SeedVR2 Resize | Original image → the padded frame SeedVR2 encodes (lanczos downscale, shortest-edge antialiased bicubic, pad 16, 4n+1 frames) plus the colour reference |
 | `BC_SeedVR2VAEEncode` | SeedVR2 VAE Encode | SeedVR2 VAE encode with the frames streamed from RAM slice by slice, so VRAM does not grow with the frame count |
 | `BC_SeedVR2VAEDecode` | SeedVR2 VAE Decode | SeedVR2 VAE decode with every decoded slice streamed to RAM, so VRAM does not grow with the frame count |
@@ -43,9 +45,9 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 
 | Category | Nodes |
 | --- | --- |
-| `BCNodes/logic` | Logic Boolean, Math Expression, Any Switch, Seed |
+| `BCNodes/logic` | Logic Boolean, Math Expression, Any Switch, Select Switch, Seed |
 | `BCNodes/mask` | Mask Fill Holes, MaskGrow, Is Mask Empty, BiRefNet Remove Background |
-| `BCNodes/image` | Image Scale By Aspect Ratio, Join Image Lists, Social Media Export, Save Image, Skin Texture |
+| `BCNodes/image` | Image Scale By Aspect Ratio, Join Image Lists, Depth Anything V2, Social Media Export, Save Image, Skin Texture |
 | `BCNodes/postfx` | PostFx Apply, Theme, Custom Look, LUT, Signature Sheet |
 | `BCNodes/analysis` | Image Quality Gate, Caption Audit |
 | `BCNodes/text` | Prompt List, Show Text |
@@ -150,6 +152,16 @@ Weights are fetched from Hugging Face on the node's first run — never at impor
 
 Licenses: the BiRefNet and Swin Transformer code is MIT (see [`models/birefnet/arch/LICENSE`](models/birefnet/arch/LICENSE)); the checkpoints are published under MIT by their authors.
 
+### `BC_DepthAnythingV2` — Depth Anything V2
+
+`image` (`IMAGE`), `resolution` (`INT`, default `518`, 14–2044, step 14) → `depth` (`IMAGE`, grayscale in all three channels, the input's size).
+
+The depth map is relative, normalised per frame: nearest = white, farthest = black — the convention ControlNet depth models expect, so no invert is needed. Each frame is preprocessed as the authors' `image2tensor`: resized with its aspect kept so the short side is `resolution` (rounded to a multiple of 14) and both sides are multiples of 14, bicubic, ImageNet-normalised; the prediction is resized back to the input size bilinearly. `518` is the size the model was trained at; a higher value gives finer edges and costs more memory and time.
+
+Only Depth-Anything-V2-**Small** (ViT-S) is offered: it is the only Depth Anything V2 size released under Apache-2.0 (Base, Large and Giant are CC-BY-NC). The architecture (DPT head + DINOv2 ViT-S) lives in [`models/depth_anything_v2/arch/`](models/depth_anything_v2/arch/) as a plain `nn.Module` — no `transformers`, no xFormers. The authors' `depth_anything_v2_vits.pth` (~99 MB, from `depth-anything/Depth-Anything-V2-Small`) is fetched on the node's first run — never at import — into `ComfyUI/models/depthanything/`, through the pack's own downloader, loaded with `torch.load(weights_only=True)`, and kept loaded between runs. fp32 on every device.
+
+Licenses: the Depth Anything V2 and DINOv2 code is Apache-2.0 (see [`models/depth_anything_v2/arch/LICENSE`](models/depth_anything_v2/arch/LICENSE)); the Small checkpoint is published under Apache-2.0 by its authors.
+
 ### `BC_MathExpression` — Math Expression
 
 `expression` (multiline) plus optional `a`, `b`, `c` (`INT`, `FLOAT`, `IMAGE` or `LATENT`) → `INT`, `FLOAT` (the same value, truncated and as a float). The result is also drawn on the node. Re-evaluated on every run.
@@ -163,6 +175,12 @@ The expression is parsed with `ast` and walked with a whitelist — there is no 
 ### `BC_AnySwitch` — Any Switch
 
 Wildcard inputs `any_01`, `any_02`, … → the first one that is connected and not `None`. Nothing connected → `None`. Slots grow as they are connected (one empty slot always waits at the end; empty slots in the middle are removed and the rest renumbered), and the socket type follows whatever is connected so the canvas shows and checks the real type. Useful with an optional branch: wire the optional source first and a fallback second.
+
+### `BC_SelectSwitch` — Select Switch
+
+Named options, one wildcard input each, plus `selected` (a combo of the option names) → the input of the selected option. Like ComfyUI's boolean Switch, but chosen by name and with any number of options. `+ Add option` asks for a name; each option is a row under the combo: click its name to rename it (the link stays), `✕` to remove it. Empty, duplicate and reserved names (`selected`, `self`) are refused. The option list is saved with the workflow. The socket type follows whatever is connected, as in Any Switch.
+
+The option inputs are lazy: only the selected option's branch is executed, so an image can feed two expensive preprocessors and only the selected one runs. The selected option having no input connected is an error naming the option. `selected` can be promoted out of a subgraph or driven by a `STRING` / `COMBO` output.
 
 ### `BC_Seed` — Seed
 
@@ -451,6 +469,7 @@ ComfyUI-BCNodes/
     math_expression.py     BC_MathExpression
     prompt_list.py         BC_PromptList
     any_switch.py          BC_AnySwitch
+    select_switch.py       BC_SelectSwitch
     seed.py                BC_Seed
     show_text.py           BC_ShowText
     image_comparer.py      BC_ImageComparer
@@ -460,6 +479,7 @@ ComfyUI-BCNodes/
     seedvr2.py             BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess
     common.py              wildcard type + flexible optional inputs + slot order
     birefnet.py            BC_BiRefNetRemoveBackground
+    depth_anything.py      BC_DepthAnythingV2
     downloader.py          BC_AutoModelDownloader + its HTTP routes
     postfx.py              BC_PostFxApply, BC_PostFxTheme, BC_PostFxCustomLook, BC_PostFxLut, BC_PostFxSignatureSheet
     caption_audit.py       BC_CaptionAudit
@@ -495,6 +515,11 @@ ComfyUI-BCNodes/
       loader.py            one model loaded at a time
       inference.py         resize, normalise, run, matte back to size
       arch/                BiRefNet + Swin v1 architecture (see LICENSE in the folder)
+    depth_anything_v2/     Depth Anything V2 Small, one model (no registry family)
+      weights.py           weights folder (ComfyUI/models/depthanything) and download
+      loader.py            the model, loaded once
+      inference.py         resize as the authors, normalise, run, depth back to size, min-max
+      arch/                DPT head + DINOv2 ViT-S architecture (see LICENSE in the folder)
     seedvr2/               adapters over ComfyUI's SeedVR2 VAE
       vae.py               VAE check + VRAM room
       tiling.py            tile plan + blend weights
@@ -521,6 +546,8 @@ ComfyUI-BCNodes/
     auto_bypass.js         the BC_AutoBypass virtual node
     join_image_lists.js    unlimited slots for Join Image Lists
     any_switch.js          unlimited slots + type following for Any Switch
+    select_switch.js       named option slots, rows and the selected combo for Select Switch
+    wildcard_type.js       socket type following, shared by the two switches
     math_expression.js     result overlay for Math Expression
     seed.js                Seed buttons + prompt rewrite of -1
     show_text.js           Show Text boxes
@@ -556,16 +583,17 @@ python tests/parity_seedvr2_video.py --comfy ../ComfyUI --vae ../ComfyUI/models/
 
 The tests need `postfx` and `caption-audit` importable: `pip install -r requirements.txt`, or `PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts. The golden files are pinned to the environment they were recorded in (`ENV`); on another platform or with other package versions they fail and name the difference.
 
-The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, and that a genuine type mismatch is still rejected.
+The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, Select Switch running only the selected lazy branch, and that a genuine type mismatch is still rejected.
 
 Every module in `nodes/`, `pipelines/`, `models/` and `libs/` imports only `torch`, `numpy` and the standard library at module level; `scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*` and the pip packages `postfx` / `caption_audit` are imported inside the functions that use them (the downloader also touches `server` / `aiohttp`, which ComfyUI has loaded already), so the pack adds nothing to ComfyUI's startup. `python tests/test_import_time.py` checks that.
 
 ## Third-party code
 
 - `models/birefnet/arch/` — the BiRefNet architecture and its Swin v1 backbone, MIT, notices in [`models/birefnet/arch/LICENSE`](models/birefnet/arch/LICENSE).
+- `models/depth_anything_v2/arch/` — the Depth Anything V2 DPT head and its DINOv2 ViT-S backbone, Apache-2.0, notices and license text in [`models/depth_anything_v2/arch/LICENSE`](models/depth_anything_v2/arch/LICENSE).
 
 Everything else in this pack is BCNodes' own code.
 
 ## License
 
-MIT. The code in `models/birefnet/arch/` keeps its own MIT notice, in `models/birefnet/arch/LICENSE`.
+MIT. The code in `models/birefnet/arch/` keeps its own MIT notice, in `models/birefnet/arch/LICENSE`; the code in `models/depth_anything_v2/arch/` keeps its Apache-2.0 license, in `models/depth_anything_v2/arch/LICENSE`.

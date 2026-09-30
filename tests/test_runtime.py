@@ -73,13 +73,18 @@ async def setup():
     print("loaded:", ", ".join(sorted(k for k in nodes.NODE_CLASS_MAPPINGS if k.startswith("BC_"))))
 
 
-async def run(prompt, label, extra_data=None):
-    """-> (outputs by node id or None, validation tuple)"""
+def executed_nodes(server):
+    """Node ids the executor announced as "executing" (it does so when extra_data has a client_id)."""
+    return sorted(data["node"] for event, data in server.events if event == "executing" and data.get("node") is not None)
+
+
+async def run(prompt, label, extra_data=None, server=None):
+    """-> (outputs by node id or None, validation tuple). Pass `server` to read its events after."""
     prompt_id = str(uuid.uuid4())
     valid = await execution.validate_prompt(prompt_id, prompt, None)
     if not valid[0]:
         return None, valid
-    ex = execution.PromptExecutor(Server(), cache_type=execution.CacheType.CLASSIC, cache_args={"lru": 0, "ram": 0, "ram_inactive": 0})
+    ex = execution.PromptExecutor(server or Server(), cache_type=execution.CacheType.CLASSIC, cache_args={"lru": 0, "ram": 0, "ram_inactive": 0})
     await ex.execute_async(prompt, prompt_id, extra_data or {}, valid[2])
     if not ex.success:
         errors = [m for m in ex.status_messages if m[0] == "execution_error"]
@@ -109,7 +114,7 @@ async def run_twice(prompt, label, extra_data=None):
             errors = [m for m in ex.status_messages if m[0] == "execution_error"]
             print(f"  [{label}] run {i + 1} failed: {json.dumps(errors, default=str)[:600]}")
             return None, None
-        executed = sorted(data["node"] for event, data in server.events if event == "executing" and data.get("node") is not None)
+        executed = executed_nodes(server)
         if i == 0:
             outputs = ex.history_result["outputs"]
             if not executed:
@@ -146,6 +151,35 @@ async def main():
     check("AnySwitch: wildcard links validate and execute", out is not None)
     check("AnySwitch: first non-None input wins", out and out["5"]["value"] == [7])
     check("AnySwitch: '*' output accepted by an INT input", out and out["6"]["value"] == [8])
+
+    # Select Switch: canvas-only option slots, a selected name no static list holds, and lazy
+    # option inputs: only the selected branch (node 3) runs, node 2 never does.
+    def select_prompt(selected):
+        return {
+            "1": N("EmptyImage", width=16, height=8, batch_size=1, color=0),
+            "2": N("ImageInvert", image=["1", 0]),
+            "3": N("ImageScaleBy", image=["1", 0], upscale_method="nearest-exact", scale_by=2.0),
+            "4": N("BC_SelectSwitch", selected=selected, option_a=["2", 0], option_b=["3", 0]),
+            "5": N("BC_MathExpression", expression="a.width", a=["4", 0]),
+        }
+    server = Server()
+    out, valid = await run(select_prompt("option_b"), "select", {"client_id": "test"}, server)
+    check("SelectSwitch: canvas-only options and selected validate and execute", out is not None, f"{valid[1]}")
+    check("SelectSwitch: the selected input comes out", out and out["5"]["value"] == [32])
+    # The switch is announced twice: once when it asks for its lazy input, once when it runs.
+    check("SelectSwitch: only the selected branch executes", sorted(set(executed_nodes(server))) == ["1", "3", "4", "5"], f"{executed_nodes(server)}")
+    server = Server()
+    out, _ = await run(select_prompt("option_c"), "select-unconnected", {"client_id": "test"}, server)
+    errors = [data.get("exception_message", "") for event, data in server.events if event == "execution_error"]
+    check("SelectSwitch: an unconnected selection fails naming the option",
+          out is None and any("'option_c' has no input connected" in e for e in errors), f"{errors}")
+    check("SelectSwitch: an unconnected selection runs no branch", "2" not in executed_nodes(server) and "3" not in executed_nodes(server), f"{executed_nodes(server)}")
+    out, valid = await run(select_prompt(""), "select-empty")
+    check("SelectSwitch: an empty selection fails validation", out is None and not valid[0])
+    prompt = select_prompt(["6", 0])
+    prompt["6"] = N("PrimitiveString", value="option_a")
+    out, valid = await run(prompt, "select-driven")
+    check("SelectSwitch: `selected` driven by a STRING output", out is not None and out["5"]["value"] == [16], f"{valid[1]}")
 
     # Math Expression: language coverage.
     out, _ = await run({
@@ -311,6 +345,7 @@ async def main():
         "MathExpression": {"1": N("BC_MathExpression", expression="2 + 3")},
         "PromptList": {"1": N("BC_PromptList", prepend_text="", multiline_text="x\ny", append_text="", start_index=0, max_rows=10), "2": N("PreviewAny", source=["1", 0])},
         "AnySwitch": {"1": N("BC_MathExpression", expression="7"), "2": N("BC_AnySwitch", any_01=["1", 0]), "3": N("PreviewAny", source=["2", 0])},
+        "SelectSwitch": {"1": N("BC_MathExpression", expression="7"), "2": N("BC_SelectSwitch", selected="option_a", option_a=["1", 0]), "3": N("PreviewAny", source=["2", 0])},
         "ShowText": {"1": N("BC_PromptList", prepend_text="", multiline_text="x\ny", append_text="", start_index=0, max_rows=10), "2": N("BC_ShowText", text=["1", 0]), "3": N("PreviewAny", source=["2", 0])},
         "ImageComparer": {"1": image, "2": N("BC_ImageComparer", image_a=["1", 0], image_b=["1", 0])},
         "VideoComparer": {"1": N("EmptyImage", width=16, height=8, batch_size=4, color=0), "2": N("BC_VideoComparer", fps=12.0, video_a=["1", 0])},

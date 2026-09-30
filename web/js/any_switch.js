@@ -1,10 +1,10 @@
 import { app } from "../../../scripts/app.js";
+import { applyType, followedType } from "./wildcard_type.js";
 
 // Any Switch — wildcard inputs that grow as they are connected. Keeps one
 // empty slot after the last connected one, drops empty slots in the middle,
 // numbers them any_01, any_02, ... and lets the socket type follow whatever
-// is connected (first input link, else the output's first target) so the
-// canvas rejects mismatched links and shows the real type on the output.
+// is connected (wildcard_type.js).
 
 const NODE_TYPE = "BC_AnySwitch";
 const SLOT_RE = /^any_\d+$/;
@@ -18,21 +18,6 @@ function listSlots(node) {
 		if (SLOT_RE.test(String(node.inputs[i]?.name ?? ""))) slots.push(i);
 	}
 	return slots;
-}
-
-function connectedType(node) {
-	const graph = node.graph;
-	for (const i of listSlots(node)) {
-		const link = graph?.links?.get?.(node.inputs[i].link) ?? graph?.links?.[node.inputs[i].link];
-		if (link?.type && link.type !== "*") return link.type;
-	}
-	for (const id of node.outputs?.[0]?.links ?? []) {
-		const link = graph?.links?.get?.(id) ?? graph?.links?.[id];
-		const target = link ? graph?.getNodeById?.(link.target_id) : null;
-		const type = target?.inputs?.[link?.target_slot]?.type;
-		if (type && type !== "*") return type;
-	}
-	return "*";
 }
 
 function stabilize(node) {
@@ -57,8 +42,8 @@ function stabilize(node) {
 		changed = true;
 	}
 
-	const type = connectedType(node);
-	listSlots(node).forEach((slot, k) => {
+	slots = listSlots(node);
+	slots.forEach((slot, k) => {
 		const input = node.inputs[slot];
 		const name = slotName(k + 1);
 		if (input.name !== name) {
@@ -67,17 +52,8 @@ function stabilize(node) {
 			input.localized_name = undefined;
 			changed = true;
 		}
-		if (input.type !== type) {
-			input.type = type;
-			changed = true;
-		}
 	});
-	const output = node.outputs?.[0];
-	if (output && output.type !== type) {
-		output.type = type;
-		output.label = type;
-		changed = true;
-	}
+	if (applyType(node, slots, followedType(node, slots))) changed = true;
 
 	if (changed) {
 		const computed = node.computeSize();

@@ -31,7 +31,7 @@ PKG_NAME = "bcnodes_under_test"
 BUDGET_S = 0.1
 LAYERS = ("nodes", "pipelines", "models", "libs")
 # Node modules the walk must find (the registered nodes live in them).
-NODE_MODULES = ["logic", "mask", "image_scale", "lists", "birefnet", "downloader", "math_expression", "prompt_list", "any_switch", "seed", "show_text",
+NODE_MODULES = ["logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
                 "image_comparer", "video_comparer", "power_lora_loader", "everywhere", "seedvr2",
                 "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "skin_texture"]
 HEAVY = [
@@ -124,8 +124,8 @@ def main():
 
     expected = {
         "BC_LogicBoolean", "BC_IsMaskEmpty", "BC_MaskFillHoles", "BC_MaskGrow", "BC_ImageScaleByAspectRatio",
-        "BC_JoinImageLists", "BC_BiRefNetRemoveBackground", "BC_AutoModelDownloader",
-        "BC_MathExpression", "BC_PromptList", "BC_AnySwitch", "BC_Seed", "BC_ShowText",
+        "BC_JoinImageLists", "BC_BiRefNetRemoveBackground", "BC_DepthAnythingV2", "BC_AutoModelDownloader",
+        "BC_MathExpression", "BC_PromptList", "BC_AnySwitch", "BC_SelectSwitch", "BC_Seed", "BC_ShowText",
         "BC_ImageComparer", "BC_VideoComparer", "BC_PowerLoraLoader", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
         "BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode", "BC_SeedVR2PostProcess",
         "BC_PostFxApply", "BC_PostFxTheme", "BC_PostFxCustomLook", "BC_PostFxLut", "BC_PostFxSignatureSheet",

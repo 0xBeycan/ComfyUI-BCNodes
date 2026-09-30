@@ -143,10 +143,18 @@ def main():
     check("AnySwitch all None", lambda: sw.switch(any_01=None, any_02=None) == (None,) or _fail())
     check("AnySwitch skips None", lambda: sw.switch(any_01=None, any_02=0, any_03=5) == (0,) or _fail())
 
+    ss = m["select_switch"].SelectSwitch()
+    check("SelectSwitch no options -> ValueError", lambda: _raises(ValueError, lambda: ss.select("")))
+    check("SelectSwitch unconnected selection -> ValueError", lambda: _raises(ValueError, lambda: ss.select("option_a")))
+    check("SelectSwitch None input passes None", lambda: ss.select("option_a", option_a=None) == (None,) or _fail())
+
     bn = m["birefnet"].BiRefNetRemoveBackground()
     check("BiRefNet empty batch (no model load)", lambda: bn.remove_background(torch.zeros((0, 8, 8, 3)), "BiRefNet_lite")[1].shape == (0, 64, 64) or _fail())
     check("BiRefNet None image", lambda: bn.remove_background(None, "BiRefNet_lite")[0].shape == (0, 64, 64, 4) or _fail())
     check("BiRefNet None image -> 3 outputs, MASK_IMAGE (0,64,64,3)", lambda: bn.remove_background(None, "BiRefNet_lite")[2].shape == (0, 64, 64, 3) or _fail())
+    da = m["depth_anything"].DepthAnythingV2()
+    check("DepthAnythingV2 empty batch (no model load)", lambda: da.estimate_depth(torch.zeros((0, 8, 8, 3)), 518)[0].shape == (0, 64, 64, 3) or _fail())
+    check("DepthAnythingV2 None image", lambda: da.estimate_depth(None, 518)[0].shape == (0, 64, 64, 3) or _fail())
 
     # The matte options run on a synthetic matte: a white image, a 16x16 matte
     # that is 1 in the centre 8x8 square and 0 outside.

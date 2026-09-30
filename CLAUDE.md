@@ -23,7 +23,7 @@ their order is the menu order. `WEB_DIRECTORY = "./web"`.
 
 ```
 nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index
-nodes/<domain>.py             one per domain (22); social_specs.json is the user-editable platform table
+nodes/<domain>.py             one per domain (24); social_specs.json is the user-editable platform table
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
@@ -35,6 +35,7 @@ pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card
 pipelines/seedvr2/            resize, encode, decode, postprocess flows; progress; shared constants
 models/common/                registry.py (families), download.py (fetch_with_progress)
 models/birefnet/              checkpoints (registered under MATTING), weights, loader, inference, arch/ (vendored, MIT)
+models/depth_anything_v2/     Depth Anything V2 Small: weights, loader, inference, arch/ (vendored, Apache-2.0; no registry)
 models/seedvr2/               VAE adapter, tiling, frame-shape rules (no registry)
 models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 3)
 libs/image.py                 tensor_to_pil_u8, pil_to_tensor_hwc, fit_image

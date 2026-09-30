@@ -1,7 +1,7 @@
 """ComfyUI-BCNodes — utility nodes for ComfyUI.
 
 Every node module only touches torch / numpy / stdlib at import time; scipy,
-PIL, cv2, safetensors, torchvision, the BiRefNet architecture and the pip
+PIL, cv2, safetensors, torchvision, the BiRefNet and Depth Anything architectures and the pip
 dependencies (postfx, caption-audit) are imported inside the functions that
 use them. tests/test_import_time.py holds the package to that.
 
@@ -15,10 +15,12 @@ Nodes:
     BC_ImageScaleByAspectRatio   scale image / mask to an aspect ratio and side length
     BC_JoinImageLists            concatenate image lists, unbounded inputs
     BC_BiRefNetRemoveBackground  BiRefNet matting, plain torch
+    BC_DepthAnythingV2           Depth Anything V2 Small depth map, near = white, plain torch
     BC_AutoModelDownloader       fetch a workflow's models into models/
     BC_MathExpression            arithmetic over a, b, c without eval()
     BC_PromptList                one prompt per line, as a list
     BC_AnySwitch                 first connected non-None input, any type
+    BC_SelectSwitch              input of the selected named option, only that branch runs
     BC_Seed                      seed widget; -1 = new random seed every run
     BC_ShowText                  show incoming text on the node, pass it on
     BC_ImageComparer             two images, divider comparison on the node
@@ -47,14 +49,14 @@ in the selection toolbox.
 """
 
 from .nodes import (
-    any_switch, birefnet, caption_audit, downloader, everywhere, image_comparer, image_quality_gate, image_scale, lists,
-    logic, mask, math_expression, postfx, power_lora_loader, prompt_list, save_image, seed, seedvr2, show_text, skin_texture, social_media_export,
-    video_comparer,
+    any_switch, birefnet, caption_audit, depth_anything, downloader, everywhere, image_comparer, image_quality_gate, image_scale, lists,
+    logic, mask, math_expression, postfx, power_lora_loader, prompt_list, save_image, seed, seedvr2, select_switch, show_text, skin_texture,
+    social_media_export, video_comparer,
 )
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
-for _module in (logic, mask, image_scale, lists, birefnet, downloader, math_expression, prompt_list, any_switch, seed, show_text,
+for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
                 image_comparer, video_comparer, power_lora_loader, everywhere, seedvr2,
                 postfx, caption_audit, social_media_export, image_quality_gate, save_image, skin_texture):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)

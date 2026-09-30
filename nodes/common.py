@@ -19,11 +19,14 @@ class FlexibleOptionalInputType(dict):
     ComfyUI looks an input up with `name in optional` and `optional[name]`;
     answering both for any name lets a node accept inputs that only exist on
     the canvas (slots added by a web extension) under any name, typed as
-    `socket_type`. Keys given in `known` are returned as declared."""
+    `socket_type`, with `socket_options` as its option dict when given (e.g.
+    {"lazy": True}; ComfyUI reads "lazy" per input name through the same
+    lookup). Keys given in `known` are returned as declared."""
 
-    def __init__(self, socket_type, known=None):
+    def __init__(self, socket_type, known=None, socket_options=None):
         super().__init__()
         self.socket_type = socket_type
+        self.socket_options = socket_options
         self.known = known or {}
         for k, v in self.known.items():
             self[k] = v
@@ -31,6 +34,8 @@ class FlexibleOptionalInputType(dict):
     def __getitem__(self, key):
         if key in self.known:
             return self.known[key]
+        if self.socket_options is not None:
+            return (self.socket_type, self.socket_options)
         return (self.socket_type,)
 
     def __contains__(self, key):
