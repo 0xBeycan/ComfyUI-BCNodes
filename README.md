@@ -561,13 +561,11 @@ ComfyUI-BCNodes/
   locales/en/main.json     tooltips for the Align buttons
   tests/
     test_import_time.py    import gate
-    test_nodes.py          every node with None / empty input, plus numeric goldens
-                           for MaskGrow and Image Scale By Aspect Ratio
+    test_nodes.py          every node with None / empty input, plus plain spot checks
     test_runtime.py        headless ComfyUI: real validation + execution
     test_layers.py         layer rule + module-level import rule, checked statically
-    layers/                pytest files per layer (nodes/, pipelines/, models/, libs/): output goldens and
-                           unit tests, incl. the Social Media Export planner and encoder
-    conftest.py _harness.py _golden.py  ComfyUI stubs, package binding, golden helpers
+    layers/                pytest unit tests per layer (nodes/, pipelines/, models/, libs/)
+    conftest.py _harness.py  ComfyUI stubs, package binding
     parity_seedvr2_video.py  BC_SeedVR2VAEEncode / VAEDecode / PostProcess vs ComfyUI's own nodes, numerically
 ```
 
@@ -577,11 +575,11 @@ Tests:
 python tests/test_import_time.py                  # import budget and heavy-module ban
 python tests/test_nodes.py                        # None / empty input never raises unexpectedly
 COMFYUI_DIR=../ComfyUI python tests/test_runtime.py   # nodes through ComfyUI's validate_prompt + PromptExecutor
-python -m pytest tests -q                         # layer rule, per-layer goldens, Social Media Export
+python -m pytest tests -q                         # layer rule, unit tests
 python tests/parity_seedvr2_video.py --comfy ../ComfyUI --vae ../ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors   # SeedVR2 VAE Encode / Decode / PostProcess against ComfyUI's nodes (GPU for the VAE)
 ```
 
-The tests need `postfx` and `caption-audit` importable: `pip install -r requirements.txt`, or `PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts. The golden files are pinned to the environment they were recorded in (`ENV`); on another platform or with other package versions they fail and name the difference.
+The tests need `postfx` and `caption-audit` importable: `pip install -r requirements.txt`, or `PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts.
 
 The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, Select Switch running only the selected lazy branch, and that a genuine type mismatch is still rejected.
 

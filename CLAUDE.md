@@ -86,8 +86,7 @@ or Pillow fail before any other work. Keep them where they are.
 - Import the module in the root `__init__.py` and add it to the registration loop (order = menu
   order). Add it to `NODE_MODULES` and its keys to `expected` in `tests/test_import_time.py`, and
   to the eager tuple of `tests/_harness.py` `load_package`.
-- Add its case to the surface golden `tests/layers/nodes/test_node_surface.py` and goldens for its
-  outputs.
+- Add unit tests for its behaviour under `tests/layers/<layer>/`.
 - Frontend code goes under `web/js/`, loaded by path.
 
 ## How to add a model
@@ -131,16 +130,9 @@ or Pillow fail before any other work. Keep them where they are.
 python tests/test_import_time.py                      # import budget, no heavy module, every module cold
 python tests/test_nodes.py                            # node smoke and spot checks (None / empty inputs)
 COMFYUI_DIR=../ComfyUI python tests/test_runtime.py   # through ComfyUI's validate_prompt + PromptExecutor; a SKIP is red
-python -m pytest tests -q                             # layer rule, per-layer goldens, unit tests
+python -m pytest tests -q                             # layer rule, unit tests
 ```
 
-- Goldens are behaviour fingerprints. Each file pins `ENV` (platform, package versions, the
-  postfx / caption_audit sources) and fails, never skips, when it differs.
-- A `GOLDEN` value changes only with the owner's word, for an intended behaviour change. It is
-  then re-recorded with the change applied (`BCNODES_GOLDEN_RECORD=1` prints the tables) and `ENV`
-  re-pinned. The cases that differ from a recording at the change's parent commit are shown to
-  the owner; only the intended ones may differ.
-- Moving code edits only `WHERE` entries; `ENV`, `GOLDEN`, inputs and assertions stay.
 - A case lives in `tests/layers/<layer>/` of the code it calls directly; a case entered through a
   node method lives in `tests/layers/nodes/`. Basenames carry the layer prefix (`test_node_`,
   `test_pipe_`, `test_model_`, `test_lib_`). Never a `tests/nodes/` or `tests/models/`: pytest

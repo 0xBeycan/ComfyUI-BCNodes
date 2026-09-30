@@ -18,26 +18,28 @@ import os
 import pytest
 import torch
 
-from _golden import Where
-
-WHERE = Where({
-    "arch.DepthAnythingV2": "models.depth_anything_v2.arch:DepthAnythingV2",
-    "round_resolution": "models.depth_anything_v2.inference:round_resolution",
-    "net_size": "models.depth_anything_v2.inference:net_size",
-    "normalize": "models.depth_anything_v2.inference:normalize",
-    "estimate": "models.depth_anything_v2.inference:estimate",
-    "inference.load": "models.depth_anything_v2.inference:load",
-    "load": "models.depth_anything_v2.loader:load",
-    "Loaded.model": "models.depth_anything_v2.loader:_Loaded.model",
-    "Loaded.device": "models.depth_anything_v2.loader:_Loaded.device",
-    "fetch_with_progress": "models.common.download:fetch_with_progress",
-})
+PKG = "models.depth_anything_v2"
 
 
-def test_arch_forward_random_init(bcnodes):
+@pytest.fixture
+def arch(bcnodes):
+    return bcnodes[f"{PKG}.arch"]
+
+
+@pytest.fixture
+def inference(bcnodes):
+    return bcnodes[f"{PKG}.inference"]
+
+
+@pytest.fixture
+def loader(bcnodes):
+    return bcnodes[f"{PKG}.loader"]
+
+
+def test_arch_forward_random_init(arch):
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(0)
-        net = WHERE["arch.DepthAnythingV2"]().eval()
+        net = arch.DepthAnythingV2().eval()
     x = torch.rand((2, 3, 28, 42), generator=torch.Generator().manual_seed(0))
     with torch.no_grad():
         out = net(x)
@@ -46,9 +48,9 @@ def test_arch_forward_random_init(bcnodes):
     assert bool((out >= 0).all())
 
 
-def test_arch_state_dict_layout(bcnodes):
+def test_arch_state_dict_layout(arch):
     with torch.random.fork_rng(devices=[]):
-        sd = WHERE["arch.DepthAnythingV2"]().state_dict()
+        sd = arch.DepthAnythingV2().state_dict()
     assert len(sd) == 239  # the key count of depth_anything_v2_vits.pth
     assert tuple(sd["pretrained.pos_embed"].shape) == (1, 1370, 384)
     assert tuple(sd["pretrained.patch_embed.proj.weight"].shape) == (384, 3, 14, 14)
@@ -61,8 +63,8 @@ def test_arch_state_dict_layout(bcnodes):
 
 @pytest.mark.parametrize("value, rounded", [(14, 14), (1, 14), (20, 14), (21, 28), (518, 518), (520, 518),
                                              (525, 532), (1024, 1022), (2044, 2044)])
-def test_round_resolution(value, rounded, bcnodes):
-    assert WHERE["round_resolution"](value) == rounded
+def test_round_resolution(value, rounded, inference):
+    assert inference.round_resolution(value) == rounded
 
 
 @pytest.mark.parametrize("h, w, resolution, size", [
@@ -73,15 +75,15 @@ def test_round_resolution(value, rounded, bcnodes):
     (100, 1000, 14, (14, 140)),
     (40, 60, 28, (28, 42)),
 ])
-def test_net_size(h, w, resolution, size, bcnodes):
-    got = WHERE["net_size"](h, w, resolution)
+def test_net_size(h, w, resolution, size, inference):
+    got = inference.net_size(h, w, resolution)
     assert got == size
     assert all(side % 14 == 0 and side >= resolution for side in got)
 
 
-def test_normalize_near_is_white(bcnodes):
+def test_normalize_near_is_white(inference):
     inv = torch.tensor([[[1.0, 2.0], [3.0, 5.0]], [[4.0, 4.0], [4.0, 4.0]]])
-    out = WHERE["normalize"](inv)
+    out = inference.normalize(inv)
     assert torch.equal(out[0], torch.tensor([[0.0, 0.25], [0.5, 1.0]]))
     assert torch.equal(out[1], torch.zeros(2, 2))
 
@@ -100,11 +102,11 @@ class _NearLeft(torch.nn.Module):
         return torch.linspace(10.0, 1.0, w).view(1, 1, w).expand(b, h, w).clone()
 
 
-def test_estimate_shape_and_direction(bcnodes, monkeypatch):
+def test_estimate_shape_and_direction(inference, monkeypatch):
     net = _NearLeft()
-    WHERE.patch(monkeypatch, "inference.load", lambda: (net, torch.device("cpu")))
+    monkeypatch.setattr(inference, "load", lambda: (net, torch.device("cpu")), raising=True)
     rgb = torch.rand((2, 30, 50, 3), generator=torch.Generator().manual_seed(1))
-    out = WHERE["estimate"](rgb, 30)
+    out = inference.estimate(rgb, 30)
     assert out.shape == (2, 30, 50)
     assert out.dtype == torch.float32
     assert net.seen == [(1, 3, 28, 42), (1, 3, 28, 42)]  # 30 -> 28; 50 * 28 / 30 = 46.7 -> 42
@@ -113,12 +115,12 @@ def test_estimate_shape_and_direction(bcnodes, monkeypatch):
 
 
 @pytest.fixture
-def weights_dir(bcnodes, monkeypatch, tmp_path):
+def weights_dir(loader, monkeypatch, tmp_path):
     fp = __import__("sys").modules["folder_paths"]
     monkeypatch.setattr(fp, "models_dir", str(tmp_path / "models"), raising=True)
     monkeypatch.setattr(fp, "folder_names_and_paths", {}, raising=True)
-    WHERE.patch(monkeypatch, "Loaded.model", None)
-    WHERE.patch(monkeypatch, "Loaded.device", None)
+    monkeypatch.setattr(loader._Loaded, "model", None, raising=True)
+    monkeypatch.setattr(loader._Loaded, "device", None, raising=True)
     return tmp_path / "models" / "depthanything"
 
 
@@ -128,7 +130,7 @@ class _Tiny(torch.nn.Module):
         self.w = torch.nn.Parameter(torch.zeros(1))
 
 
-def test_loader_reads_depthanything_folder(weights_dir, monkeypatch):
+def test_loader_reads_depthanything_folder(weights_dir, arch, loader, monkeypatch):
     weights_dir.mkdir(parents=True)
     (weights_dir / "depth_anything_v2_vits.pth").write_bytes(b"")
     calls = []
@@ -138,20 +140,21 @@ def test_loader_reads_depthanything_folder(weights_dir, monkeypatch):
         return {"w": torch.ones(1)}
 
     monkeypatch.setattr(torch, "load", fake_load, raising=True)
-    WHERE.patch(monkeypatch, "arch.DepthAnythingV2", _Tiny)
-    model, device = WHERE["load"]()
-    again, _ = WHERE["load"]()
+    monkeypatch.setattr(arch, "DepthAnythingV2", _Tiny, raising=True)
+    model, device = loader.load()
+    again, _ = loader.load()
     assert again is model
     assert calls == [("depth_anything_v2_vits.pth", "depthanything", "cpu", True)]
     assert float(model.w.detach()) == 1.0 and not model.training
     assert device == torch.device("cpu")
 
 
-def test_weights_download_url(weights_dir, monkeypatch):
+def test_weights_download_url(weights_dir, arch, loader, bcnodes, monkeypatch):
     fetched = []
-    WHERE.patch(monkeypatch, "fetch_with_progress", lambda url, path, label: fetched.append((url, path, label)) or path)
+    monkeypatch.setattr(bcnodes["models.common.download"], "fetch_with_progress",
+                        lambda url, path, label: fetched.append((url, path, label)) or path, raising=True)
     monkeypatch.setattr(torch, "load", lambda *a, **k: {"w": torch.ones(1)}, raising=True)
-    WHERE.patch(monkeypatch, "arch.DepthAnythingV2", _Tiny)
-    WHERE["load"]()
+    monkeypatch.setattr(arch, "DepthAnythingV2", _Tiny, raising=True)
+    loader.load()
     assert fetched == [("https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/main/depth_anything_v2_vits.pth",
                         str(weights_dir / "depth_anything_v2_vits.pth"), "depth_anything_v2_vits.pth")]

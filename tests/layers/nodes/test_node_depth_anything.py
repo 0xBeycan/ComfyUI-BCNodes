@@ -6,12 +6,15 @@ loading the model."""
 import pytest
 import torch
 
-from _golden import Where
 
-WHERE = Where({
-    "node": "nodes.depth_anything:DepthAnythingV2",
-    "inference.load": "models.depth_anything_v2.inference:load",
-})
+@pytest.fixture
+def node(bcnodes):
+    return bcnodes["depth_anything"].DepthAnythingV2
+
+
+@pytest.fixture
+def inference(bcnodes):
+    return bcnodes["models.depth_anything_v2.inference"]
 
 
 class _NearTop(torch.nn.Module):
@@ -28,15 +31,15 @@ class _NearTop(torch.nn.Module):
 
 
 @pytest.fixture
-def net(bcnodes, monkeypatch):
+def net(inference, monkeypatch):
     stand_in = _NearTop()
-    WHERE.patch(monkeypatch, "inference.load", lambda: (stand_in, torch.device("cpu")))
+    monkeypatch.setattr(inference, "load", lambda: (stand_in, torch.device("cpu")), raising=True)
     return stand_in
 
 
-def test_output_matches_input_size(net):
+def test_output_matches_input_size(net, node):
     image = torch.rand((3, 37, 61, 3), generator=torch.Generator().manual_seed(7))
-    (depth,) = WHERE["node"]().estimate_depth(image, 56)
+    (depth,) = node().estimate_depth(image, 56)
     assert depth.shape == (3, 37, 61, 3)
     assert depth.dtype == torch.float32
     assert torch.equal(depth[..., 0], depth[..., 1]) and torch.equal(depth[..., 0], depth[..., 2])
@@ -46,10 +49,10 @@ def test_output_matches_input_size(net):
 
 
 @pytest.mark.parametrize("image", [None, torch.zeros((0, 16, 16, 3))])
-def test_empty_guard(image, bcnodes, monkeypatch):
+def test_empty_guard(image, node, inference, monkeypatch):
     def fail():
         raise AssertionError("the guard loaded the model")
 
-    WHERE.patch(monkeypatch, "inference.load", fail)
-    (depth,) = WHERE["node"]().estimate_depth(image, 518)
+    monkeypatch.setattr(inference, "load", fail, raising=True)
+    (depth,) = node().estimate_depth(image, 518)
     assert depth.shape == (0, 64, 64, 3)

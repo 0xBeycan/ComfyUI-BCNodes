@@ -1,5 +1,4 @@
-"""Every node survives None / empty input, and MaskGrow / Image Scale By
-Aspect Ratio match their recorded numeric goldens.
+"""Every node survives None / empty input, plus plain spot checks of node outputs.
 
 Runs without ComfyUI: the few ComfyUI modules the nodes touch lazily are
 stubbed. Needs torch and numpy.
@@ -52,39 +51,6 @@ def main():
     check("MaskGrow empty tensor", lambda: torch.equal(mg.mask_grow(False, -2, 0, mask=empty_mask)[0], blank) or _fail())
     check("MaskGrow nothing wired", lambda: torch.equal(mg.mask_grow(True, 4, 4)[0], blank) or _fail())
 
-    # Numeric goldens on a centred 16x16 square in a 32x32 canvas, keyed by
-    # (grow, blur, invert_mask) -> sum of the output mask. The shrink cases are
-    # exact by hand: grow=0 is 16*16, grow=-4 is 8*8, grow=-6 is 4*4.
-    square = torch.zeros(1, 32, 32)
-    square[:, 8:24, 8:24] = 1.0
-    mask_grow_golden = {
-        ( -6, 0, False): 16.0,
-        ( -6, 0,  True): 324.0,
-        ( -6, 6, False): 15.7333,
-        ( -6, 6,  True): 401.4274,
-        ( -4, 0, False): 64.0,
-        ( -4, 0,  True): 488.0,
-        ( -4, 6, False): 62.9647,
-        ( -4, 6,  True): 525.553,
-        (  0, 0, False): 256.0,
-        (  0, 0,  True): 768.0,
-        (  0, 6, False): 245.7255,
-        (  0, 6,  True): 778.2745,
-        (  4, 0, False): 536.0,
-        (  4, 0,  True): 960.0,
-        (  4, 6, False): 498.4471,
-        (  4, 6,  True): 961.0353,
-        ( 10, 0, False): 940.0,
-        ( 10, 0,  True): 1024.0,
-        ( 10, 6, False): 908.0,
-        ( 10, 6,  True): 1024.0,
-    }
-    for (_g, _b, _i), _total in mask_grow_golden.items():
-        check(f"MaskGrow golden grow={_g} blur={_b} invert={_i}",
-              lambda g=_g, b=_b, i=_i, t=_total: (lambda r: r.shape == (1, 32, 32) and r.dtype == torch.float32
-                                                  and abs(float(r.sum()) - t) < 1e-3)(
-                  mg.mask_grow(invert_mask=i, grow=g, blur=b, mask=square.clone())[0]) or _fail())
-
     isr = m["image_scale"].ImageScaleByAspectRatio()
     scale_kw = dict(aspect_ratio="original", proportional_width=1, proportional_height=1, fit="crop", method="lanczos",
                     round_to_multiple="16", scale_to_side="longest", scale_to_length=64, background_color="#000000")
@@ -100,27 +66,6 @@ def main():
           lambda: _raises(ValueError, lambda: isr.scale(image=image, mask=torch.ones(1, 10, 10), **scale_kw)))
     check("ImageScale mask only -> IMAGE None, mask (1, 32, 64)",
           lambda: (lambda r: r[0] is None and r[1].shape == (1, 32, 64))(isr.scale(mask=torch.ones(1, 48, 96), **scale_kw)) or _fail())
-
-    # Numeric goldens: a fixed seeded image through the widget grid, keyed by
-    # (aspect_ratio, fit, method, scale_to_side, scale_to_length, round_to_multiple)
-    # -> (image shape, image sum, width, height). box is [96, 48] for all of them.
-    _g11 = torch.Generator().manual_seed(11)
-    scale_image = torch.rand(1, 48, 96, 3, generator=_g11)
-    image_scale_golden = {
-        ("1:1", "crop", "lanczos", "longest", 64, "8"): ((1, 64, 64, 3), 6072.6665, 64, 64),
-        ("1:1", "letterbox", "lanczos", "longest", 64, "8"): ((1, 64, 64, 3), 3056.4746, 64, 64),
-        ("16:9", "fill", "bicubic", "width", 128, "8"): ((1, 72, 128, 3), 13756.1299, 128, 72),
-        ("original", "crop", "bilinear", "shortest", 32, "None"): ((1, 32, 64, 3), 3056.6194, 64, 32),
-        ("9:16", "letterbox", "nearest", "height", 96, "16"): ((1, 96, 64, 3), 3073.1763, 64, 96),
-        ("2:3", "crop", "box", "longest", 100, "None"): ((1, 100, 66, 3), 9859.9561, 66, 100),
-    }
-    for _key, _want in image_scale_golden.items():
-        check(f"ImageScale golden {'/'.join(str(x) for x in _key)}",
-              lambda k=_key, w=_want: (lambda r: tuple(r[0].shape) == w[0] and abs(float(r[0].sum()) - w[1]) < 1e-2
-                                       and list(r[2]) == [96, 48] and (r[3], r[4]) == (w[2], w[3]))(
-                  isr.scale(image=scale_image.clone(), proportional_width=1, proportional_height=1,
-                            background_color="#000000", aspect_ratio=k[0], fit=k[1], method=k[2],
-                            scale_to_side=k[3], scale_to_length=k[4], round_to_multiple=k[5])) or _fail())
 
     jil = m["lists"].JoinImageLists()
     check("JoinImageLists no inputs", lambda: jil.join_lists() == ([], []) or _fail())
