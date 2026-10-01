@@ -6,3 +6,5 @@ member in common/registry.py, so the registry is filled before any lookup.
 """
 
 from . import birefnet  # noqa: F401  (registers the matting checkpoints)
+from . import depth_anything_v2  # noqa: F401  (registers v2-small in the depth family)
+from . import depth_anything_3  # noqa: F401  (registers the v3 models in the depth family)

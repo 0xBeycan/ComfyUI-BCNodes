@@ -7,8 +7,8 @@ server (PromptServer.instance exists); `server`, `aiohttp`, `folder_paths`, PIL 
 imported inside the functions that use them.
 
 At startup the monitor runs when its saved setting says so (user/BCNodes/process_monitor/
-settings.json, written by the ComfyUI setting "BCNodes.ProcessMonitor.Enabled"), so a server
-queued through the API without a browser still gets the black box.
+settings.json, written by the ComfyUI setting "BCNodes.ProcessMonitor.Enabled"; on when there is no
+file), so a server queued through the API without a browser still gets the black box.
 """
 
 import asyncio

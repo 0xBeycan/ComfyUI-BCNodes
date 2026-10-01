@@ -11,13 +11,16 @@
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/models/vision_transformer.py
 #
 # Inference path only: the xFormers branches (MemEffAttention, nested-tensor blocks, SwiGLU)
-# are dropped, so attention is always the plain softmax path the upstream code falls back to
-# without xFormers. Drop path / stochastic depth (training only, rate 0 for the checkpoints)
-# is dropped. Parameter names are unchanged, so the released weights load strict.
+# are dropped. Attention is torch's scaled_dot_product_attention in place of the upstream
+# softmax(q k^T * scale) v written out, with the same scale: the fused kernels (CUDA
+# memory-efficient / flash, CPU flash) never build the [heads, N, N] attention matrix. Drop
+# path / stochastic depth (training only, rate 0 for the checkpoints) is dropped. Parameter
+# names are unchanged, so the released weights load strict.
 
 from typing import Callable, Optional, Tuple, Union
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 
@@ -45,13 +48,10 @@ class Attention(nn.Module):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
 
-        q, k, v = qkv[0] * self.scale, qkv[1], qkv[2]
-        attn = q @ k.transpose(-2, -1)
-
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        dropout_p = self.attn_drop.p if self.training else 0.0
+        x = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, scale=self.scale)
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x

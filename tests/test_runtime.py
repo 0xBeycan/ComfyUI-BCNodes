@@ -64,11 +64,13 @@ async def setup():
     from app.assets.manager import default_asset_manager
 
     server.PromptServer(asyncio.get_event_loop(), default_asset_manager())
-    # Output nodes write files; keep them out of the checkout's output/ and temp/.
+    # Output nodes write files, and the Process Monitor (on by default) its settings and run logs;
+    # keep them out of the checkout's output/, temp/ and user/.
     import folder_paths
     scratch = tempfile.mkdtemp(prefix="bcnodes_runtime_")
     folder_paths.set_output_directory(os.path.join(scratch, "output"))
     folder_paths.set_temp_directory(os.path.join(scratch, "temp"))
+    folder_paths.set_user_directory(os.path.join(scratch, "user"))
     await nodes.init_extra_nodes(init_custom_nodes=False, init_api_nodes=False)
     assert await nodes.load_custom_node(PACK), "pack failed to load"
     print("loaded:", ", ".join(sorted(k for k in nodes.NODE_CLASS_MAPPINGS if k.startswith("BC_"))))
@@ -229,8 +231,6 @@ async def unused_outputs():
 
     lines = Lines()
     logging.getLogger().addHandler(lines)
-    toasts = []  # the toast events (the server also carries the nodes' progress text)
-    instance.send_sync = lambda event, data, sid=None: toasts.append((event, data, sid)) if event == pack_common().EVENT else None
     try:
         def link_after(prompt):
             prompt.update({"4": N("GetImageSize", image=["2", 0]), "5": N("PreviewAny", source=["4", 2])})
@@ -240,30 +240,44 @@ async def unused_outputs():
               out == ("", 1, 4, UNUSED_FULL) and any("the prompt links IMAGE, which its link stamp does not list" in line
                                                       for line in lines.lines), f"{out}")
 
+        # A pack loaded after ours adds its handler, then the server starts the way ComfyUI's
+        # main.py starts it (aiohttp's AppRunner.setup runs the app's on_startup, no socket).
+        from aiohttp import web
+
         lines.lines.clear()
+        ours = instance.on_prompt_handlers[0]
         instance.add_on_prompt_handler(another_pack)
+        runner = web.AppRunner(instance.app)
+        await runner.setup()
         try:
+            check("unused outputs: at startup the link stamp moves after a handler registered after it",
+                  instance.on_prompt_handlers == [another_pack, ours], f"{instance.on_prompt_handlers}")
             out = await unused_submit(unused_executor("CLASSIC"), UNUSED_A)
+            check("unused outputs: ... and the saving stays on, no warning",
+                  out == ("", 1, None, UNUSED_EMPTY) and not any("RAM saving" in line for line in lines.lines), f"{out}")
+
+            # a handler appended after startup still runs after ours: the fallback
+            lines.lines.clear()
+            instance.add_on_prompt_handler(another_pack)
+            out = await unused_submit(unused_executor("CLASSIC"), UNUSED_A)
+            instance.on_prompt_handlers.pop()
+            message = "RAM saving of unused outputs is off for this run: test_runtime changes the prompt after it."
+            check("unused outputs: a handler appended after startup -> off for its prompts, IMAGE full",
+                  out == (None, 1, None, UNUSED_FULL), f"{out}")
+            check("unused outputs: ... with a console line", any(message in line for line in lines.lines), f"{lines.lines}")
         finally:
             instance.on_prompt_handlers.remove(another_pack)
-        message = "RAM saving of unused outputs is off for this run: test_runtime changes the prompt after it."
-        check("unused outputs: another pack's handler after ours -> off, IMAGE full", out == (None, 1, None, UNUSED_FULL), f"{out}")
-        check("unused outputs: ... a console line and the toast event to the prompt's client",
-              toasts == [(pack_common().EVENT, {"message": message}, "test")] and any(message in line for line in lines.lines),
-              f"{toasts}")
+            await runner.cleanup()
 
-        toasts.clear()
         stamp = BCVideoNodesStamp()
         instance.add_on_prompt_handler(stamp)
         try:
             out = await unused_submit(unused_executor("CLASSIC"), UNUSED_A)
         finally:
             instance.on_prompt_handlers.remove(stamp)
-        check("unused outputs: a stamping handler after ours (BCVideoNodes') -> still on",
-              out == ("", 1, None, UNUSED_EMPTY) and toasts == [], f"{out} {toasts}")
+        check("unused outputs: a stamping handler after ours (BCVideoNodes') -> still on", out == ("", 1, None, UNUSED_EMPTY), f"{out}")
     finally:
         logging.getLogger().removeHandler(lines)
-        del instance.send_sync
 
 
 async def main():
@@ -272,6 +286,7 @@ async def main():
 
 async def main():
     await setup()
+    process_monitor_default()
 
     # Join Image Lists: In3 exists only on the canvas; list outputs fan out downstream.
     out, _ = await run({
@@ -613,6 +628,42 @@ async def main():
     check("SaveImage: image_preview off -> counter continues to 002, nothing listed",
           out is not None and os.path.isfile(saved.replace("001", "002")) and out["2"]["images"] == [])
 
+    # Save Image With Caption: ComfyUI's get_save_image_path fills %width% / %height% and continues
+    # the counter from the folder; each image has the caption next to it under its name; Preview as
+    # Text shows the `filename` output.
+    def captioned(batch, folder="output"):
+        return {
+            "1": N("EmptyImage", width=40, height=24, batch_size=batch, color=8355711),
+            "2": N("PrimitiveString", value="a photo of subject_a"),
+            "3": N("BC_SaveImageWithCaption", images=["1", 0], filename_prefix="captioned/shot-%width%x%height%", output_folder=folder,
+                   caption_file_extension="caption", caption=["2", 0]),
+            "4": N("PreviewAny", source=["3", 0]),
+        }
+
+    def listing(folder):
+        return sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+
+    def caption_text(folder, name):
+        with open(os.path.join(folder, name), encoding="utf-8") as f:
+            return f.read()
+
+    folder = os.path.join(folder_paths.get_output_directory(), "captioned")
+    out, executed = await run_twice(captioned(2), "save-image-with-caption")
+    check("SaveImageWithCaption: output/captioned/shot-40x24_00001_.png + .caption, 00002 likewise, the caption as given",
+          out is not None and listing(folder) == ["shot-40x24_00001_.caption", "shot-40x24_00001_.png", "shot-40x24_00002_.caption",
+                                                   "shot-40x24_00002_.png"]
+          and caption_text(folder, "shot-40x24_00002_.caption") == "a photo of subject_a" and out["4"]["text"] == ["shot-40x24_00002_.png"],
+          f"{listing(folder)} {out and out.get('4')}")
+    check("SaveImageWithCaption: cached on the second queue", out is not None and executed == [], f"{executed}")
+    out, _ = await run(captioned(1), "save-image-with-caption-again")
+    check("SaveImageWithCaption: the next prompt continues the counter to 00003",
+          out is not None and out["4"]["text"] == ["shot-40x24_00003_.png"] and len(listing(folder)) == 6, f"{listing(folder)}")
+    dataset = os.path.join(tempfile.mkdtemp(prefix="bcnodes_dataset_"), "set_a")
+    out, _ = await run(captioned(1, dataset), "save-image-with-caption-absolute")
+    check("SaveImageWithCaption: an absolute output_folder is used as it is, the prefix folder inside it",
+          out is not None and listing(os.path.join(dataset, "captioned")) == ["shot-40x24_00001_.caption", "shot-40x24_00001_.png"],
+          f"{listing(dataset)}")
+
     # Image Quality Gate: a flat image has zero entropy and fails; the verdict
     # int drives a Math Expression the way it would drive a switch.
     out, executed = await run_twice({
@@ -657,10 +708,25 @@ def pack_module(suffix):
     return next(m for name, m in sys.modules.items() if name.endswith(suffix))
 
 
+def process_monitor_default():
+    """The pack's own MONITOR is on by default: loaded with no saved setting (the user directory is
+    a temp dir here), it started with its sampler thread and its executor hook. It is stopped
+    again, so the checks after this one run as before."""
+    monitor = pack_module(".nodes.process_monitor").MONITOR
+    module, reason = pack_module(".pipelines.process_monitor.hook").find()
+    check("ProcessMonitor: on by default: started at load with no saved setting, its hook installed",
+          monitor is not None and monitor.settings.enabled and monitor.enabled and module is not None
+          and module.execute is monitor.hook.wrapper, f"{monitor and monitor.status()} {reason}")
+    if monitor is not None:
+        monitor.stop()
+        check("ProcessMonitor: ... stopped again, ComfyUI's executor back", not monitor.enabled
+              and module is not None and module.execute is monitor.hook.original)
+
+
 async def process_monitor_hook():
     """Process Monitor: the execution.py hook point found on this ComfyUI and wrapped around the real
     executor for one armed run, then the same prompt queued again and served from the cache. A
-    Monitor of its own in a temp dir: the pack's MONITOR uses the user directory and stays off."""
+    Monitor of its own in a temp dir: the pack's MONITOR was stopped by process_monitor_default."""
     hook = pack_module(".pipelines.process_monitor.hook")
     mon = pack_module(".pipelines.process_monitor.monitor")
     blackbox = pack_module(".pipelines.process_monitor.blackbox")

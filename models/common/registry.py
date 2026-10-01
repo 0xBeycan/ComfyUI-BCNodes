@@ -6,6 +6,11 @@ lists come from names(), name lookups from get().
 """
 
 MATTING = "matting"
+# A depth entry is a zero-argument loader: it loads its model (kept between runs) and returns
+# predict(frame, resolution, size) -> the relative inverse depth (near = larger) of one (H, W, C)
+# frame, run at short side `resolution` and resampled to size = (height, width), float32 on the
+# compute device.
+DEPTH = "depth"
 
 _FAMILIES = {}
 

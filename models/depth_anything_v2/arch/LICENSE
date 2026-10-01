@@ -10,8 +10,9 @@ The code in this directory is derived from:
   Licensed under the Apache License, Version 2.0.
 
 Modifications for ComfyUI-BCNodes (inference-only paths for the ViT-S
-checkpoint, no xFormers, no cv2 / torchvision) are Copyright (c) 2026 0xbeycan
-and released under the same Apache License, Version 2.0, whose text follows.
+checkpoint, no xFormers, no cv2 / torchvision, attention through torch's
+scaled_dot_product_attention) are Copyright (c) 2026 0xbeycan and released
+under the same Apache License, Version 2.0, whose text follows.
 
 -------------------------------------------------------------------------------
 

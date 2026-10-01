@@ -358,7 +358,8 @@ def test_toggle_installs_and_removes_everything(mon, hk, tmp_path, monkeypatch):
     original = module.execute
     monkeypatch.setattr(mon, "find", lambda: (module, None))
     m = mon.Monitor(str(tmp_path / "pm"), Probe())
-    assert not (tmp_path / "pm").exists()  # off: nothing written
+    assert m.settings.enabled and not m.enabled  # on by default, but only start() starts it
+    assert not (tmp_path / "pm").exists()  # not started: nothing written
     m.set_enabled(True)
     try:
         assert m.enabled and module.execute is m.hook.wrapper and m._thread.is_alive()

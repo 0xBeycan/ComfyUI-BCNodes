@@ -11,7 +11,7 @@ A profile raises NotCounted when an input it needs has no estimate.
 
 import math
 
-from ...libs.geometry import aspect_ratio, round_up_to_multiple, target_size
+from ...libs.geometry import aspect_ratio, round_up_to_multiple, short_side_size, target_size
 from ...libs.resize import plan as resize_plan
 
 F32, F16 = 4, 2
@@ -22,6 +22,9 @@ SEEDVR2_PAD = 16
 TIMELINE_W, TIMELINE_BASE, TIMELINE_PANEL = 1200, 128, 190
 MASK_GUARD_WINDOW = 5  # frames of booleans the mask guard keeps (the frame and 2 either side)
 RENDER_CHUNK = 16  # frames the colored masks are cut at a time
+# BCVLoadVideo's model rules: its frame counts are step * n + 1, and with resolution "source" each side
+# is cut down to a multiple of the grid. Its sizes come from its own node definition (bcv_sizes).
+LOAD_VIDEO_MODELS = {"Wan": {"step": 4, "grid": 16}, "SCAIL": {"step": 4, "grid": 32}, "None": {"step": 1, "grid": 1}}
 
 
 class NotCounted(Exception):
@@ -33,14 +36,16 @@ def is_link(value):
 
 
 class Ctx:
-    """One node as a profile sees it: its widget values, its upstream estimates, the scenario."""
+    """One node as a profile sees it: its widget values, its upstream estimates, the scenario, and
+    which of its output slots some node of the prompt links (`consumed`)."""
 
-    def __init__(self, node, upstream, scenario, env):
+    def __init__(self, node, upstream, scenario, env, consumed):
         self.inputs = node.get("inputs", {})
         self.upstream = upstream
         self.scenario = scenario
         self.env = env
         self.types = env.return_types(node["class_type"])
+        self.consumed = consumed
 
     def widget(self, name, default=None):
         value = self.inputs.get(name, default)
@@ -48,6 +53,9 @@ class Ctx:
 
     def linked(self, name):
         return is_link(self.inputs.get(name))
+
+    def output_linked(self, slot):
+        return slot in self.consumed
 
     def tensor(self, name, required=True):
         """The upstream estimate of input `name` as a fresh dict (a passed-on output is no longer
@@ -105,6 +113,18 @@ def shared(est):
     return dict(est, shared=True)
 
 
+def given_size(c, what):
+    """(width, height) from a node's optional width and height inputs, None when neither is given.
+    Raises NotCounted when they come from links (`what`'s size is known at run time only) or only
+    one is given (the node stops with an error)."""
+    if c.linked("width") or c.linked("height"):
+        raise NotCounted(f"width / height come from links: {what} size is known at run time only")
+    width, height = c.widget("width"), c.widget("height")
+    if (width is None) != (height is None):
+        raise NotCounted("only one of width / height is set: the node stops with an error")
+    return None if width is None else (width, height)
+
+
 def timeline(panels):
     """A guard's timeline image at its smallest (one flag row)."""
     return image(1, TIMELINE_BASE + TIMELINE_PANEL * panels, TIMELINE_W)
@@ -138,23 +158,37 @@ def _whole_clip_loader(c):
     return {c.slot("IMAGE"): img}, img["bytes"] // 2, "np.fromiter growth, upper bound 0.5 x output"
 
 
+def _source_size(meta, portrait, grid):
+    """BCVLoadVideo's resolution "source": the video's own size; in the other orientation its centred
+    crop to that orientation's aspect, the short side kept (1920x1080 -> 608x1080); then each side
+    cut down to the grid."""
+    w, h = meta["width"], meta["height"]
+    if portrait != (h > w):
+        aspect, target = w / h, h / w
+        w, h = (round(h * target), h) if aspect > target else (w, round(w / target))
+    return w // grid * grid, h // grid * grid
+
+
 def _bcv_load_video(c):
-    options = c.env.input_types("BCVLoadVideo")["required"]["resolution"][1]
-    step = options.get("bcv_frames", {}).get(c.widget("model"), 4)
     if c.scenario:
         n, w, h = c.scenario["frames"], c.scenario["w"], c.scenario["h"]
     else:
+        model = LOAD_VIDEO_MODELS[c.widget("model")]
         meta = c.env.video_meta(c.widget("video"))
         if meta is None:
             raise NotCounted("the video file cannot be read for its size")
-        w, h = options["bcv_sizes"][c.widget("model")][c.widget("resolution")]
         orientation = c.widget("orientation", "auto")
-        if orientation == "landscape" or (orientation == "auto" and meta["height"] <= meta["width"]):
-            w, h = h, w
+        portrait = meta["height"] > meta["width"] if orientation == "auto" else orientation == "portrait"
+        options = c.env.input_types("BCVLoadVideo")["required"]["resolution"][1]
+        size = options["bcv_sizes"][c.widget("model")][c.widget("resolution")]
+        if size is None:
+            w, h = _source_size(meta, portrait, model["grid"])
+        else:
+            w, h = size if portrait else size[::-1]
         fps = float(c.widget("force_fps") or meta["fps"])
         count = str(c.widget("frame_count") or "").strip()
         n = int(count) if count else int(meta["frames"] * fps / meta["fps"]) - int(c.widget("start_frame", 1)) + 1
-        n = (n - 1) // step * step + 1
+        n = (n - 1) // model["step"] * model["step"] + 1
     img = image(n, h, w)
     info = {"type": "BCV_VIDEO_INFO", "shape": [], "n": n, "h": h, "w": w, "bytes": 0}
     return {c.slot("IMAGE"): img, c.slot("BCV_VIDEO_INFO"): info}, 0, "one frame at a time into a preallocated output"
@@ -302,8 +336,12 @@ def _long_video(held):
 # -- the preprocess (pose, SAM 3.1 Multiplex, face, SCAIL-2) --------------------------------------
 
 def _pose(c):
+    """Pose Detection: the pose images at the frame size, or at width x height when both are given."""
     img = c.tensor("images")
-    return {0: image(img["n"], img["h"], img["w"])}, 0, "drawn frame by frame into a preallocated output"
+    size = given_size(c, "the pose images'")
+    w, h = (img["w"], img["h"]) if size is None else size
+    return ({0: image(img["n"], h, w)}, 0, "drawn frame by frame into a preallocated output; the pose models' "
+            f"({c.widget('pose_model', 'ViTPose-H')}) weights and working set not counted")
 
 
 def _sam_track(c):
@@ -320,8 +358,17 @@ def _face_crop(c):
 def _wan_animate_preprocess(c):
     img = c.tensor("images")
     n, h, w = img["n"], img["h"], img["w"]
-    return ({0: image(n, h, w), 1: image(n, FACE_SIZE, FACE_SIZE, img.get("dtype_bytes", F32)), 2: mask(n, h, w)}, 0,
-            "pose, mask and face crops into preallocated outputs; SAM 3.1's own working set not counted")
+    out = {0: image(n, h, w), 1: image(n, FACE_SIZE, FACE_SIZE, img.get("dtype_bytes", F32)), 2: mask(n, h, w)}
+    # final_mask (a float32 mask) and bg_images (float32 frames) are made only when linked; bg_images is
+    # cut by the final mask, which it makes and drops when final_mask itself is not linked
+    final, background = c.output_linked(7), c.output_linked(8)
+    if final:
+        out[7] = mask(n, h, w)
+    if background:
+        out[8] = image(n, h, w)
+    transient = mask_bytes(n, h, w) if background and not final else 0
+    return (out, transient, "pose, mask, face crops, final mask and background frames (each only when linked) into "
+            "preallocated outputs; SAM 3.1's own working set not counted")
 
 
 def _reference_size(c):
@@ -339,9 +386,8 @@ def _scail2_preprocess(c):
     out = {0: image(n, h, w, img.get("dtype_bytes", F32)) if black else shared(img), 1: image(n, h, w),
            2: image(rn, rh, rw), 3: mask(n, h, w),
            4: shared(c.tensor("reference_mask")) if c.linked("reference_mask") else mask(rn, rh, rw)}
-    # in the pose modes the pose images are drawn and dropped: only pose_data is read
-    pose_images = image_bytes(n, h, w) if c.widget("mode", "prompt") != "prompt" else 0
-    return out, pose_images, "the pose modes' discarded pose images; SAM 3.1's own working set not counted"
+    # the pose modes read only Pose Detection's pose_data: its pose images are not drawn
+    return out, 0, "SAM 3.1's own working set not counted"
 
 
 def _scail2_colored_mask(c):
@@ -464,9 +510,13 @@ def _birefnet(c):
 
 def _depth_anything(c):
     img = c.tensor("image")
-    depth = mask_bytes(img["n"], img["h"], img["w"])
-    # the frame list, its stack and normalize's temporaries reach 5 x the depth before the 3-channel output
-    return {0: image(img["n"], img["h"], img["w"])}, 2 * depth, "frame list, stack and normalize temporaries"
+    size = given_size(c, "the depth map's")
+    if size is None:
+        height, width = short_side_size(img["h"], img["w"], c.widget("resolution", 518))
+    else:
+        width, height = size
+    return {0: image(img["n"], height, width)}, 0, \
+        "one frame at a time into a preallocated output; the network's working set not counted"
 
 
 def _postfx_apply(c):
@@ -524,7 +574,7 @@ PROFILES = {
     "BCVWanAnimate2LongVideoSampler": _long_video(("pose_video", "face_video", "background_video")),
     "BCVSCAIL2LongVideoSampler": _long_video(("pose_video", "pose_video_mask")),
     # the preprocess
-    "BCVPoseDetection": _pose, "BCVSapiens2Pose": _pose, "BCVSAM3VideoTrack": _sam_track, "BCVFaceCrop": _face_crop,
+    "BCVPoseDetection": _pose, "BCVSAM3VideoTrack": _sam_track, "BCVFaceCrop": _face_crop,
     "BCVWanAnimatePreprocess": _wan_animate_preprocess, "BCVSCAIL2Preprocess": _scail2_preprocess,
     "BCVSCAIL2ColoredMask": _scail2_colored_mask,
     "BCVPoseGuard": _pose_guard, "BCVMaskGuard": _mask_guard(3), "BCVWanAnimatePreprocessGuard": _mask_guard(4),

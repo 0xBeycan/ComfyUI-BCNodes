@@ -87,13 +87,14 @@ def compute_device(choice):
 # - At run time the node also reads the final PROMPT: a link to a heavy output that the stamp does
 #   not list returns that output full, with a warning.
 # - An on_prompt handler of another pack that runs after ours could add a link the stamp never saw,
-#   and a cached empty output would then reach it. So when one is registered after ours, the stamp
-#   is left out for that prompt (every output full) and the console and a toast (EVENT,
-#   web/js/unused_outputs.js) name the pack. Handlers marked `bc_link_stamp` (this pack's and
-#   ComfyUI-BCVideoNodes') only write their own stamps and are not counted.
+#   and a cached empty output would then reach it. So the stamping handlers run last: once every
+#   custom node has loaded (the server's aiohttp on_startup), `stamps_last` moves every handler
+#   marked `bc_link_stamp` (this pack's and ComfyUI-BCVideoNodes', which does the same) to the end
+#   of the list. A handler appended after that still turns the stamp off for its prompts (every
+#   output full), with a console line naming its pack. Handlers marked `bc_link_stamp` only write
+#   their own stamps and are not counted.
 
 STAMP = "bc_linked_heavy"
-EVENT = "bcnodes.unused_outputs"
 # not `prompt`: a hidden input overwrites a widget of the same name
 LINK_INPUTS = {"prompt_graph": "PROMPT", "unique_id": "UNIQUE_ID"}
 
@@ -169,10 +170,8 @@ class LinkStamp:
             else:
                 inputs[STAMP] = stamps[node_id]
         if after:
-            message = (f"RAM saving of unused outputs is off for this run: {', '.join(after)} "
-                       f"{'changes' if len(after) == 1 else 'change'} the prompt after it.")
-            logging.warning("BCNodes: %s", message)
-            self.server.send_sync(EVENT, {"message": message}, json_data.get("client_id"))
+            logging.warning("BCNodes: RAM saving of unused outputs is off for this run: %s %s the prompt after it.",
+                            ", ".join(after), "changes" if len(after) == 1 else "change")
         return json_data
 
     def packs_after(self):
@@ -184,9 +183,25 @@ class LinkStamp:
         return sorted({_pack_of(handler) for handler in handlers[index + 1:] if not getattr(handler, "bc_link_stamp", False)})
 
 
+def stamps_last(server):
+    """Moves every on_prompt handler marked `bc_link_stamp` to the end of the server's list, in
+    place, both groups in their own order. Idempotent: each pack that stamps runs it once."""
+    handlers = server.on_prompt_handlers
+    stamps = [handler for handler in handlers if getattr(handler, "bc_link_stamp", False)]
+    others = [handler for handler in handlers if not getattr(handler, "bc_link_stamp", False)]
+    if handlers == others + stamps:
+        return
+    after = handlers[handlers.index(stamps[0]):]
+    moved = sorted({_pack_of(handler) for handler in after if not getattr(handler, "bc_link_stamp", False)})
+    handlers[:] = others + stamps
+    logging.info("BCNodes: the link stamps now run after the on_prompt handlers of %s", ", ".join(moved))
+
+
 def register_link_stamp(classes):
     """Adds a LinkStamp for `classes` to ComfyUI's on_prompt handlers and returns it; None outside
-    ComfyUI. The server is read from sys.modules, never imported: importing `server` would load
+    ComfyUI. Also hooks `stamps_last` to the server's startup, which aiohttp runs once, after every
+    custom node has loaded and before the server takes a request (at once when it has started
+    already). The server is read from sys.modules, never imported: importing `server` would load
     aiohttp with the package."""
     server = getattr(getattr(sys.modules.get("server"), "PromptServer", None), "instance", None)
     if server is None:
@@ -194,6 +209,14 @@ def register_link_stamp(classes):
         return None
     handler = LinkStamp(classes, server)
     server.add_on_prompt_handler(handler)
+
+    async def on_startup(app):
+        stamps_last(server)
+
+    if server.app.on_startup.frozen:
+        stamps_last(server)
+    else:
+        server.app.on_startup.append(on_startup)
     return handler
 
 

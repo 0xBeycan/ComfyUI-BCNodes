@@ -433,7 +433,7 @@ app.registerExtension({
 		name: "Process Monitor (RAM / VRAM bars, black box, per-node measurement)",
 		tooltip: "Off: no thread, no hook, no file writes. On: live bars, a run log for the crash report, and per-node measurement when armed from the monitor's modal.",
 		type: "boolean",
-		defaultValue: false,
+		defaultValue: true,
 		onChange: (value) => setEnabled(value),
 	}],
 

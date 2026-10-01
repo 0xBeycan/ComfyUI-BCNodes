@@ -2,7 +2,7 @@
 
 `enabled` mirrors the ComfyUI setting "BCNodes.ProcessMonitor.Enabled": the frontend posts every
 change, and this copy lets the monitor start with ComfyUI when no browser is open (a pod queued
-through the API). The rest are the modal's Settings tab.
+through the API). On by default, like the ComfyUI setting. The rest are the modal's Settings tab.
 """
 
 import json
@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, fields
 
 @dataclass
 class MonitorSettings:
-    enabled: bool = False
+    enabled: bool = True
     black_box: bool = True
     threshold: float = 0.85  # fraction of the RAM limit that triggers the snapshot (and the stop)
     stop_at_threshold: bool = False  # experimental: interrupt the prompt at the threshold

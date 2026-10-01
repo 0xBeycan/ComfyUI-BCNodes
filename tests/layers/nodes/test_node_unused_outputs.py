@@ -4,9 +4,11 @@
   Export's images, Join Image Lists) and one-image outputs (badges, cards, sheets) are not, and a
   node with one output (not an output node) runs only when that output is linked, so it declares
   none;
-- the on_prompt handler's stamp, a stale stamp overwritten, the feature off (stamp removed,
-  console line, toast event) when another pack's handler runs after it, still on when the handler
-  after it is a stamping one (ComfyUI-BCVideoNodes'), the pack named from its module;
+- the on_prompt handler's stamp, a stale stamp overwritten, the feature off (stamp removed, a
+  console line) when another pack's handler runs after it, still on when the handler after it is
+  a stamping one (ComfyUI-BCVideoNodes'), the pack named from its module;
+- the startup hook: the stamping handlers moved to the end of the list (both groups in their own
+  order), idempotent, at once when the server has started already;
 - the node side: no stamp -> every output full; a link the stamp missed -> full and a warning;
 - per node: each unlinked heavy output is a new 0-frame tensor of the full output's dtype and
   trailing shape, every other output equals the full run's, and where the output is a step of its
@@ -17,6 +19,7 @@ The full run is the same node call without a stamp. The runtime behaviour throug
 executor is in tests/test_runtime.py.
 """
 
+import asyncio
 import logging
 import sys
 import types
@@ -120,17 +123,21 @@ def test_the_pass_through_outputs_are_the_inputs(bcnodes):
 # --- the on_prompt handler -------------------------------------------------------------------------
 
 class FakeServer:
-    """What the handler reads of ComfyUI's PromptServer: the handler list, and send_sync."""
+    """What the handler reads of ComfyUI's PromptServer: the handler list, and its aiohttp app."""
 
     def __init__(self):
+        from aiohttp import web
+
         self.on_prompt_handlers = []
-        self.sent = []
+        self.app = web.Application()
 
     def add_on_prompt_handler(self, handler):
         self.on_prompt_handlers.append(handler)
 
-    def send_sync(self, event, data, sid=None):
-        self.sent.append((event, data, sid))
+    def start(self):
+        """What aiohttp's AppRunner.setup does to the app when ComfyUI starts its server."""
+        self.app.on_startup.freeze()
+        asyncio.run(self.app.startup())
 
     def trigger(self, prompt, client_id="client"):
         json_data = {"prompt": prompt, "client_id": client_id}
@@ -161,9 +168,10 @@ def stamps(common, prompt):
     return {node_id: node["inputs"].get(common.STAMP) for node_id, node in prompt.items()}
 
 
-def test_the_handler_stamps_the_linked_heavy_outputs(common, server):
+def test_the_handler_stamps_the_linked_heavy_outputs(common, server, caplog):
+    caplog.set_level(logging.WARNING)
     assert stamps(common, server.trigger(a_prompt())) == {"1": "IMAGE", "2": "MASK,MASK_IMAGE", "3": None, "4": None}
-    assert server.sent == []
+    assert caplog.text == ""
 
 
 def test_the_handler_overwrites_a_stale_stamp(common, server):
@@ -188,25 +196,27 @@ def test_another_packs_handler_after_ours_turns_it_off_and_says_so(common, serve
     prompt["1"]["inputs"][common.STAMP] = ""  # a stamp left from an earlier run goes too
     caplog.set_level(logging.WARNING)
     assert stamps(common, server.trigger(prompt, client_id="abc")) == {"1": None, "2": None, "3": None, "4": None}
-    message = "RAM saving of unused outputs is off for this run: test_node_unused_outputs changes the prompt after it."
-    assert server.sent == [(common.EVENT, {"message": message}, "abc")]
-    assert message in caplog.text
+    assert [r.getMessage() for r in caplog.records] == [
+        "BCNodes: RAM saving of unused outputs is off for this run: test_node_unused_outputs changes the prompt after it."]
 
 
-def test_a_handler_before_ours_and_a_stamping_handler_after_it_keep_it_on(common, server):
-    class BCVideoNodesStamp:  # ComfyUI-BCVideoNodes' handler, as marked there
-        bc_link_stamp = True
+class BCVideoNodesStamp:
+    """ComfyUI-BCVideoNodes' handler, as marked there."""
+    bc_link_stamp = True
 
-        def __call__(self, json_data):
-            return json_data
+    def __call__(self, json_data):
+        return json_data
 
+
+def test_a_handler_before_ours_and_a_stamping_handler_after_it_keep_it_on(common, server, caplog):
     server.on_prompt_handlers.insert(0, another_pack_handler)
     server.add_on_prompt_handler(BCVideoNodesStamp())
+    caplog.set_level(logging.WARNING)
     assert stamps(common, server.trigger(a_prompt()))["1"] == "IMAGE"
-    assert server.sent == []
+    assert caplog.text == ""
 
 
-def test_the_pack_is_named_by_its_folder(server, monkeypatch):
+def test_the_pack_is_named_by_its_folder(server, monkeypatch, caplog):
     # ComfyUI imports a custom node folder as a module named by its path, dots written as _x_
     name = "/comfy/custom_nodes/some_x_pack"
     module = types.ModuleType(name)
@@ -215,11 +225,12 @@ def test_the_pack_is_named_by_its_folder(server, monkeypatch):
     handler = types.FunctionType(another_pack_handler.__code__, {}, "handler")
     handler.__module__ = name + ".hooks"
     server.add_on_prompt_handler(handler)
+    caplog.set_level(logging.WARNING)
     server.trigger(a_prompt())
-    assert "some.pack changes the prompt" in server.sent[0][1]["message"]
+    assert "some.pack changes the prompt" in caplog.records[0].getMessage()
     del module.__file__
     server.trigger(a_prompt())
-    assert "some.pack changes the prompt" in server.sent[1][1]["message"]
+    assert "some.pack changes the prompt" in caplog.records[1].getMessage()
 
 
 def test_registration_reads_the_server_from_sys_modules(common, mappings, monkeypatch, caplog):
@@ -231,6 +242,43 @@ def test_registration_reads_the_server_from_sys_modules(common, mappings, monkey
     monkeypatch.setitem(sys.modules, "server", types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=fake)))
     handler = common.register_link_stamp(mappings)
     assert fake.on_prompt_handlers == [handler] and handler.bc_link_stamp is True
+
+
+def other_pack_handler(json_data):
+    return json_data
+
+
+def test_at_startup_the_stamps_move_after_every_other_handler(common, mappings, monkeypatch, caplog):
+    # packs load in folder order: one before ours, ours, BCVideoNodes', two after; then the server starts
+    fake = FakeServer()
+    monkeypatch.setitem(sys.modules, "server", types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=fake)))
+    fake.add_on_prompt_handler(another_pack_handler)
+    ours = common.register_link_stamp(mappings)
+    theirs = BCVideoNodesStamp()
+    fake.add_on_prompt_handler(theirs)
+    fake.add_on_prompt_handler(other_pack_handler)
+    fake.add_on_prompt_handler(another_pack_handler)
+    caplog.set_level(logging.INFO)
+    fake.start()
+    assert fake.on_prompt_handlers == [another_pack_handler, other_pack_handler, another_pack_handler, ours, theirs]
+    assert "the link stamps now run after the on_prompt handlers of test_node_unused_outputs" in caplog.text
+    caplog.clear()
+    assert stamps(common, fake.trigger(a_prompt()))["1"] == "IMAGE"  # on, no warning
+    assert "RAM saving" not in caplog.text
+    common.stamps_last(fake)  # BCVideoNodes' own startup hook does the same: nothing changes
+    assert fake.on_prompt_handlers == [another_pack_handler, other_pack_handler, another_pack_handler, ours, theirs]
+    assert caplog.text == ""
+
+
+def test_a_stamp_registered_after_startup_moves_at_once(common, mappings, monkeypatch):
+    fake = FakeServer()
+    monkeypatch.setitem(sys.modules, "server", types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=fake)))
+    theirs = BCVideoNodesStamp()
+    fake.add_on_prompt_handler(theirs)
+    fake.add_on_prompt_handler(another_pack_handler)
+    fake.start()
+    ours = common.register_link_stamp(mappings)
+    assert fake.on_prompt_handlers == [another_pack_handler, theirs, ours]
 
 
 # --- the node side ---------------------------------------------------------------------------------

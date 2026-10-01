@@ -20,34 +20,44 @@ nodes/  ->  pipelines/  ->  models/  ->  libs/
 
 The root `__init__.py` only registers: it imports the node modules and merges their mappings (their
 order is the menu order), then registers the link stamp of the unused heavy outputs
-(`register_link_stamp`, below). `WEB_DIRECTORY = "./web"`.
+(`register_link_stamp`, which also hooks `stamps_last` to the server's startup; below).
+`WEB_DIRECTORY = "./web"`.
 It also imports `nodes/process_monitor.py`, which registers no nodes: it registers the Process
 Monitor's HTTP routes and, when the monitor's saved setting is on, starts it (see Process Monitor).
 
 ```
 nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, compute_device (the device widgets),
-                              the unused-heavy-outputs helper (LinkStamp, register_link_stamp, heavy_wanted, wants,
-                              drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (23); social_specs.json is the user-editable platform table
+                              the unused-heavy-outputs helper (LinkStamp, register_link_stamp, stamps_last,
+                              heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
+nodes/<domain>.py             one per domain (24); social_specs.json is the user-editable platform table
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
 pipelines/skin_texture.py     SAM 3 prompts, face gate, mask assembly, texture call
 pipelines/quality_gate.py     shot profiles, QualityCheck, verdict, report, badge
 pipelines/social_export.py    Social Media Export engine: plan, crop/pad, encode, report line
-pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop
+pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop; Save Image With Caption's folder,
+                              caption extension check, save loop
+pipelines/depth_anything.py   Depth Anything: output size (short side, or cover + centre crop), per-frame
+                              normalisation, one depth-family predict per frame
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/seedvr2/            resize, encode, decode, postprocess flows; progress; shared constants
 pipelines/process_monitor/    monitor (sampler thread, runs, per-node records, snapshot), hook (the executor hook),
                               blackbox (run logs, reports), emulate + profiles (estimate, per-node-type costs), settings
-models/common/                registry.py (families), download.py (fetch_with_progress)
+models/common/                registry.py (families matting and depth; a depth entry is a loader returning
+                              `predict`), download.py (fetch_with_progress)
 models/birefnet/              checkpoints (registered under MATTING), weights, loader, inference, arch/ (vendored, MIT)
-models/depth_anything_v2/     Depth Anything V2 Small: weights, loader, inference, arch/ (vendored, Apache-2.0; no registry)
+models/depth_anything_v2/     Depth Anything V2 Small: weights, loader, inference, arch/ (vendored, Apache-2.0); registered
+                              as v2-small in the depth family
+models/depth_anything_3/      Depth Anything 3 over core (comfy.ldm.depth_anything_3, nothing vendored): weights
+                              (Comfy-Org/Depth-Anything-3 into models/geometry_estimation), loader, inference; registered
+                              as v3-small, v3-base, v3-mono-large, v3-metric-large in the depth family
 models/seedvr2/               VAE adapter, tiling, frame-shape rules (no registry)
 models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 3)
 libs/image.py                 tensor_to_pil_u8, pil_to_tensor_hwc, fit_image
 libs/mask.py filters.py       mask ops; the two Gaussians (reflect / replicate), kept apart on purpose
-libs/color.py geometry.py texture.py image_metrics.py
+libs/color.py texture.py image_metrics.py
+libs/geometry.py              integer size arithmetic; short_side_size (a ControlNet preprocessor's output size)
 libs/resize.py                Image Resize: size plan, crop / resample / pad per frame
 libs/math_expression.py       whitelisted AST evaluator with injected resolvers
 libs/download.py              HTTP download with resume, host list, token store
@@ -186,9 +196,10 @@ where it is.
   so an on_prompt handler (`LinkStamp` in `nodes/common.py`, registered by the root `__init__`)
   writes the linked heavy outputs of each heavy node into its inputs as `bc_linked_heavy`; the node
   returns an unlinked one as a 0-frame tensor (or never computes it). No stamp (no server, a direct
-  executor call): every output full. A link the stamp missed: full, with a warning. Another pack's
-  on_prompt handler registered after ours turns the saving off for that prompt, with a console line
-  and a toast (`web/js/unused_outputs.js`); the owner chose that over reordering the handlers.
+  executor call): every output full. A link the stamp missed: full, with a warning. At server
+  startup (aiohttp `on_startup`, after every custom node has loaded) `stamps_last` moves every
+  `bc_link_stamp` handler to the end of the list; a handler added later still turns the saving off
+  for that prompt, with a console line (no toast).
 - A node never resizes itself to its content; previews and widgets scale to the node.
 - Values that can differ between uses are widgets, not constants.
 
@@ -217,9 +228,9 @@ Saved workflows must load and run unchanged. Never change: node keys, display na
 `INPUT_TYPES` names, types, order, defaults and ranges, `RETURN_TYPES`/`RETURN_NAMES`,
 `OUTPUT_NODE`, `web/js` paths, the `/bcnodes/downloader/*` routes and the `bcnodes.downloader`
 event name, the location of `nodes/social_specs.json` and of `luts/`. Also locked: the stamp key
-`bc_linked_heavy` (part of every heavy node's cache key), the `bcnodes.unused_outputs` event the
-toast listens to, and the `bc_link_stamp` marker on the stamping handler, which
-ComfyUI-BCVideoNodes' handler reads to leave ours out of "another pack" (and ours reads on its).
+`bc_linked_heavy` (part of every heavy node's cache key) and the `bc_link_stamp` marker on the
+stamping handler, which ComfyUI-BCVideoNodes' handler reads to leave ours out of "another pack" and
+`stamps_last` reads to move it last (and ours reads on its).
 
 ## Closed decisions
 

@@ -33,7 +33,7 @@ LAYERS = ("nodes", "pipelines", "models", "libs")
 # Node modules the walk must find (the registered nodes live in them).
 NODE_MODULES = ["logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
                 "image_comparer", "power_lora_loader", "everywhere", "seedvr2",
-                "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "skin_texture"]
+                "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption", "skin_texture"]
 HEAVY = [
     "transformers", "timm", "scipy", "cv2", "PIL", "huggingface_hub",
     "safetensors", "kornia", "einops", "torchvision", "folder_paths",
@@ -130,7 +130,7 @@ def main():
         "BC_ImageComparer", "BC_PowerLoraLoader", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
         "BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode", "BC_SeedVR2PostProcess",
         "BC_PostFxApply", "BC_PostFxTheme", "BC_PostFxCustomLook", "BC_PostFxLut", "BC_PostFxSignatureSheet",
-        "BC_CaptionAudit", "BC_SocialMediaExport", "BC_ImageQualityGate", "BC_SaveImage", "BC_SkinTexture",
+        "BC_CaptionAudit", "BC_SocialMediaExport", "BC_ImageQualityGate", "BC_SaveImage", "BC_SaveImageWithCaption", "BC_SkinTexture",
     }
     registered = set(pkg.NODE_CLASS_MAPPINGS)
     if registered != expected:

@@ -16,6 +16,7 @@ import { app } from "../../../scripts/app.js";
 const NODE_TYPE = "BC_AutoBypass";
 const NODE_TITLE = "Auto Bypass";
 const NODE_CATEGORY = "BCNodes/workflow";
+const NODE_DESCRIPTION = "Bypasses its targets automatically when a watched source is empty";
 
 const MODE_ALWAYS = 0; // LiteGraph.ALWAYS
 const MODE_MUTE = 2; // LiteGraph.NEVER
@@ -228,6 +229,11 @@ class AutoBypassNode extends LGraphNode {
 		this.size = this.computeSize();
 	}
 
+	// Workflows saved before the definition had its display name carry the key as the title.
+	onConfigure() {
+		if (this.title === NODE_TYPE) this.title = NODE_TITLE;
+	}
+
 	onConnectionsChange() {
 		if (app.configuringGraph) return;
 		scheduleEvaluateAll(50);
@@ -405,6 +411,16 @@ app.registerExtension({
 	registerCustomNodes() {
 		LiteGraph.registerNodeType(NODE_TYPE, AutoBypassNode);
 		AutoBypassNode.category = NODE_CATEGORY;
+	},
+
+	// With no backend definition the frontend makes one with the node key as its display name and
+	// "Frontend only node for <key>" as its description; the search box and the node library show
+	// them, and a node added from either gets the display name as its title.
+	beforeRegisterVueAppNodeDefs(defs) {
+		const def = defs.find((d) => d.name === NODE_TYPE);
+		if (!def) return;
+		def.display_name = NODE_TITLE;
+		def.description = NODE_DESCRIPTION;
 	},
 
 	setup() {

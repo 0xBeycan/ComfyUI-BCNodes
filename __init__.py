@@ -44,6 +44,7 @@ Nodes:
     BC_SocialMediaExport         per-platform derivatives of a master image, spec-driven
     BC_ImageQualityGate          blur / sharpness / noise / clipping / entropy -> PASS / SO-SO / FAIL
     BC_SaveImage                 save images, folder / file names from prompt values, gallery-only preview
+    BC_SaveImageWithCaption      save images as PNG, a caption file next to each (datasets)
     BC_SkinTexture               micro-texture on skin inside a SAM 3 mask, before upscale and grain
 
 Frontend-only pieces in web/js: BC_AutoBypass, Join Image Lists' growing
@@ -51,13 +52,13 @@ slots, the downloader's node UI and first-open prompt, and the Align buttons
 in the selection toolbox.
 
 Not a node: the Process Monitor (nodes/process_monitor.py, web/js/process_monitor.js),
-off until its ComfyUI setting turns it on.
+on by default; its ComfyUI setting turns it off.
 """
 
 from .nodes import (
     any_switch, birefnet, caption_audit, depth_anything, downloader, everywhere, image_comparer, image_quality_gate, image_scale, lists,
-    logic, mask, math_expression, postfx, power_lora_loader, prompt_list, save_image, seed, seedvr2, select_switch, show_text, skin_texture,
-    social_media_export,
+    logic, mask, math_expression, postfx, power_lora_loader, prompt_list, save_image, save_image_with_caption, seed, seedvr2, select_switch,
+    show_text, skin_texture, social_media_export,
 )
 from .nodes.common import register_link_stamp
 from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's routes and, when on, its sampler)
@@ -66,7 +67,7 @@ NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
                 image_comparer, power_lora_loader, everywhere, seedvr2,
-                postfx, caption_audit, social_media_export, image_quality_gate, save_image, skin_texture):
+                postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(_module.NODE_DISPLAY_NAME_MAPPINGS)
 

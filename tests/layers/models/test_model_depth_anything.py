@@ -1,14 +1,17 @@
 """Depth Anything V2 Small: the vendored architecture, the preprocessing size rule, the
-normalisation, the inference loop and the loader, without the real weights (no downloads).
+predictor and the loader, without the real weights (no downloads).
 
   - arch: DepthAnythingV2() from random init runs a forward on a small input whose sides are
     multiples of 14 and returns (B, H, W), >= 0; its state dict has the ViT-S layout the
     released checkpoint loads strict into (key count, a few shapes, no extra heads);
+  - attention: the DINOv2 Attention (torch's scaled_dot_product_attention) equals the upstream
+    formula written out, proj(softmax(q k^T * head_dim^-0.5) v), with no dropout in eval;
   - round_resolution / net_size: the authors' Resize(lower_bound, keep_aspect_ratio,
     ensure_multiple_of=14) worked out by hand for a few shapes;
-  - normalize: per-frame min-max with the largest inverse depth (nearest) at 1, a flat frame 0;
-  - estimate: with a stand-in net, the output is (B, H, W) at the input size in 0..1, near = 1,
-    and the net sees the rounded short side;
+  - predictor (the "v2-small" entry of the depth family): with a stand-in net, the net sees the
+    rounded short side and the prediction comes back at the size asked for, unnormalised, as
+    the authors' bilinear resize (align_corners=True);
+  - the depth family lists v2-small first, then the four v3 models;
   - loader: the weights come from models/depthanything through torch.load(weights_only=True),
     a strict load, one load for two calls; without the file the authors' HF URL is fetched.
 """
@@ -61,6 +64,22 @@ def test_arch_state_dict_layout(arch):
     assert "pretrained.blocks.12.norm1.weight" not in sd
 
 
+@pytest.mark.parametrize("attn_drop", [0.0, 0.5])
+def test_attention_equals_explicit_softmax(attn_drop, bcnodes):
+    layers = bcnodes[f"{PKG}.arch.dinov2_layers"]
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        attn = layers.Attention(384, num_heads=6, qkv_bias=True, attn_drop=attn_drop).eval()
+    x = torch.randn((2, 37, 384), generator=torch.Generator().manual_seed(1))
+    with torch.no_grad():
+        got = attn(x)
+        q, k, v = attn.qkv(x).reshape(2, 37, 3, 6, 64).permute(2, 0, 3, 1, 4)
+        weights = ((q * 64**-0.5) @ k.transpose(-2, -1)).softmax(dim=-1)
+        expected = attn.proj((weights @ v).transpose(1, 2).reshape(2, 37, 384))
+    assert got.shape == (2, 37, 384)
+    torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-6)
+
+
 @pytest.mark.parametrize("value, rounded", [(14, 14), (1, 14), (20, 14), (21, 28), (518, 518), (520, 518),
                                              (525, 532), (1024, 1022), (2044, 2044)])
 def test_round_resolution(value, rounded, inference):
@@ -81,13 +100,6 @@ def test_net_size(h, w, resolution, size, inference):
     assert all(side % 14 == 0 and side >= resolution for side in got)
 
 
-def test_normalize_near_is_white(inference):
-    inv = torch.tensor([[[1.0, 2.0], [3.0, 5.0]], [[4.0, 4.0], [4.0, 4.0]]])
-    out = inference.normalize(inv)
-    assert torch.equal(out[0], torch.tensor([[0.0, 0.25], [0.5, 1.0]]))
-    assert torch.equal(out[1], torch.zeros(2, 2))
-
-
 class _NearLeft(torch.nn.Module):
     """Stands in for the model: inverse depth falls from the left edge (near) to the right
     (far); records the input shape it is given."""
@@ -102,16 +114,24 @@ class _NearLeft(torch.nn.Module):
         return torch.linspace(10.0, 1.0, w).view(1, 1, w).expand(b, h, w).clone()
 
 
-def test_estimate_shape_and_direction(inference, monkeypatch):
+def test_predictor_sizes_and_direction(inference, monkeypatch):
     net = _NearLeft()
     monkeypatch.setattr(inference, "load", lambda: (net, torch.device("cpu")), raising=True)
-    rgb = torch.rand((2, 30, 50, 3), generator=torch.Generator().manual_seed(1))
-    out = inference.estimate(rgb, 30)
-    assert out.shape == (2, 30, 50)
-    assert out.dtype == torch.float32
-    assert net.seen == [(1, 3, 28, 42), (1, 3, 28, 42)]  # 30 -> 28; 50 * 28 / 30 = 46.7 -> 42
-    assert float(out.min()) == 0.0 and float(out.max()) == 1.0
-    assert bool((out[:, :, 0] > out[:, :, -1]).all()), "the near (left) side must be the bright one"
+    predict = inference.predictor()
+    frame = torch.rand((30, 50, 3), generator=torch.Generator().manual_seed(1))
+    pred = predict(frame, 30, (17, 29))
+    assert net.seen == [(1, 3, 28, 42)]  # 30 -> 28; 50 * 28 / 30 = 46.7 -> 42
+    assert pred.shape == (17, 29) and pred.dtype == torch.float32
+    expected = torch.nn.functional.interpolate(torch.linspace(10.0, 1.0, 42).view(1, 1, 1, 42).expand(1, 1, 28, 42),
+                                               size=(17, 29), mode="bilinear", align_corners=True)[0, 0]
+    assert torch.allclose(pred, expected)
+    assert float(pred[0, 0]) == 10.0 and float(pred[0, -1]) == 1.0  # not normalised: the pipeline does that
+
+
+def test_depth_family_order(bcnodes):
+    registry = bcnodes["models.common.registry"]
+    assert registry.names(registry.DEPTH) == ["v2-small", "v3-small", "v3-base", "v3-mono-large", "v3-metric-large"]
+    assert registry.get(registry.DEPTH, "v2-small") is bcnodes[f"{PKG}.inference"].predictor
 
 
 @pytest.fixture

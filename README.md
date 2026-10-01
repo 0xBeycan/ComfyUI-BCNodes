@@ -26,7 +26,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_AnythingEverywhere` | Anything Everywhere | Feeds unconnected inputs of a type at prompt time |
 | `BC_FastGroupsBypasser` | Fast Groups Bypasser | One bypass toggle per group |
 | `BC_BiRefNetRemoveBackground` | BiRefNet Remove Background | Background removal with BiRefNet, plain torch |
-| `BC_DepthAnythingV2` | Depth Anything V2 | Depth map with Depth Anything V2 Small (Apache-2.0), near = white, plain torch |
+| `BC_DepthAnythingV2` | Depth Anything | Depth map with Depth Anything V2 Small or Depth Anything 3 (Small, Base, Mono-Large, Metric-Large; all Apache-2.0), near = white, at a ControlNet preprocessor's size or exactly width x height |
 | `BC_SeedVR2Resize` | SeedVR2 Resize | Original image → the padded frame SeedVR2 encodes (lanczos downscale, shortest-edge antialiased bicubic, pad 16, 4n+1 frames) plus the colour reference |
 | `BC_SeedVR2VAEEncode` | SeedVR2 VAE Encode | SeedVR2 VAE encode with the frames streamed from RAM slice by slice, so VRAM does not grow with the frame count |
 | `BC_SeedVR2VAEDecode` | SeedVR2 VAE Decode | SeedVR2 VAE decode with every decoded slice streamed to RAM, so VRAM does not grow with the frame count |
@@ -41,6 +41,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_SocialMediaExport` | Social Media Export | One platform-ready derivative per ticked platform, minimum crop, spec-driven |
 | `BC_ImageQualityGate` | Image Quality Gate | Blur / sharpness / noise / clipping / entropy → `PASS` / `SO-SO` / `FAIL` badge, verdict and scores |
 | `BC_SaveImage` | Save Image | Saves images with folder / file names built from prompt widget values, any Pillow format, prompt + workflow embedded; preview only in the gallery, never under the node |
+| `BC_SaveImageWithCaption` | Save Image With Caption | Saves images as PNG and, with a caption connected, the caption next to each image under the same name, for training datasets |
 | `BC_SkinTexture` | Skin Texture | Micro-texture on skin inside a SAM 3 mask: boosts the image's own detail and multiplies in a synthetic pore field, in linear light |
 | — | Align | Align / distribute buttons in the selection toolbox |
 | — | Process Monitor | Not a node: live RAM / VRAM bars, an estimate before a run, per-node measurement, and the reason a killed run died (see [Process Monitor](#process-monitor)) |
@@ -51,7 +52,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | --- | --- |
 | `BCNodes/logic` | Logic Boolean, Math Expression, Any Switch, Select Switch, Seed |
 | `BCNodes/mask` | Mask Fill Holes, MaskGrow, Draw Mask On Image, Blockify Mask, Repeat Mask Batch, Is Mask Empty, BiRefNet Remove Background |
-| `BCNodes/image` | Image Scale By Aspect Ratio, Image Resize, Join Image Lists, Depth Anything V2, Social Media Export, Save Image, Skin Texture |
+| `BCNodes/image` | Image Scale By Aspect Ratio, Image Resize, Join Image Lists, Depth Anything, Social Media Export, Save Image, Save Image With Caption, Skin Texture |
 | `BCNodes/postfx` | PostFx Apply, Theme, Custom Look, LUT, Signature Sheet |
 | `BCNodes/analysis` | Image Quality Gate, Caption Audit |
 | `BCNodes/text` | Prompt List, Show Text |
@@ -208,15 +209,27 @@ Weights are fetched from Hugging Face on the node's first run — never at impor
 
 Licenses: the BiRefNet and Swin Transformer code is MIT (see [`models/birefnet/arch/LICENSE`](models/birefnet/arch/LICENSE)); the checkpoints are published under MIT by their authors.
 
-### `BC_DepthAnythingV2` — Depth Anything V2
+### `BC_DepthAnythingV2` — Depth Anything
 
-`image` (`IMAGE`), `resolution` (`INT`, default `518`, 14–2044, step 14) → `depth` (`IMAGE`, grayscale in all three channels, the input's size).
+`image` (`IMAGE`), `resolution` (`INT`, default `518`, 14–2044, step 14); optional `model` (default `v2-small`) and `width`, `height` (`INT` sockets, both or neither) → `depth` (`IMAGE`, grayscale in all three channels).
 
-The depth map is relative, normalised per frame: nearest = white, farthest = black — the convention ControlNet depth models expect, so no invert is needed. Each frame is preprocessed as the authors' `image2tensor`: resized with its aspect kept so the short side is `resolution` (rounded to a multiple of 14) and both sides are multiples of 14, bicubic, ImageNet-normalised; the prediction is resized back to the input size bilinearly. `518` is the size the model was trained at; a higher value gives finer edges and costs more memory and time.
+| `model` | Model | Weights, fetched on first use |
+| --- | --- | --- |
+| `v2-small` | Depth-Anything-V2-Small, this pack's own code | `depth_anything_v2_vits.pth` (~99 MB) into `ComfyUI/models/depthanything/` |
+| `v3-small` | DA3-Small, through ComfyUI core | `depth_anything_3_small.safetensors` (137,254,980 B) |
+| `v3-base` | DA3-Base, through ComfyUI core | `depth_anything_3_base.safetensors` (541,524,124 B) |
+| `v3-mono-large` | DA3Mono-Large, through ComfyUI core | `depth_anything_3_mono_large.safetensors` (1,336,748,056 B) |
+| `v3-metric-large` | DA3Metric-Large, through ComfyUI core | `depth_anything_3_metric_large.safetensors` (1,336,748,056 B) |
 
-Only Depth-Anything-V2-**Small** (ViT-S) is offered: it is the only Depth Anything V2 size released under Apache-2.0 (Base, Large and Giant are CC-BY-NC). The architecture (DPT head + DINOv2 ViT-S) lives in [`models/depth_anything_v2/arch/`](models/depth_anything_v2/arch/) as a plain `nn.Module` — no `transformers`, no xFormers. The authors' `depth_anything_v2_vits.pth` (~99 MB, from `depth-anything/Depth-Anything-V2-Small`) is fetched on the node's first run — never at import — into `ComfyUI/models/depthanything/`, through the pack's own downloader, loaded with `torch.load(weights_only=True)`, and kept loaded between runs. fp32 on every device.
+Size: with `width` and `height` not connected, the depth map's short side is `resolution` and its long side keeps the input's aspect, each side rounded half to even — the size comfyui_controlnet_aux's Depth Anything preprocessor gives for that resolution. Connected, it is exactly `width` × `height` (a ControlNet hint at the latent's pixel size, say): a frame of another aspect is covered with its aspect kept and centre-cropped, as core's ControlNet cuts a hint (`center`). The prediction is resampled once, bilinearly, straight to that size. `resolution` is also the short side the model sees, rounded to a multiple of 14: `518` is the size V2 was trained at; a higher value gives finer edges and costs more memory and time.
 
-Licenses: the Depth Anything V2 and DINOv2 code is Apache-2.0 (see [`models/depth_anything_v2/arch/LICENSE`](models/depth_anything_v2/arch/LICENSE)); the Small checkpoint is published under Apache-2.0 by its authors.
+Values: relative, normalised per frame (min–max): nearest = white, farthest = black — the convention ControlNet depth models expect, so no invert is needed. V2 predicts relative inverse depth, used as it is. DA3 predicts depth: it is inverted (1 / depth) and clipped to its 2nd–98th percentiles, as the DA3 authors' `visualize_depth` does; the metric model gives no metres here (its scale cancels in the normalisation). The Mono and Metric models' sky (probability ≥ 0.3) is set far, as the authors' forward does.
+
+V2: each frame is preprocessed as the authors' `image2tensor` (resized with its aspect kept so the short side is `resolution` and both sides are multiples of 14, bicubic, ImageNet-normalised). Only Depth-Anything-V2-**Small** (ViT-S) is offered: it is the only Depth Anything V2 size released under Apache-2.0 (Base, Large and Giant are CC-BY-NC). The architecture (DPT head + DINOv2 ViT-S) lives in [`models/depth_anything_v2/arch/`](models/depth_anything_v2/arch/) as a plain `nn.Module` — no `transformers`, no xFormers. Attention runs through torch's `scaled_dot_product_attention`, with the same formula and scale as upstream, so the `[heads, N, N]` attention matrix is never built (the memory-efficient kernel on CUDA in fp32, the flash kernel on the CPU). At resolution 1288 on a 9:16 frame (15,089 tokens) that matrix is 5.1 GiB in fp32, and the explicit path held two of them, the scores and their softmax: about 10 GiB (computed). The authors' `depth_anything_v2_vits.pth` (from `depth-anything/Depth-Anything-V2-Small`) is fetched on the node's first run — never at import — through the pack's own downloader, loaded with `torch.load(weights_only=True)`, and kept loaded between runs. fp32 on every device.
+
+DA3: the v3 models run ComfyUI core's Depth Anything 3 — its loader, its preprocessing (`lower_bound_resize`) and its forward, in the dtype core loads the model in, one frame at a time — so they need a ComfyUI with core DA3 (commit 5ece24e7, 2026-06-10); without it the node says to update ComfyUI or choose `v2-small`. The weights are Comfy-Org's repackage (`Comfy-Org/Depth-Anything-3`), fetched into `ComfyUI/models/geometry_estimation/`, the folder core's Load Depth Anything 3 node reads, so the two share them. One model is kept loaded at a time.
+
+Licenses: the Depth Anything V2 and DINOv2 code is Apache-2.0 (see [`models/depth_anything_v2/arch/LICENSE`](models/depth_anything_v2/arch/LICENSE)); the V2 Small checkpoint is published under Apache-2.0 by its authors. DA3-Small, DA3-Base, DA3Mono-Large and DA3Metric-Large are Apache-2.0 (the authors' model cards and the Comfy-Org repackage); DA3-Large, DA3-Giant and DA3Nested are CC-BY-NC-4.0 and not offered. No DA3 code is vendored: it is core's, imported at run time.
 
 ### `BC_MathExpression` — Math Expression
 
@@ -435,6 +448,18 @@ Model names lose their `.safetensors` / `.ckpt` / `.pt` / `.bin` / `.pth` extens
 
 `image_preview` only decides whether the saved images are listed in the queue / history gallery. Nothing is ever drawn under the node, so the node keeps the size it was given (`web/js/save_image.js` switches the frontend's output preview off for this node type). Errors while writing raise.
 
+### `BC_SaveImageWithCaption` — Save Image With Caption
+
+`images` (`IMAGE`), optional `caption` (`STRING` input) → `filename` (the last image's file name). Saves each image as a PNG with ComfyUI's own naming, `prefix_00001_.png`, and, with `caption` connected, the caption next to it under the same name, `prefix_00001_.txt`: the layout a training dataset needs. A small node on purpose; Save Image is the one with the name grammar, the formats and the job data.
+
+| Widget | Default | Meaning |
+| --- | --- | --- |
+| `filename_prefix` | `ComfyUI` | The name before the counter. Takes `%date:yyyy-MM-dd%` and `%Node.widget%` (filled in by the frontend when the prompt is queued, as for ComfyUI's Save Image), `%year%` … `%second%`, `%width%`, `%height%`, `%batch_num%` (the image's index in the batch) and `sub/` folders. |
+| `output_folder` | `output` | `output` is ComfyUI's output folder; `output/my_dataset` or `my_dataset` a folder inside it; an absolute path any folder, created when missing. A relative path that leads out of the output folder is refused. |
+| `caption_file_extension` | `.txt` | One of `.txt`, `.caption`, `.json`, `.yaml`, `.yml`, `.md`, `.csv`, `.tsv`, `.xml`, `.log`, `.ini`, `.toml` (the dot may be left out); anything else is an error. |
+
+The counter continues from the files in the folder and never overwrites one: a name whose image or caption file exists already is passed over. The prompt and the workflow are embedded in the PNG unless ComfyUI runs with `--disable-metadata`. Nothing is drawn under the node.
+
 ### `BC_SkinTexture` — Skin Texture
 
 Rendered skin comes out as a smooth gradient, and grain laid on top of it reads as noise over plastic. This node puts a surface under the grain. Inside a skin mask it does two things, both in linear light and both as ratios, so colour is untouched and nothing moves:
@@ -457,6 +482,8 @@ For keeping things tidy while dragging, ComfyUI's own **Settings → LiteGraph �
 A frontend-only node that watches a source (LoadImage, VHS_LoadVideo, ...) and flips its targets between **ACTIVE** and **BYPASS** automatically: empty source → targets bypassed, source loaded → targets active.
 
 No Python execution. The node is virtual — it never appears in the prompt sent to the backend; it only rewrites `mode` on the nodes wired into it. It lives entirely in [`web/js/auto_bypass.js`](web/js/auto_bypass.js).
+
+With no Python side, the frontend would title the node with its key; the node's definition carries its display name, so it is titled Auto Bypass from the search box and the node library alike, and a workflow saved with the title `BC_AutoBypass` gets `Auto Bypass` when it loads.
 
 #### The problem it solves
 
@@ -520,17 +547,42 @@ When a prompt is queued, the pack writes which of these outputs are connected in
 inputs (`bc_linked_heavy`), which makes the link state part of ComfyUI's cache key.
 
 The limit: another custom node pack can change a queued prompt after this pack has read it (an
-`on_prompt` handler registered after this pack's). A link it adds could then reach a cached empty
-output, so while such a handler is installed the saving is off: every output comes out full, as
-without this feature, and the console and a toast say "RAM saving of unused outputs is off for this
-run: <pack> changes the prompt after it." ComfyUI-BCVideoNodes does the same for its own nodes and
-is not counted.
+`on_prompt` handler that runs after this pack's), and a link it adds could then reach a cached empty
+output. Once every custom node has loaded (at server startup), this pack moves its handler (and
+ComfyUI-BCVideoNodes') after every other pack's. A handler added later, while ComfyUI runs, still
+runs after it: for such a prompt the saving is off, every output comes out full as without this
+feature, and the console says "RAM saving of unused outputs is off for this run: <pack> changes the
+prompt after it." ComfyUI-BCVideoNodes does the same for its own nodes and is not counted.
+
+## Measured against KJNodes and VideoHelperSuite
+
+One Wan Animate replacement workflow, run once with KJNodes (d3cfe21) and VideoHelperSuite
+(4d907be) and once with this pack (075ad7a) and ComfyUI-BCVideoNodes in their place: RTX PRO 6000
+Blackwell (96 GB), ComfyUI 79be670e, a 1080 x 1920, 30 fps clip of 612 frames loaded at 720p (609
+frames of 720 x 1280), the mask nodes on the CPU. Per node: the Process Monitor's time, RAM rise (the node's peak minus its start,
+the container's working set sampled every 100 ms) and output size (what ComfyUI keeps in its
+cache).
+
+| Step, 609 frames | KJNodes | This pack |
+| --- | --- | --- |
+| Grow by 10, no blur | GrowMaskWithBlur (expand 10): 1.2 s, 6.33 GiB, 4.18 GiB (a second, inverted mask) | MaskGrow (grow 10, blur 0): 0.8 s, 2.09 GiB, 2.09 GiB |
+| Blockify, 32 | BlockifyMask: 1.0 s, 4.19 GiB, 2.09 GiB | Blockify Mask: 0.5 s, 2.10 GiB, 2.09 GiB |
+| Paint the mask black | DrawMaskOnImage (`0, 0, 0`): 1.3 s, 19.73 GiB, 6.27 GiB | Draw Mask On Image (`0, 0, 0`): 0.5 s, 6.29 GiB, 6.27 GiB |
+
+Image Resize: the earlier workflow resized the 609 frames from 1080 x 1920 with ImageResizeKJv2
+(lanczos, crop): 13.2 s, a 12.57 GiB RAM rise, 6.27 GiB of output, kept next to the 14.18 GiB of
+full-size frames; the new one loads the video at 720 x 1280 with ComfyUI-BCVideoNodes' Load Video
+instead, so no video resize ran. On single images (to 720 x 1280, in a second workflow that
+animates one image) ImageResizeKJv2 and Image Resize took 0.02-0.03 s each, either pack.
+
+Repeat Mask Batch: one 720 x 1280 mask to 81 frames, VHS Duplicate Masks and Repeat Mask Batch
+both 0.01 s and a 0.28 GiB RAM rise for the 0.28 GiB output: no difference.
 
 ## Process Monitor
 
 Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_monitor/`) and `web/js/process_monitor.js`. It shows what a workflow uses — RAM, VRAM, time — live, as an estimate before a run, measured per node during a run, and explains a run that was killed.
 
-**On / off.** One ComfyUI setting, *Settings → BCNodes → Process Monitor*, applied live, no restart. Off means no thread, no hook into the executor and no file writes. The server keeps a copy of the setting, so a ComfyUI started without a browser (a pod queued through the API) still runs the monitor when it was left on.
+**On / off.** One ComfyUI setting, *Settings → BCNodes → Process Monitor*, on by default, applied live, no restart. Off means no thread, no hook into the executor and no file writes. The server keeps a copy of the setting, so a ComfyUI started without a browser (a pod queued through the API) still runs the monitor when it was left on, or never set.
 
 **Top bar.** RAM against its limit, VRAM and the GPU load, once a second, while the monitor is on; and a `PM` button that opens the modal. The button is there with the monitor off too (Emulate and the crash report do not need it on) and turns red when the last run was killed.
 
@@ -555,7 +607,7 @@ Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_moni
 
 **Per-node measurement.** Armed from the Last run tab (*Measure next run*), for one run. Per node: time, RAM peak (`memory.peak` reset per node where the kernel allows it, otherwise the 100 ms sampler's maximum; the table says which), VRAM peak, outputs (shape, dtype, device, bytes), the output cache total, models loaded and offloaded. A node served from the cache reads *from cache, not measured*, never 0; the report says whether models were already loaded at the start (first-run and repeat-run profiles differ). It hooks ComfyUI's executor and needs ComfyUI **0.17.0** or newer; on an older ComfyUI it is off and the modal says so, while the bars, Emulate and the black box keep working. An error inside the monitor turns the measurement off with a message; the workflow is never affected.
 
-**Emulate.** Built per component from the workflow as the frontend sends it: model weights from the safetensors headers (no model load), tensors exact from their sizes, every output kept in RAM until the prompt ends, and each node's own transients (copies, lists before a stack or concat) from a cost profile worked out from that node's code. A node without a profile is listed as *not counted*, never guessed; bypassed and muted nodes are listed, not added; subgraphs are expanded. A video workflow also gets a table of resolution (480p / 720p / 1080p) by frame count. The fit check sets the estimate against a 24 GB and a 32 GB GPU and the RAM limit. After an armed run, that workflow's measured nodes replace the formulas, scaled to other sizes; the measurements live in `user/BCNodes/process_monitor/measurements/`, never in the workflow.
+**Emulate.** Built per component from the workflow as the frontend sends it: model weights from the safetensors headers (no model load), tensors exact from their sizes, every output kept in RAM until the prompt ends (ComfyUI-BCVideoNodes' WanAnimate Preprocess `final_mask` and `bg_images` only when something is connected to them: the node makes them only then), and each node's own transients (copies, lists before a stack or concat) from a cost profile worked out from that node's code. A node without a profile is listed as *not counted*, never guessed; bypassed and muted nodes are listed, not added; subgraphs are expanded. A video workflow also gets a table of resolution (480p / 720p / 1080p) by frame count. The fit check sets the estimate against a 24 GB and a 32 GB GPU and the RAM limit. After an armed run, that workflow's measured nodes replace the formulas, scaled to other sizes; the measurements live in `user/BCNodes/process_monitor/measurements/`, never in the workflow.
 
 **Stop at the threshold** (experimental, off by default) interrupts the prompt when the snapshot is taken. It only works inside nodes that check ComfyUI's interrupt (between sampler steps, for example); a running `torch.stack` or `np.fromiter` cannot be stopped.
 
@@ -591,6 +643,7 @@ ComfyUI-BCNodes/
     social_specs.json      the platform table it reads on every run
     image_quality_gate.py  BC_ImageQualityGate
     save_image.py          BC_SaveImage
+    save_image_with_caption.py  BC_SaveImageWithCaption
     skin_texture.py        BC_SkinTexture
     process_monitor.py     Process Monitor: its HTTP routes and live event (no nodes)
   pipelines/               flows that combine models and libs; no ComfyUI node classes
@@ -600,7 +653,9 @@ ComfyUI-BCNodes/
     skin_texture.py        SAM 3 prompts, face gate, mask assembly, texture call
     quality_gate.py        shot profiles, the three-tier checks, verdict, report, badge
     social_export.py       Social Media Export geometry / encoding engine, no ComfyUI or torch imports
-    save_image.py          Save Image name grammar, job JSON, save loop
+    save_image.py          Save Image name grammar, job JSON, save loop; Save Image With Caption's folder,
+                           caption extension check, save loop
+    depth_anything.py      Depth Anything: output size (short side or cover + crop), per-frame normalisation
     caption_audit/
       audit.py             audit plumbing: package guard, allowed roots, run_audit, reports
       card.py              the fixed-size card
@@ -619,7 +674,7 @@ ComfyUI-BCNodes/
       settings.py          the monitor's settings file
   models/                  one package per model; __init__.py imports those that register
     common/
-      registry.py          model families: register / names / get
+      registry.py          model families (matting, depth): register / names / get
       download.py          weight download with console progress
     birefnet/
       checkpoints.py       the 11 checkpoints, registered as matting models
@@ -627,11 +682,16 @@ ComfyUI-BCNodes/
       loader.py            one model loaded at a time
       inference.py         resize, normalise, run, matte back to size
       arch/                BiRefNet + Swin v1 architecture (see LICENSE in the folder)
-    depth_anything_v2/     Depth Anything V2 Small, one model (no registry family)
+    depth_anything_v2/     Depth Anything V2 Small, registered as v2-small in the depth family
       weights.py           weights folder (ComfyUI/models/depthanything) and download
       loader.py            the model, loaded once
-      inference.py         resize as the authors, normalise, run, depth back to size, min-max
+      inference.py         resize as the authors, run, resample to the size asked for
       arch/                DPT head + DINOv2 ViT-S architecture (see LICENSE in the folder)
+    depth_anything_3/      Depth Anything 3 over ComfyUI core, registered as v3-small, v3-base, v3-mono-large,
+                           v3-metric-large in the depth family (no code vendored)
+      weights.py           Comfy-Org/Depth-Anything-3 files into ComfyUI/models/geometry_estimation
+      loader.py            one model at a time, core's loader
+      inference.py         core's preprocess and forward, sky, inverse depth, percentile clip
     seedvr2/               adapters over ComfyUI's SeedVR2 VAE
       vae.py               VAE check + VRAM room
       tiling.py            tile plan + blend weights
@@ -642,7 +702,7 @@ ComfyUI-BCNodes/
       detect.py            text detection through ComfyUI's SAM3_Detect
   libs/                    model-independent helpers
     image.py               IMAGE frame <-> PIL, fit into a target size
-    geometry.py            integer size arithmetic for resizing
+    geometry.py            integer size arithmetic for resizing; a ControlNet preprocessor's output size
     filters.py             the two separable Gaussians (reflect, replicate)
     mask.py                fill holes, grow / blur, draw a colour through a mask, blockify, offset, refine foreground, fit a mask batch
     resize.py              Image Resize: size plan, crop / resample / pad per frame
@@ -670,10 +730,10 @@ ComfyUI-BCNodes/
     power_lora_loader.js   LoRA rows
     fast_groups_bypasser.js  group toggles
     anything_everywhere.js prompt-time input filling
-    unused_outputs.js      the toast when the unused-outputs saving is off for a run
     auto_model_downloader.js  node UI, first-open dialog, progress
     align.js               toolbox align / distribute buttons
     save_image.js          no output preview under Save Image
+    save_image_with_caption.js  the frontend's text replacements in its filename_prefix
     process_monitor.js     Process Monitor: top bar, modal, the on / off setting
     bcnodes_api.js         JSON calls to the pack's routes (downloader, Process Monitor)
   locales/en/main.json     tooltips for the Align buttons

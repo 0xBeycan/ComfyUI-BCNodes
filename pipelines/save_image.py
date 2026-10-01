@@ -3,6 +3,10 @@ and its key grammar), the job JSON (save_job, prompt_texts, find_parameter_value
 loop (save_batch: target folder, counter, image names, one write_image per frame, job data,
 gallery entries). Takes PIL frames and plain values; the node keeps folder_paths, the clock and
 the ui payload.
+
+Save Image With Caption's flow is at the end: its target folder (caption_folder), its caption
+extension check (caption_extension) and its save loop (save_with_captions: one PNG per frame and
+the caption next to it under the same name, never over an existing file).
 """
 
 import json
@@ -262,3 +266,63 @@ def save_batch(frames, output_dir, resolution, timestamp, filename_prefix, filen
         save_job(save_job_data, prompt, filename_prefix, positive_text_opt, negative_text_opt, job_custom_text,
                  resolution, folder, "jobs.json", timestamp)
     return results
+
+
+# --- Save Image With Caption -------------------------------------------------------------------
+
+# the plain-text / data formats a caption file may take
+CAPTION_EXTENSIONS = (".txt", ".caption", ".json", ".yaml", ".yml", ".md", ".csv", ".tsv", ".xml", ".log", ".ini", ".toml")
+OUTPUT_FOLDER = "output"  # an output_folder starting with it starts at ComfyUI's output directory
+BATCH_NUM = "%batch_num%"  # in the file name: the frame's index in the batch
+# write_image's PNG compression is quality / 10: level 4, ComfyUI's own Save Image level
+PNG_QUALITY = 40
+
+
+def caption_folder(output_folder, output_dir):
+    """The folder Save Image With Caption writes into: an absolute `output_folder` as it is; a
+    relative one inside `output_dir` (ComfyUI's output directory), a leading `output` naming
+    output_dir itself ("output", "output/set" and "set" -> output_dir, output_dir/set,
+    output_dir/set). A relative path that climbs out of output_dir raises."""
+    if os.path.isabs(output_folder):
+        return output_folder
+    parts = os.path.normpath(output_folder).split(os.sep)
+    if parts[0] in (OUTPUT_FOLDER, "."):
+        parts = parts[1:]
+    base = os.path.abspath(output_dir)
+    folder = os.path.abspath(os.path.join(base, *parts))
+    if os.path.commonpath((base, folder)) != base:
+        raise ValueError(f"output_folder {output_folder!r} leads out of ComfyUI's output directory ({base}); "
+                         "give an absolute path to save outside it")
+    return folder
+
+
+def caption_extension(value):
+    """`value` as a caption file extension, its dot added when missing; anything that is not one
+    of CAPTION_EXTENSIONS (a path, an executable, an empty value) raises."""
+    extension = value if value.startswith(".") else "." + value
+    if extension.lower() not in CAPTION_EXTENSIONS:
+        raise ValueError(f"caption_file_extension {value!r} is not a plain-text format; use one of {', '.join(CAPTION_EXTENSIONS)}")
+    return extension
+
+
+def save_with_captions(frames, folder, filename, counter, caption, extension, prompt, save_metadata, extra_pnginfo):
+    """Writes each PIL frame of `frames` into `folder` as <filename>_<counter, 5 digits>_.png
+    (BATCH_NUM in `filename` is the frame's index) and, when `caption` is not None, `caption` next
+    to it as <the same name><extension>. A name whose image or caption file exists already is
+    passed over, the counter moving on, so no file is overwritten. Returns the last image's file
+    name ("" for no frames)."""
+    file = ""
+    for index, img in enumerate(frames):
+        name = filename.replace(BATCH_NUM, str(index))
+        while True:
+            base = os.path.join(folder, f"{name}_{counter:05}_")
+            if not os.path.exists(base + ".png") and (caption is None or not os.path.exists(base + extension)):
+                break
+            counter += 1
+        write_image(base + ".png", img, prompt, save_metadata, extra_pnginfo, PNG_QUALITY)
+        if caption is not None:
+            with open(base + extension, "w", encoding="utf-8", newline="") as f:
+                f.write(caption)
+        file = os.path.basename(base) + ".png"
+        counter += 1
+    return file

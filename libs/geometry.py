@@ -9,6 +9,13 @@ def round_up_to_multiple(number, multiple):
     return ((number + multiple - 1) // multiple) * multiple
 
 
+def short_side_size(height, width, short):
+    """(height, width) scaled so the short side is `short`, the long side keeping the aspect: each
+    side times short / min(height, width), rounded half to even."""
+    k = short / min(height, width)
+    return int(round(height * k)), int(round(width * k))
+
+
 def aspect_ratio(choice, orig_width, orig_height, proportional_width, proportional_height):
     """Width / height of Image Scale By Aspect Ratio's `aspect_ratio` widget: the source's
     ("original"), the proportional widgets' ("custom"), or an "a:b" preset."""

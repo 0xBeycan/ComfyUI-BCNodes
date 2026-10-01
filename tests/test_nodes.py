@@ -481,6 +481,12 @@ def main():
     check("SaveImage output_ext combo has the base formats, .webp default",
           lambda: (lambda spec: set(m["libs.image_write"].BASE_EXTENSIONS) <= set(spec[0]) and spec[1]["default"] == ".webp")(si.SaveImage.INPUT_TYPES()["required"]["output_ext"]) or _fail())
 
+    # --- Save Image With Caption --------------------------------------------
+    swc = m["save_image_with_caption"].SaveImageWithCaption()
+    check("SaveImageWithCaption None / empty batch -> '' and no files, no raise",
+          lambda: (swc.save_images(None, "nothing", "output") == ("",) and swc.save_images(torch.zeros(0, 8, 8, 3), "nothing", "output", caption="c") == ("",)
+                   and not any(f.startswith("nothing") for f in os.listdir(os.path.join(tmp, "output")))) or _fail())
+
     # --- Image Quality Gate -------------------------------------------------
     iqg = m["image_quality_gate"].ImageQualityGate()
     args = dict(blur_threshold=0.4, blur_var_threshold=30.0, sharpness_threshold=15.0, noise_threshold=25.0, clipping_threshold=0.02, entropy_threshold=5.0)

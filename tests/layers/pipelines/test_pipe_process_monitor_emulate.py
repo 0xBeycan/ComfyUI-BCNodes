@@ -33,7 +33,7 @@ class Env:
         "BCVLoadVideo": ["IMAGE", "AUDIO", "BCV_VIDEO_INFO"], "BCVLoadReferenceImage": ["IMAGE", "MASK"],
         "LoadImage": ["IMAGE", "MASK"], "BCVConformVideo": ["IMAGE"],
         "BCVWanAnimateLongVideoSampler": ["IMAGE", "INT", "STRING"], "BCVSCAIL2LongVideoSampler": ["IMAGE", "INT", "STRING"],
-        "BCVWanAnimatePreprocess": ["IMAGE", "IMAGE", "MASK", "POSEDATA", "BBOX", "STRING", "BBOX"],
+        "BCVWanAnimatePreprocess": ["IMAGE", "IMAGE", "MASK", "POSEDATA", "BBOX", "STRING", "BBOX", "MASK", "IMAGE"],
         "BCVSCAIL2Preprocess": ["IMAGE", "IMAGE", "IMAGE", "MASK", "MASK"], "BCVSCAIL2ColoredMask": ["IMAGE", "IMAGE"],
         "BCVPoseDetection": ["IMAGE", "POSEDATA", "BBOX", "STRING"], "BCVSAM3VideoTrack": ["MASK"],
         "BCVFaceCrop": ["IMAGE", "BBOX"], "BCVMaskGuard": ["MASK", "STRING", "STRING", "IMAGE"],
@@ -46,7 +46,10 @@ class Env:
         "BC_AnySwitch": ["*"], "BC_SelectSwitch": ["*"],
         "BC_BlockifyMask": ["MASK"], "BC_MaskFillHoles": ["MASK"], "BlockifyMask": ["MASK"],
     }
-    SIZES = {"Wan": {"480p": [480, 832], "720p": [720, 1280]}, "SCAIL": {"512p": [512, 896], "704p": [704, 1280]}}
+    # BCVLoadVideo's bcv_sizes: the resolution "source" is the video's own size (None)
+    SIZES = {"Wan": {"480p": [480, 832], "720p": [720, 1280], "source": None},
+             "SCAIL": {"512p": [512, 896], "704p": [704, 1280], "source": None},
+             "None": {"480p": [480, 854], "720p": [720, 1280], "1080p": [1080, 1920], "source": None}}
 
     def __init__(self, weights=None, videos=None, models=None):
         self.weights_fn, self.videos, self.models = weights, videos or {}, models or {}
@@ -56,8 +59,7 @@ class Env:
 
     def input_types(self, class_type):
         assert class_type == "BCVLoadVideo"
-        return {"required": {"resolution": (["480p", "720p", "512p", "704p"], {"bcv_sizes": self.SIZES,
-                                                                              "bcv_frames": {"Wan": 4, "SCAIL": 4}})}}
+        return {"required": {"resolution": (["480p", "720p", "512p", "704p", "1080p", "source"], {"bcv_sizes": self.SIZES})}}
 
     def model_path(self, name):
         return self.models.get(name)
@@ -228,6 +230,15 @@ def test_bcv_loader_reference_and_conform(em):
     assert rows["1"]["outputs"][0]["shape"] == [297, 720, 1280, 3]  # landscape source; 300 frames -> 4n+1
     assert rows["2"]["outputs"][0]["shape"] == [1, 720, 1280, 3]
     assert rows["3"]["outputs"][0]["shape"] == [297, 720, 1280, 3]
+    # model None: every frame; resolution source: the video's size, in the other orientation its centred crop
+    # to that aspect with the short side kept (1920x1080 -> 608x1080), each side cut to the model's grid
+    for model, resolution, orientation, shape in [
+            ("None", "720p", "auto", [300, 720, 1280, 3]), ("None", "1080p", "portrait", [300, 1920, 1080, 3]),
+            ("Wan", "source", "auto", [297, 1072, 1920, 3]), ("Wan", "source", "portrait", [297, 1072, 608, 3]),
+            ("SCAIL", "source", "landscape", [297, 1056, 1920, 3]), ("None", "source", "portrait", [300, 1080, 608, 3]),
+            ("None", "source", "landscape", [300, 1080, 1920, 3])]:
+        p["1"]["inputs"].update(model=model, resolution=resolution, orientation=orientation)
+        assert em.estimate(p, env)["rows"][0]["outputs"][0]["shape"] == shape, (model, resolution, orientation)
 
 
 def test_video_table_and_calibration(em):
@@ -315,7 +326,7 @@ def test_preprocess_wrappers_and_guards(em):
     assert shapes == [[609, 1280, 720, 3], [609, 1280, 720, 3], [1, 480, 640, 3], [609, 1280, 720], [1, 480, 640]]
     assert scail["outputs"][0]["shared"]  # black_background off: the driving video itself
     assert scail["output_bytes"] == 609 * frame + 480 * 640 * 3 * 4 + 609 * mask + 480 * 640 * 4
-    assert scail["transient"] == 609 * frame  # box_keypoint draws pose images it drops
+    assert scail["transient"] == 0  # box_keypoint reads Pose Detection's pose_data only: no pose images drawn
     assert rows["5"]["transient"] == 609 * 1280 * 720 and rows["5"]["output_bytes"] == (128 + 190 * 2) * 1200 * 3 * 4
     assert rows["6"]["output_bytes"] == (128 + 190 * 3) * 1200 * 3 * 4
     assert rows["7"]["output_bytes"] == (128 + 190 * 2) * 1200 * 3 * 4
@@ -323,6 +334,38 @@ def test_preprocess_wrappers_and_guards(em):
     p["4"]["inputs"].update(mode="prompt", black_background=True)
     scail = rows_of(em, p)["4"]
     assert scail["transient"] == 0 and not scail["outputs"][0]["shared"]
+
+
+def test_pose_detection_size_and_model(em):
+    p = {"1": loader(), "2": N("BCVPoseDetection", images=["1", 0], width=832, height=480)}
+    row = rows_of(em, p)["2"]
+    assert row["outputs"][0]["shape"] == [609, 480, 832, 3] and row["transient"] == 0  # drawn at width x height
+    assert "(ViTPose-H) weights and working set not counted" in row["note"]
+    p["2"]["inputs"]["pose_model"] = "Sapiens2 1b bf16"  # the same outputs; the model is named in the note
+    row = rows_of(em, p)["2"]
+    assert row["outputs"][0]["shape"] == [609, 480, 832, 3] and "(Sapiens2 1b bf16)" in row["note"]
+    p["2"]["inputs"].update(width=["9", 0], height=["9", 1])  # sockets fed by links: known at run time only
+    row = rows_of(em, p)["2"]
+    assert row["status"] == "not counted" and "width / height come from links: the pose images'" in row["note"]
+    p["2"]["inputs"] = {"images": ["1", 0], "width": 832}
+    row = rows_of(em, p)["2"]
+    assert row["status"] == "not counted" and "only one of width / height is set" in row["note"]
+
+
+def test_wan_animate_preprocess_final_mask_and_bg_images_only_when_linked(em):
+    frame, mask = 1280 * 720 * 3 * 4, 1280 * 720 * 4
+    base = {"1": loader(), "2": N("BCVWanAnimatePreprocess", images=["1", 0], mode="prompt")}
+    consumers = {"final_mask": N("BCVWanAnimatePreprocessGuard", mask=["2", 7], pose_data=["2", 3]),
+                 "bg_images": N("PreviewImage", images=["2", 8])}
+    for linked, slots, transient in [((), [0, 1, 2], 0), (("final_mask",), [0, 1, 2, 7], 0),
+                                     (("bg_images",), [0, 1, 2, 8], 609 * mask),  # the final mask made and dropped
+                                     (("final_mask", "bg_images"), [0, 1, 2, 7, 8], 0)]:
+        row = rows_of(em, {**base, **{str(10 + i): consumers[name] for i, name in enumerate(linked)}})["2"]
+        assert [o["slot"] for o in row["outputs"]] == slots, linked
+        shapes = {o["slot"]: o["shape"] for o in row["outputs"]}
+        assert shapes.get(7, [609, 1280, 720]) == [609, 1280, 720] and shapes.get(8, [609, 1280, 720, 3]) == [609, 1280, 720, 3]
+        assert row["output_bytes"] == 609 * (frame + 512 * 512 * 3 * 4 + mask) + 609 * mask * (7 in slots) + 609 * frame * (8 in slots)
+        assert row["transient"] == transient, linked
 
 
 def test_seedvr2_chain(em):
@@ -360,15 +403,21 @@ def test_bcnodes_image_nodes_and_switches(em):
     assert rows["1"]["transient"] == 576 * 1024 * 3 * 4  # the image list; the mask is zeros, not listed
     assert [o["shape"] for o in rows["2"]["outputs"]] == [[1, 480, 640, 4], [1, 480, 640], [1, 480, 640, 3]]
     assert rows["2"]["transient"] == one  # the frame list before torch.stack
-    assert rows["3"]["outputs"][0]["shape"] == [1, 480, 640, 3] and rows["3"]["transient"] == 2 * one
+    # short side 518, 640 * 518 / 480 = 690.67 -> 691; one frame at a time into the preallocated output
+    assert rows["3"]["outputs"][0]["shape"] == [1, 518, 691, 3] and rows["3"]["transient"] == 0
     assert rows["4"]["outputs"][0]["shared"] and rows["4"]["output_bytes"] == 0
     assert rows["5"]["outputs"][0]["shared"] and rows["5"]["note"] == "passes on any_02"  # node 8 does not exist
     assert rows["6"]["outputs"][0]["shape"] == [1, 480, 640, 3] and rows["6"]["output_bytes"] == 0
     p["2"]["inputs"].update(background="Color", mask_blur=2)
+    p["3"]["inputs"].update(width=832, height=480)
     p["4"]["inputs"]["theme"] = "kodak"
     rows = rows_of(em, p)
+    assert rows["3"]["outputs"][0]["shape"] == [1, 480, 832, 3]
     assert rows["2"]["transient"] == one + one + 3 * 480 * 640 * 3 * 4 and rows["2"]["outputs"][0]["shape"] == [1, 480, 640, 3]
     assert rows["4"]["transient"] == 2 * 480 * 640 * 3 * 4
+    p["3"]["inputs"].update(width=["9", 1], height=["9", 2])  # sizes from links: known at run time only
+    row = rows_of(em, p)["3"]
+    assert row["status"] == "not counted" and "width / height come from links" in row["note"]
 
 
 def test_a_passed_on_input_is_counted_once(em):

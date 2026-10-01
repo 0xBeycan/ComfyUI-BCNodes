@@ -166,8 +166,9 @@ def test_run_report(bb):
 def test_settings_validate_load_and_save(bcnodes, tmp_path):
     st = bcnodes["pipelines.process_monitor.settings"]
     s = st.load(str(tmp_path / "none.json"))
-    assert (s.enabled, s.black_box, s.threshold, s.stop_at_threshold, s.keep_runs) == (False, True, 0.85, False, 20)
-    s = st.apply(s, {"threshold": "0.9", "keep_runs": 5, "enabled": True})
+    # no file: the defaults, the monitor on
+    assert (s.enabled, s.black_box, s.threshold, s.stop_at_threshold, s.keep_runs) == (True, True, 0.85, False, 20)
+    s = st.apply(s, {"threshold": "0.9", "keep_runs": 5, "enabled": False})
     path = str(tmp_path / "pm" / "settings.json")
     st.save(path, s)
     assert st.load(path) == s

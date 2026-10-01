@@ -81,6 +81,11 @@ def estimate(prompt, env, scenario=None, measured=None, weight_cache=None):
     measured_nodes = (measured or {}).get("nodes", {})
     ratio = _ratio(prompt, measured_nodes, scenario)
     upstream, models, types_of, rows = {}, {}, {}, []
+    consumed = {}  # node id -> its output slots some node links
+    for node in prompt.values():
+        for value in node.get("inputs", {}).values():
+            if is_link(value):
+                consumed.setdefault(value[0], set()).add(value[1])
     cache = 0
     ram_peak = vram_peak = (0, None)
     for nid in execution_order(prompt):
@@ -96,7 +101,7 @@ def estimate(prompt, env, scenario=None, measured=None, weight_cache=None):
         vram = sum(weight_cache[name]["bytes"] for name in used if weight_cache.get(name))
         row.update(weights=files, vram_need=vram)
         try:
-            outputs, transient, note = _profile(node, types, Ctx(node, upstream, scenario, env))
+            outputs, transient, note = _profile(node, types, Ctx(node, upstream, scenario, env, consumed.get(nid, set())))
             row["status"], row["note"] = "counted", note
         except NotCounted as e:
             outputs, transient = {}, None

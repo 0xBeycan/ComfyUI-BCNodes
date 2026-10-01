@@ -47,6 +47,8 @@ def stub_comfy(tmp):
     sys.modules["folder_paths"] = fp
 
     comfy = types.ModuleType("comfy")
+    cli_args = types.ModuleType("comfy.cli_args")
+    cli_args.args = types.SimpleNamespace(disable_metadata=False)
     mm = types.ModuleType("comfy.model_management")
     cu = types.ModuleType("comfy.utils")
     import torch
@@ -91,7 +93,9 @@ def stub_comfy(tmp):
     cu.ProgressBar = ProgressBar
     comfy.model_management = mm
     comfy.utils = cu
+    comfy.cli_args = cli_args
     sys.modules["comfy"] = comfy
+    sys.modules["comfy.cli_args"] = cli_args
     sys.modules["comfy.model_management"] = mm
     sys.modules["comfy.utils"] = cu
 
@@ -116,7 +120,8 @@ def load_package():
     return ModuleMap(PKG_NAME, {name: importlib.import_module(f"{PKG_NAME}.nodes.{name}")
             for name in ("logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
                          "image_comparer", "power_lora_loader", "everywhere", "seedvr2",
-                         "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "skin_texture")})
+                         "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption",
+                         "skin_texture")})
 
 
 def bind_package(name):
