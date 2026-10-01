@@ -12,6 +12,8 @@ import { callJson } from "./bcnodes_api.js";
 const SETTING = "BCNodes.ProcessMonitor.Enabled";
 const EVENT = "bcnodes.monitor";
 const TABS = ["Live", "Emulate", "Last run", "Crash", "Settings"];
+// the tensor census's "backing" of cpu memory (none on a GPU)
+const BACKING = { ram: "RAM", file: "file (page cache)", unknown: "unknown" };
 
 const state = { status: null, sample: null, tab: "Live", modal: null, bar: null };
 
@@ -97,23 +99,13 @@ function buildBar() {
 	button.onclick = openModal;
 	const root = el("div", { class: "bcpm-bar" }, meters, button);
 	state.bar = { root, meters, button, ram, vram, gpu };
-	mountBar(root, 0);
-}
-
-// The action bar is mounted by the Vue app after the extensions load; until it exists the bar
-// floats in the top right corner.
-function mountBar(root, tries) {
-	const host = document.querySelector(".actionbar-container");
-	if (host) {
-		host.prepend(root);
-		root.style.cssText = "";
-		return;
-	}
-	if (!root.isConnected) {
-		root.style.cssText = "position:fixed;top:6px;right:260px;z-index:1000";
-		document.body.append(root);
-	}
-	if (tries < 20) setTimeout(() => mountBar(root, tries + 1), 500);
+	// The frontend rebuilds the top menu, action bar included, whenever its layout changes (the
+	// right side panel opened or closed, focus mode, the app builder), so an element put into the
+	// action bar is dropped with it. The legacy top-menu element (app.menu.element) is the place the
+	// frontend keeps for custom scripts: each new top menu takes it into its action bar again. The
+	// newer actionBarButtons extension field draws icon buttons only, no meters.
+	if (app.menu?.element) app.menu.element.prepend(root);
+	else console.warn("[BCNodes] Process Monitor: this ComfyUI frontend has no top menu (app.menu); the bar is not shown. Update the frontend.");
 }
 
 function setMeter(m, value, total, text) {
@@ -358,9 +350,14 @@ async function crashTab() {
 	}
 	const snap = r.snapshot;
 	if (snap) {
+		const c = snap.census;
 		parts.push(el("h4", {}, `Tensors alive at the threshold (${gb(snap.ram)}, node ${snap.node} ${snap.class_type ?? ""}; ${snap.scope ?? "whole process"})`));
-		parts.push(table(["Count", "Shape", "dtype", "Device", "Each", "Distinct bytes"], snap.census.groups.map((g) => ({
-			cells: [`${g.count} ×`, `(${g.shape.join(", ")})`, g.dtype, g.device, gb(g.bytes_each), gb(g.bytes)],
+		// file_bytes: absent in a run logged before the census told file-backed memory apart
+		if (c.file_bytes !== undefined) parts.push(el("div", { class: "bcpm-note" }, `${gb(c.total_bytes)} of memory in all, each byte once; `,
+			c.file_bytes === null ? "file-backed part unknown (no /proc/self/maps on this system)"
+				: `${gb(c.file_bytes)} of it file-backed (mapped from files: page cache, not the process's own RAM)`));
+		parts.push(table(["Count", "Shape", "dtype", "Device", "Memory", "Each", "Distinct bytes"], c.groups.map((g) => ({
+			cells: [`${g.count} ×`, `(${g.shape.join(", ")})`, g.dtype, g.device, BACKING[g.backing] ?? "–", gb(g.bytes_each), gb(g.bytes)],
 		}))));
 		parts.push(el("details", {}, el("summary", {}, "Stack of the execution thread"), el("pre", {}, snap.stack.join(""))));
 	} else {
@@ -444,9 +441,10 @@ app.registerExtension({
 			renderBar();
 			if (state.modal && state.tab === "Live") state.modal.body.replaceChildren(liveTab());
 		});
-		// A finished run clears the crash flag; the monitor notices the end within 100 ms.
+		// A finished run clears the crash flag; the monitor notices the end within 100 ms. A reconnect
+		// can be a server that was restarted after a killed run: its crash turns the button red.
 		const later = () => setTimeout(refreshStatus, 500);
-		for (const ev of ["execution_success", "execution_error", "execution_interrupted"]) api.addEventListener(ev, later);
+		for (const ev of ["execution_success", "execution_error", "execution_interrupted", "reconnected"]) api.addEventListener(ev, later);
 		refreshStatus();
 	},
 });

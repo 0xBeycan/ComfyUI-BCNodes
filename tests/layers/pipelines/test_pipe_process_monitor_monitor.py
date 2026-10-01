@@ -306,10 +306,11 @@ def test_samples_carry_the_execution_threads_line(mon, tmp_path):
     assert "threading.py" in sample["top"]  # the innermost frame is the stdlib's Event.wait
 
 
-def test_snapshot_names_the_tensors_the_node_holds_first(mon, bcnodes, tmp_path):
+def test_snapshot_names_the_tensors_the_node_holds_first(mon, bcnodes, tmp_path, monkeypatch):
     """What the kill test showed: a node piling frames into a list and stacking them can be killed
     while the whole-process scan runs, so the tensors in the execution thread's locals are written
     first, at once."""
+    monkeypatch.setattr(bcnodes["libs.tensor_census"], "_MAPS", str(tmp_path / "no-maps"))  # backing "unknown" everywhere
     m = make_monitor(mon, tmp_path)
     ready, done = threading.Event(), threading.Event()
 
@@ -336,7 +337,7 @@ def test_snapshot_names_the_tensors_the_node_holds_first(mon, bcnodes, tmp_path)
     each = 256 * 512 * 3 * 4
     assert quick["scope"] == "execution thread locals" and quick["line"].endswith("node_code")
     assert quick["census"]["groups"] == [{"count": 9, "shape": [256, 512, 3], "dtype": "float32", "device": "cpu",
-                                          "bytes_each": each, "bytes": 9 * each}]  # only what the thread holds
+                                          "backing": "unknown", "bytes_each": each, "bytes": 9 * each}]  # only what the thread holds
 
 
 def test_crash_after_restart(mon, bcnodes, tmp_path):

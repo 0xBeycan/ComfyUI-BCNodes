@@ -63,7 +63,7 @@ libs/math_expression.py       whitelisted AST evaluator with injected resolvers
 libs/download.py              HTTP download with resume, host list, token store
 libs/files.py image_write.py  output counters; image formats, metadata, write_image
 libs/memory_sources.py        RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers
-libs/tensor_census.py         tensor bytes per storage, the live tensor census
+libs/tensor_census.py         tensor bytes, each byte counted once by address range, file-backed memory told apart; the live tensor census
 libs/safetensors_info.py      weights from a safetensors header, no load
 ```
 

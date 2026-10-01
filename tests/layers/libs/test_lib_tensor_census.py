@@ -1,10 +1,14 @@
 """Tensor sizes from metadata (libs/tensor_census.py) and weights from safetensors headers
-(libs/safetensors_info.py): bytes written out by hand per shape and dtype; storages counted once;
-the live census groups copies apart from views; the header reader against files the safetensors
-library writes.
+(libs/safetensors_info.py): bytes written out by hand per shape and dtype; memory counted once, also
+across storages that share one buffer; the live census groups copies apart from views and tells
+file-backed memory from RAM by the process's mappings; the header reader against files the
+safetensors library writes.
 """
 
+import ctypes
+import mmap
 import sys
+import warnings
 
 import numpy as np
 import pytest
@@ -35,14 +39,113 @@ def test_a_storage_counts_once(tc):
     image = torch.zeros(10, 4, 4, 3)
     view = image[2:5]
     assert tc.storage_bytes([image, view, image]) == image.numel() * 4
-    seen = set()
-    assert tc.storage_bytes(image, seen) == image.numel() * 4
-    assert tc.storage_bytes(view, seen) == 0  # already counted through `seen`
+    covered = tc.Covered()
+    assert tc.storage_bytes(image, covered) == image.numel() * 4
+    assert tc.storage_bytes(view, covered) == 0  # already counted through `covered`
     # a numpy array and its view: one base buffer
     arr = np.zeros((6, 8), dtype=np.float32)
     assert tc.storage_bytes([arr, arr[1:3]]) == 6 * 8 * 4
-    # torch.from_numpy shares the buffer; the census sees the tensor's storage size
+    # torch.from_numpy shares the buffer: the array and the tensor are one memory
     assert tc.storage_bytes(torch.from_numpy(arr)) == 6 * 8 * 4
+    assert tc.storage_bytes([arr, torch.from_numpy(arr[2:])]) == 6 * 8 * 4
+
+
+MB = 1 << 20
+
+
+def census_of(tc, *held):
+    """The census of `held` alone: the locals of this call's frame, which ends with the call."""
+    return tc.census(frames=[sys._getframe()], min_bytes=1, top=100, whole_process=False)
+
+
+def test_covered_merges_address_ranges_per_device(tc):
+    c = tc.Covered()
+    assert c.claim("cpu", 100, 200) == 100
+    assert c.claim("cpu", 150, 250) == 50  # overlaps the first
+    assert c.claim("cpu", 120, 180) == 0  # inside
+    assert c.claim("cpu", 250, 260) == 10  # touches the end
+    assert c.claim("cpu", 0, 400) == 400 - 160  # around all of it
+    assert c.claim("cpu", 300, 300) == 0
+    assert c.claim("cuda:0", 100, 200) == 100  # another device, another memory
+
+
+def test_slices_of_a_growing_host_buffer_count_once(tc):
+    # a pinned host buffer hands out slices of a fresh frombuffer over the buffer as long as it is
+    # so far: every slice's storage starts at the buffer and reports the buffer's length then
+    buf = (ctypes.c_uint8 * (24 * MB))()
+    addr = ctypes.addressof(buf)
+    pins, off = [], 0
+    for size in (4 * MB, 6 * MB, 4 * MB, 6 * MB):
+        whole = torch.frombuffer((ctypes.c_uint8 * (off + size)).from_address(addr), dtype=torch.uint8)
+        pins.append(whole[off:off + size])
+        off += size
+    assert [p.untyped_storage().data_ptr() for p in pins] == [addr] * 4
+    assert [p.untyped_storage().nbytes() for p in pins] == [4 * MB, 10 * MB, 14 * MB, 20 * MB]
+    assert tc.storage_bytes(pins) == 20 * MB  # not 48 MB
+    c = census_of(tc, pins)
+    groups = {g["shape"][0]: g for g in c["groups"]}
+    # each slice holds its own part of the buffer
+    assert (groups[4 * MB]["count"], groups[4 * MB]["bytes"]) == (2, 8 * MB)
+    assert (groups[6 * MB]["count"], groups[6 * MB]["bytes"]) == (2, 12 * MB)
+    assert c["total_bytes"] == 20 * MB
+
+
+def test_weights_over_one_memory_map_and_slices_of_one_storage(tc, tmp_path):
+    path = tmp_path / "w.bin"
+    path.write_bytes(bytes(12 * MB))
+    with open(path, "rb") as f:
+        m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    mv = memoryview(m)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # the map is read-only
+        weights = [torch.frombuffer(mv[a:b], dtype=torch.float16) for a, b in ((0, 4 * MB), (4 * MB, 12 * MB))]
+    assert tc.storage_bytes(weights) == 12 * MB
+    assert tc.storage_bytes(weights + [weights[1][MB:]]) == 12 * MB
+    storage = torch.UntypedStorage(8 * MB)
+    parts = [torch.empty(0, dtype=torch.uint8).set_(storage[a:b]) for a, b in ((0, 4 * MB), (2 * MB, 6 * MB))]
+    assert tc.storage_bytes(parts) == 6 * MB  # [0, 4) and [2, 6) MB
+    whole = torch.empty(0, dtype=torch.uint8).set_(storage)
+    assert tc.storage_bytes(parts + [whole]) == 8 * MB
+    groups = {g["shape"][0]: g for g in census_of(tc, parts, whole)["groups"]}
+    # the whole storage claims its bytes before the slices into it
+    assert (groups[8 * MB]["bytes"], groups[4 * MB]["bytes"]) == (8 * MB, 0)
+    del weights
+    mv.release()
+    m.close()
+
+
+def maps_line(start, end, path=""):
+    return f"{start:x}-{end:x} r--p 00000000 00:00 {1234 if path else 0} {path}".rstrip()
+
+
+def test_file_backed_memory_is_told_apart_by_the_mappings(tc, tmp_path, monkeypatch):
+    path = tmp_path / "w.bin"
+    path.write_bytes(bytes(4 * MB))
+    with open(path, "rb") as f:
+        m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    mv = memoryview(m)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        weight = torch.frombuffer(mv, dtype=torch.float16)
+    anonymous = torch.ones(3 * MB, dtype=torch.uint8)
+    shared = torch.ones(5 * MB, dtype=torch.uint8)
+    ranges = [(weight, "/models/w.safetensors"), (anonymous, ""), (shared, "/dev/shm/torch_1")]
+    lines = sorted((t.data_ptr(), maps_line(t.data_ptr(), t.data_ptr() + t.numel(), p)) for t, p in ranges)
+    (tmp_path / "maps").write_text("\n".join(line for _, line in lines) + "\n")
+    monkeypatch.setattr(tc, "_MAPS", str(tmp_path / "maps"))
+    c = census_of(tc, weight, anonymous, shared)
+    backing = {g["shape"][0]: g["backing"] for g in c["groups"]}
+    assert backing == {2 * MB: "file", 3 * MB: "ram", 5 * MB: "ram"}
+    assert c["file_bytes"] == 4 * MB and c["total_bytes"] == 12 * MB
+    del weight, ranges
+    mv.release()
+    m.close()
+
+
+def test_backing_is_unknown_without_the_mappings(tc, tmp_path, monkeypatch):
+    monkeypatch.setattr(tc, "_MAPS", str(tmp_path / "no-such-file"))  # macOS has no /proc/self/maps
+    c = census_of(tc, torch.ones(7 * MB, dtype=torch.uint8))
+    assert c["groups"][0]["backing"] == "unknown" and c["file_bytes"] is None
 
 
 def test_census_groups_copies_and_views(tc):

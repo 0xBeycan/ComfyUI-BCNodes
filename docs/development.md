@@ -99,7 +99,7 @@ ComfyUI-BCNodes/
     files.py               the next image counter from the files in a folder
     image_write.py         Save Image formats, metadata, writer
     memory_sources.py      RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers
-    tensor_census.py       tensor bytes per storage; the live tensor census
+    tensor_census.py       tensor bytes, each byte counted once by address range, file-backed memory told apart; the live tensor census
     safetensors_info.py    weights from a safetensors header
   docs/                    the node documentation, one page per menu category; README.md links them
   luts/                    drop .cube LUTs here for PostFx LUT (gitignored)

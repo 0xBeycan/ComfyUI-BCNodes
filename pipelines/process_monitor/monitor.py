@@ -27,7 +27,7 @@ import uuid
 from dataclasses import asdict
 
 from ...libs import memory_sources
-from ...libs.tensor_census import census, sized, storage_bytes
+from ...libs.tensor_census import Covered, census, sized, storage_bytes
 from . import blackbox, emulate as emulate_mod, settings as settings_mod
 from .hook import MIN_COMFYUI, Hook, find
 
@@ -66,12 +66,12 @@ def find_execution_thread(frames):
 
 
 def output_cache_bytes(outputs_cache):
-    """Bytes held by ComfyUI's output cache (every entry of every subcache, each storage once)."""
-    seen, total, stack = set(), 0, [outputs_cache]
+    """Bytes held by ComfyUI's output cache (every entry of every subcache, each byte once)."""
+    covered, total, stack = Covered(), 0, [outputs_cache]
     while stack:
         cache = stack.pop()
         for entry in list(getattr(cache, "cache", {}).values()):
-            total += storage_bytes(getattr(entry, "outputs", entry), seen)
+            total += storage_bytes(getattr(entry, "outputs", entry), covered)
         stack.extend(list(getattr(cache, "subcaches", {}).values()))
     return total
 
