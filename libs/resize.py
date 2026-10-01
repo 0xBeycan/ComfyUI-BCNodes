@@ -291,10 +291,12 @@ def _is_placeholder(mask, height, width):
     return tuple(mask.shape[-2:]) == (64, 64) and (height, width) != (64, 64) and not bool(mask.any())
 
 
-def resize_image(image, mask, width, height, upscale_method, keep_proportion, pad_color, crop_position, divisible_by, device):
+def resize_image(image, mask, width, height, upscale_method, keep_proportion, pad_color, crop_position, divisible_by, device,
+                 want_image=True, want_mask=True):
     """-> (image, width, height, mask) as the module doc describes. `image` is (B, H, W, C), `mask`
     any MASK or None, `device` the torch device the frames are processed on; the outputs are on
-    the CPU."""
+    the CPU. `want_image` / `want_mask` False: that output is not computed, its batch has 0 frames
+    (the sizes and the other output do not read it)."""
     batch, src_height, src_width, channels = image.shape
     if upscale_method == "lanczos" and device.type != "cpu":
         raise ValueError("Image Resize: lanczos runs on the CPU only; set device to cpu or pick another upscale_method")
@@ -310,10 +312,10 @@ def resize_image(image, mask, width, height, upscale_method, keep_proportion, pa
     if unchanged:
         out_image = image.cpu()
     else:
-        out_image = torch.empty((batch, out_height, out_width, channels), dtype=image.dtype)
+        out_image = torch.empty((batch if want_image else 0, out_height, out_width, channels), dtype=image.dtype)
         fill = _pad_fill(pad_color, channels, image.dtype, device) if p.pad and keep_proportion == "pad" else None
-        with _super_resolution(p.size) if upscale_method == VSR else nullcontext() as sr:
-            for i in range(batch):
+        with _super_resolution(p.size) if upscale_method == VSR and want_image else nullcontext() as sr:
+            for i in range(out_image.shape[0]):
                 frame = _crop(image[i:i + 1].to(device), p.crop, True)
                 if frame.shape[1:3] != p.size or upscale_method == VSR:
                     frame = _resample_image(frame, p.size, upscale_method, sr)
@@ -330,7 +332,7 @@ def resize_image(image, mask, width, height, upscale_method, keep_proportion, pa
         if p.pad is None:
             return out_image, out_width, out_height, torch.zeros((1, 64, 64), dtype=torch.float32)
         top, _, left, _ = p.pad
-        out_mask = torch.ones((batch, out_height, out_width), dtype=image.dtype)
+        out_mask = torch.ones((batch if want_mask else 0, out_height, out_width), dtype=image.dtype)
         out_mask[:, top:top + p.size[0], left:left + p.size[1]] = 0.0
         return out_image, out_width, out_height, out_mask
 
@@ -338,8 +340,8 @@ def resize_image(image, mask, width, height, upscale_method, keep_proportion, pa
     if unchanged and fitted:
         return out_image, out_width, out_height, mask.cpu()
     mask_dtype = image.dtype if keep_proportion == "pillarbox_blur" and p.pad else mask.dtype
-    out_mask = torch.empty((mask.shape[0], out_height, out_width), dtype=mask_dtype)
-    for i in range(mask.shape[0]):
+    out_mask = torch.empty((mask.shape[0] if want_mask else 0, out_height, out_width), dtype=mask_dtype)
+    for i in range(out_mask.shape[0]):
         frame = mask[i].to(device)
         if not fitted:
             frame = F.interpolate(frame[None, None], size=(src_height, src_width), mode="bilinear")[0, 0]

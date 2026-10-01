@@ -1,5 +1,6 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
+import { callJson } from "./bcnodes_api.js";
 
 // Auto Model Downloader — the frontend half of nodes/downloader.py.
 //
@@ -29,15 +30,8 @@ const SERVICES = [
 // Backend
 // ---------------------------------------------------------------------------
 
-async function call(route, body) {
-	const res = await api.fetchApi(`/bcnodes/downloader/${route}`, {
-		method: body === undefined ? "GET" : "POST",
-		headers: { "Content-Type": "application/json" },
-		body: body === undefined ? undefined : JSON.stringify(body),
-	});
-	const data = await res.json().catch(() => ({}));
-	if (!res.ok) throw new Error(data.error ?? `${res.status} ${res.statusText}`);
-	return data;
+function call(route, body) {
+	return callJson(`/bcnodes/downloader/${route}`, body);
 }
 
 // ---------------------------------------------------------------------------

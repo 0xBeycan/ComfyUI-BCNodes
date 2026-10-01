@@ -18,11 +18,16 @@ nodes/  ->  pipelines/  ->  models/  ->  libs/
 | `models/` | One package per model: architecture, weights, cache, model-specific pre/post-processing, adapters over ComfyUI core models. `models/common/` holds the registry and the weight download. | pipeline logic |
 | `libs/` | Model-independent helpers. | imports of `models/`, `pipelines/` or `nodes/`; ComfyUI node classes |
 
-The root `__init__.py` only registers: it imports the node modules and merges their mappings, and
-their order is the menu order. `WEB_DIRECTORY = "./web"`.
+The root `__init__.py` only registers: it imports the node modules and merges their mappings (their
+order is the menu order), then registers the link stamp of the unused heavy outputs
+(`register_link_stamp`, below). `WEB_DIRECTORY = "./web"`.
+It also imports `nodes/process_monitor.py`, which registers no nodes: it registers the Process
+Monitor's HTTP routes and, when the monitor's saved setting is on, starts it (see Process Monitor).
 
 ```
-nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, compute_device (the device widgets)
+nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, compute_device (the device widgets),
+                              the unused-heavy-outputs helper (LinkStamp, register_link_stamp, heavy_wanted, wants,
+                              drop_unwanted, drop_unlinked_heavy)
 nodes/<domain>.py             one per domain (23); social_specs.json is the user-editable platform table
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
@@ -33,6 +38,8 @@ pipelines/social_export.py    Social Media Export engine: plan, crop/pad, encode
 pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/seedvr2/            resize, encode, decode, postprocess flows; progress; shared constants
+pipelines/process_monitor/    monitor (sampler thread, runs, per-node records, snapshot), hook (the executor hook),
+                              blackbox (run logs, reports), emulate + profiles (estimate, per-node-type costs), settings
 models/common/                registry.py (families), download.py (fetch_with_progress)
 models/birefnet/              checkpoints (registered under MATTING), weights, loader, inference, arch/ (vendored, MIT)
 models/depth_anything_v2/     Depth Anything V2 Small: weights, loader, inference, arch/ (vendored, Apache-2.0; no registry)
@@ -45,7 +52,39 @@ libs/resize.py                Image Resize: size plan, crop / resample / pad per
 libs/math_expression.py       whitelisted AST evaluator with injected resolvers
 libs/download.py              HTTP download with resume, host list, token store
 libs/files.py image_write.py  output counters; image formats, metadata, write_image
+libs/memory_sources.py        RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers
+libs/tensor_census.py         tensor bytes per storage, the live tensor census
+libs/safetensors_info.py      weights from a safetensors header, no load
 ```
+
+## Process Monitor
+
+Not a node. Its placement follows the layers:
+- `nodes/process_monitor.py` is the ComfyUI surface, like the downloader's routes: the
+  `/bcnodes/monitor/*` routes, the `bcnodes.monitor` live event, and the adapters that hand the
+  pipeline ComfyUI's prompt queue (`ServerProbe`), folders and node classes (`ComfyEnv`; the node
+  classes through `execution.nodes`, since an absolute `import nodes` is banned here). It registers
+  only when `PromptServer.instance` exists; `server`, `aiohttp`, `folder_paths`, PIL and PyAV are
+  imported inside functions.
+- `pipelines/process_monitor/` holds the flows: the sampler thread and runs (`monitor.py`), the
+  hook (`hook.py`), the run logs and reports (`blackbox.py`), the estimate (`emulate.py`) and its
+  per-node-type cost profiles (`profiles.py`). Nothing there imports ComfyUI at module level.
+- `libs/` holds what any flow could use: the RAM / VRAM readers, the tensor census and the
+  safetensors header reader.
+
+Rules that keep it cheap and safe:
+- Off means no thread, no hook and no file write. Run boundaries come from the prompt queue
+  (every ComfyUI version); the per-node layers need the hook on `execution.execute`, detected by
+  feature (ComfyUI 0.17.0+). The wrapper always awaits the original and returns its result
+  untouched; an error in the monitor turns the measurement off with a message.
+- Counters only, never tensor copies: cgroup files, allocator statistics, shape x dtype. The one
+  scan over all objects is the threshold snapshot, once per run, after the execution thread's own
+  tensors are written.
+- Emulate profiles are derived from the node's code. A part that cannot be derived is
+  "not counted" with a note, never guessed. A profile keyed by another pack's class name is data;
+  its comments describe what the node does to memory, not the other pack's code.
+- Run logs, settings and calibration measurements live in `user/BCNodes/process_monitor/`, never in
+  a workflow. A workflow id names a file only when it is a plain token.
 
 ## The layer rule
 
@@ -88,6 +127,18 @@ where it is.
   to the eager tuple of `tests/_harness.py` `load_package`.
 - Add unit tests for its behaviour under `tests/layers/<layer>/`.
 - Frontend code goes under `web/js/`, loaded by path.
+- A whole-batch IMAGE or MASK output the node makes, among two or more outputs (or on an output
+  node), is a heavy output: list it in `HEAVY_OUTPUTS` (names from `RETURN_NAMES`), add
+  `"hidden": dict(LINK_INPUTS)` to `INPUT_TYPES` (`prompt_graph`, `unique_id`; not `prompt`, which a
+  widget may be called), read `wanted = heavy_wanted(type(self), prompt_graph, unique_id)` and return
+  through `drop_unwanted(type(self), outputs, wanted)`. When the output is a step of its own that no
+  other output reads, pass `wants(wanted, name)` down so the step does not run; when the other
+  outputs need it, it is only dropped at return. A pass-through (the input tensor itself) or a
+  one-image output is not heavy, and neither is the output of a single-output node that is not an
+  output node: it runs only when that output is linked. Test it in
+  `tests/layers/nodes/test_node_unused_outputs.py` (its `HEAVY` table, the dropped output empty with
+  the full one's dtype and trailing shape, the linked ones equal, the skipped step not run); the
+  mechanism through ComfyUI's executor is in `tests/test_runtime.py` (`unused_outputs`).
 
 ## How to add a model
 
@@ -131,7 +182,13 @@ where it is.
   reproduce its bugs. Take the logic only: no import of, dependency on or reference to the
   original.
 - Precision is decided per tensor, by measurement, never globally.
-- Unused heavy outputs are not kept (the mechanism comes in a later change).
+- Unused heavy outputs are not kept. ComfyUI's cache key holds a node's inputs and ancestors only,
+  so an on_prompt handler (`LinkStamp` in `nodes/common.py`, registered by the root `__init__`)
+  writes the linked heavy outputs of each heavy node into its inputs as `bc_linked_heavy`; the node
+  returns an unlinked one as a 0-frame tensor (or never computes it). No stamp (no server, a direct
+  executor call): every output full. A link the stamp missed: full, with a warning. Another pack's
+  on_prompt handler registered after ours turns the saving off for that prompt, with a console line
+  and a toast (`web/js/unused_outputs.js`); the owner chose that over reordering the handlers.
 - A node never resizes itself to its content; previews and widgets scale to the node.
 - Values that can differ between uses are widgets, not constants.
 
@@ -159,7 +216,10 @@ python -m pytest tests -q                             # layer rule, unit tests
 Saved workflows must load and run unchanged. Never change: node keys, display names, categories,
 `INPUT_TYPES` names, types, order, defaults and ranges, `RETURN_TYPES`/`RETURN_NAMES`,
 `OUTPUT_NODE`, `web/js` paths, the `/bcnodes/downloader/*` routes and the `bcnodes.downloader`
-event name, the location of `nodes/social_specs.json` and of `luts/`.
+event name, the location of `nodes/social_specs.json` and of `luts/`. Also locked: the stamp key
+`bc_linked_heavy` (part of every heavy node's cache key), the `bcnodes.unused_outputs` event the
+toast listens to, and the `bc_link_stamp` marker on the stamping handler, which
+ComfyUI-BCVideoNodes' handler reads to leave ours out of "another pack" (and ours reads on its).
 
 ## Closed decisions
 

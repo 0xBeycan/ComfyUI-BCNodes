@@ -49,6 +49,9 @@ Nodes:
 Frontend-only pieces in web/js: BC_AutoBypass, Join Image Lists' growing
 slots, the downloader's node UI and first-open prompt, and the Align buttons
 in the selection toolbox.
+
+Not a node: the Process Monitor (nodes/process_monitor.py, web/js/process_monitor.js),
+off until its ComfyUI setting turns it on.
 """
 
 from .nodes import (
@@ -56,6 +59,8 @@ from .nodes import (
     logic, mask, math_expression, postfx, power_lora_loader, prompt_list, save_image, seed, seedvr2, select_switch, show_text, skin_texture,
     social_media_export,
 )
+from .nodes.common import register_link_stamp
+from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's routes and, when on, its sampler)
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
@@ -64,6 +69,9 @@ for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downl
                 postfx, caption_audit, social_media_export, image_quality_gate, save_image, skin_texture):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(_module.NODE_DISPLAY_NAME_MAPPINGS)
+
+# writes the link state of the heavy outputs into each prompt (nodes/common.py)
+register_link_stamp(NODE_CLASS_MAPPINGS)
 
 WEB_DIRECTORY = "./web"
 

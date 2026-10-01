@@ -43,6 +43,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_SaveImage` | Save Image | Saves images with folder / file names built from prompt widget values, any Pillow format, prompt + workflow embedded; preview only in the gallery, never under the node |
 | `BC_SkinTexture` | Skin Texture | Micro-texture on skin inside a SAM 3 mask: boosts the image's own detail and multiplies in a synthetic pore field, in linear light |
 | — | Align | Align / distribute buttons in the selection toolbox |
+| — | Process Monitor | Not a node: live RAM / VRAM bars, an estimate before a run, per-node measurement, and the reason a killed run died (see [Process Monitor](#process-monitor)) |
 
 Registration keys are BCNodes' own, so the packages above can be installed side by side without a clash. Type `BCNodes` in the node library to see them all; in the menu they sit in these groups:
 
@@ -505,6 +506,61 @@ Empty → every target is set to BYPASS. Not empty → every target is set to AC
 
 The frontend cannot see values computed during execution. `force` only resolves when the connected node carries the boolean as a widget — a Primitive node, a BOOL constant node, and similar. If it comes from a node that computes the value at run time (e.g. `Is Mask Empty`) it cannot be read; `status` reports `force unresolved` and the watch check applies instead.
 
+## Unused outputs
+
+A whole-batch IMAGE or MASK output that nothing is connected to comes out as an empty (0-frame)
+tensor instead of staying in ComfyUI's cache until the prompt ends; where it is a step of its own,
+the step does not run at all. That covers Image Resize `IMAGE` and `mask` and Image Scale By Aspect
+Ratio `image` and `mask` (not resized), BiRefNet Remove Background `IMAGE` and `MASK_IMAGE` (not
+built) and `MASK` (the matte, dropped), SeedVR2 Resize `image` and `reference` (each resize runs
+only for a connected output), and Skin Texture `image` (no texture) and `skin_mask` (dropped).
+Connecting such an output later runs the node again.
+
+When a prompt is queued, the pack writes which of these outputs are connected into the node's
+inputs (`bc_linked_heavy`), which makes the link state part of ComfyUI's cache key.
+
+The limit: another custom node pack can change a queued prompt after this pack has read it (an
+`on_prompt` handler registered after this pack's). A link it adds could then reach a cached empty
+output, so while such a handler is installed the saving is off: every output comes out full, as
+without this feature, and the console and a toast say "RAM saving of unused outputs is off for this
+run: <pack> changes the prompt after it." ComfyUI-BCVideoNodes does the same for its own nodes and
+is not counted.
+
+## Process Monitor
+
+Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_monitor/`) and `web/js/process_monitor.js`. It shows what a workflow uses — RAM, VRAM, time — live, as an estimate before a run, measured per node during a run, and explains a run that was killed.
+
+**On / off.** One ComfyUI setting, *Settings → BCNodes → Process Monitor*, applied live, no restart. Off means no thread, no hook into the executor and no file writes. The server keeps a copy of the setting, so a ComfyUI started without a browser (a pod queued through the API) still runs the monitor when it was left on.
+
+**Top bar.** RAM against its limit, VRAM and the GPU load, once a second, while the monitor is on; and a `PM` button that opens the modal. The button is there with the monitor off too (Emulate and the crash report do not need it on) and turns red when the last run was killed.
+
+| Tab | What it shows |
+| --- | --- |
+| Live | The current values in detail, and the sources: the RAM source (the container's cgroup, or the process RSS outside a container), the VRAM source, and whether per-node measurement is available |
+| Emulate | An estimate of the current workflow, labelled *rough estimate; a real measurement exists only after the workflow has run once* (below) |
+| Last run | The last finished run: status, run time, the monitor's own time (`run 2.9 s, monitor 4.9 ms (0.17%)`), RAM / VRAM peaks, and the per-node table of an armed run. A row click selects and centres the node; a node inside a subgraph centres its subgraph node |
+| Crash | The report of a run that ended without an end record (below) |
+| Settings | Black box on / off, the snapshot threshold, the experimental stop, how many run logs are kept |
+
+**Sources.**
+
+- RAM: inside a memory-limited container, the cgroup (v2 `memory.current` / `memory.max` / `memory.peak` / `memory.events`, or the v1 files of the same counters) — its working set, usage minus the inactive file cache, as `docker stats` shows it. The host's RAM is never used there: it hides the limit the kernel kills at. Outside a container (macOS), the process RSS and the host's swap.
+- VRAM: torch's allocator counters (CUDA, or MPS on Apple silicon). NVML adds the device-wide use (every process) and the GPU load when a binding is installed (`pip install nvidia-ml-py`); it is optional, and without it the Live tab says so and the bar uses torch's counters.
+
+**Black box.** While a prompt runs, one JSON line every 100 ms: RAM and its limit, VRAM, the prompt, the executing node and the Python line the execution thread is on. With per-node measurement available, a line at every node start too: its inputs (shape, dtype, device, bytes), RAM, and the output cache total. Lines are written as they happen (no `fsync`: what the kernel holds survives a process kill), one file per run, in `user/BCNodes/process_monitor/runs/`; the last 20 runs are kept (a setting).
+
+**Threshold snapshot.** Once per run, when RAM crosses 85% of its limit (a setting): first the execution thread's stack and the tensors its locals hold, written at once, then every live tensor of the process grouped by shape / dtype / device with their bytes (`73 × (720, 1280, 3) float32, 11.1 MB each`). Limit: when RAM jumps from below the threshold to the kill within one 100 ms sample, the report names the node and the line but no tensors.
+
+**After a kill.** A RAM OOM is a `SIGKILL`: nothing runs at the end. After the restart the newest run log without an end record is the crash: the report names the node, the line, RAM at the node's start, the growth curve, the tensors alive at the snapshot and the output cache total. The cgroup's `oom_kill` counter confirms an OOM kill (it rose since the run started), or says it was not one. macOS has no OOM kill: there the report says when the run *fell into swap* instead. A VRAM OOM is an ordinary exception: ComfyUI survives it and the run log ends normally.
+
+**Per-node measurement.** Armed from the Last run tab (*Measure next run*), for one run. Per node: time, RAM peak (`memory.peak` reset per node where the kernel allows it, otherwise the 100 ms sampler's maximum; the table says which), VRAM peak, outputs (shape, dtype, device, bytes), the output cache total, models loaded and offloaded. A node served from the cache reads *from cache, not measured*, never 0; the report says whether models were already loaded at the start (first-run and repeat-run profiles differ). It hooks ComfyUI's executor and needs ComfyUI **0.17.0** or newer; on an older ComfyUI it is off and the modal says so, while the bars, Emulate and the black box keep working. An error inside the monitor turns the measurement off with a message; the workflow is never affected.
+
+**Emulate.** Built per component from the workflow as the frontend sends it: model weights from the safetensors headers (no model load), tensors exact from their sizes, every output kept in RAM until the prompt ends, and each node's own transients (copies, lists before a stack or concat) from a cost profile worked out from that node's code. A node without a profile is listed as *not counted*, never guessed; bypassed and muted nodes are listed, not added; subgraphs are expanded. A video workflow also gets a table of resolution (480p / 720p / 1080p) by frame count. The fit check sets the estimate against a 24 GB and a 32 GB GPU and the RAM limit. After an armed run, that workflow's measured nodes replace the formulas, scaled to other sizes; the measurements live in `user/BCNodes/process_monitor/measurements/`, never in the workflow.
+
+**Stop at the threshold** (experimental, off by default) interrupts the prompt when the snapshot is taken. It only works inside nodes that check ComfyUI's interrupt (between sampler steps, for example); a running `torch.stack` or `np.fromiter` cannot be stopped.
+
+**Its own cost.** The monitor counts its own time (the hook on the execution thread, the sampler's CPU time, the snapshot) and reports it with every run. Measured on a 12-node CPU workflow of 2.9 s: 4.2 ms with the black box, 4.9 ms armed (0.15–0.17%).
+
 ## Development
 
 ```
@@ -525,7 +581,7 @@ ComfyUI-BCNodes/
     power_lora_loader.py   BC_PowerLoraLoader
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
     seedvr2.py             BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess
-    common.py              wildcard type + flexible optional inputs + slot order + the device widget
+    common.py              wildcard type + flexible optional inputs + slot order + the device widget + unused outputs
     birefnet.py            BC_BiRefNetRemoveBackground
     depth_anything.py      BC_DepthAnythingV2
     downloader.py          BC_AutoModelDownloader + its HTTP routes
@@ -536,6 +592,7 @@ ComfyUI-BCNodes/
     image_quality_gate.py  BC_ImageQualityGate
     save_image.py          BC_SaveImage
     skin_texture.py        BC_SkinTexture
+    process_monitor.py     Process Monitor: its HTTP routes and live event (no nodes)
   pipelines/               flows that combine models and libs; no ComfyUI node classes
     matting.py             the BiRefNet matte, then the matte options
     model_download.py      downloader lines resolved to files under ComfyUI/models, token gate
@@ -553,6 +610,13 @@ ComfyUI-BCNodes/
       decode.py            streaming tiled VAE decode
       postprocess.py       per-frame colour correction
       progress.py          progress bar + timed log lines of the slice loops
+    process_monitor/       the Process Monitor
+      monitor.py           sampler thread, runs, per-node records, threshold snapshot
+      hook.py              the hook into ComfyUI's executor: detection, install, the per-node wrapper
+      blackbox.py          run logs, rotation, the Last run and Crash reports
+      emulate.py           the estimate before a run: graph, weights, fit check, calibration
+      profiles.py          per-node-type cost profiles for Emulate
+      settings.py          the monitor's settings file
   models/                  one package per model; __init__.py imports those that register
     common/
       registry.py          model families: register / names / get
@@ -589,6 +653,9 @@ ComfyUI-BCNodes/
     download.py            HTTP download with resume, allowed hosts, token store
     files.py               the next image counter from the files in a folder
     image_write.py         Save Image formats, metadata, writer
+    memory_sources.py      RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers
+    tensor_census.py       tensor bytes per storage; the live tensor census
+    safetensors_info.py    weights from a safetensors header
   luts/                    drop .cube LUTs here for PostFx LUT (gitignored)
   web/js/
     auto_bypass.js         the BC_AutoBypass virtual node
@@ -603,9 +670,12 @@ ComfyUI-BCNodes/
     power_lora_loader.js   LoRA rows
     fast_groups_bypasser.js  group toggles
     anything_everywhere.js prompt-time input filling
+    unused_outputs.js      the toast when the unused-outputs saving is off for a run
     auto_model_downloader.js  node UI, first-open dialog, progress
     align.js               toolbox align / distribute buttons
     save_image.js          no output preview under Save Image
+    process_monitor.js     Process Monitor: top bar, modal, the on / off setting
+    bcnodes_api.js         JSON calls to the pack's routes (downloader, Process Monitor)
   locales/en/main.json     tooltips for the Align buttons
   tests/
     test_import_time.py    import gate

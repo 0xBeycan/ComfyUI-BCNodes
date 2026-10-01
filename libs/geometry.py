@@ -9,6 +9,17 @@ def round_up_to_multiple(number, multiple):
     return ((number + multiple - 1) // multiple) * multiple
 
 
+def aspect_ratio(choice, orig_width, orig_height, proportional_width, proportional_height):
+    """Width / height of Image Scale By Aspect Ratio's `aspect_ratio` widget: the source's
+    ("original"), the proportional widgets' ("custom"), or an "a:b" preset."""
+    if choice == "original":
+        return orig_width / orig_height
+    if choice == "custom":
+        return proportional_width / proportional_height
+    a, b = choice.split(":")
+    return int(a) / int(b)
+
+
 def target_size(orig_width, orig_height, ratio, scale_to_side, scale_to_length):
     """Output (width, height) before rounding. Every branch truncates with
     int(), and the expressions are kept in the original's operand order so the

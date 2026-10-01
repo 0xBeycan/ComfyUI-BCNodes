@@ -15,10 +15,10 @@ one preallocated output (libs/resize.py).
 import numpy as np
 import torch
 
-from ..libs.geometry import round_up_to_multiple, target_size
+from ..libs.geometry import aspect_ratio as ratio_of, round_up_to_multiple, target_size
 from ..libs.image import fit_image, pil_to_tensor_hwc
 from ..libs.resize import resize_image
-from .common import DEVICES, compute_device
+from .common import DEVICES, LINK_INPUTS, compute_device, drop_unwanted, heavy_wanted, wants
 
 RATIOS = ["original", "custom", "1:1", "3:2", "4:3", "16:9", "2:3", "3:4", "9:16"]
 FITS = ["letterbox", "crop", "fill"]
@@ -62,17 +62,22 @@ class ImageScaleByAspectRatio:
                 "image": ("IMAGE",),
                 "mask": ("MASK",),
             },
+            "hidden": dict(LINK_INPUTS),
         }
 
     RETURN_TYPES = ("IMAGE", "MASK", "BOX", "INT", "INT")
     RETURN_NAMES = ("image", "mask", "original_size", "width", "height")
+    # not computed when nothing links them (nodes/common.py): the other outputs do not read them
+    HEAVY_OUTPUTS = ("image", "mask")
     FUNCTION = "scale"
     CATEGORY = "BCNodes/image"
     SEARCH_ALIASES = ["BCNodes", "image scale by aspect ratio", "scale image", "resize image", "aspect ratio", "letterbox", "crop"]
 
     def scale(self, aspect_ratio, proportional_width, proportional_height, fit, method, round_to_multiple,
-              scale_to_side, scale_to_length, background_color, image=None, mask=None):
+              scale_to_side, scale_to_length, background_color, image=None, mask=None, prompt_graph=None, unique_id=None):
         from PIL import Image
+
+        wanted = heavy_wanted(type(self), prompt_graph, unique_id)
 
         frames = []
         if isinstance(image, torch.Tensor) and image.ndim == 4 and image.shape[0] > 0:
@@ -99,14 +104,7 @@ class ImageScaleByAspectRatio:
         if orig_width + orig_height == 0:
             raise ValueError("BC_ImageScaleByAspectRatio: connect an image or a mask")
 
-        if aspect_ratio == "original":
-            ratio = orig_width / orig_height
-        elif aspect_ratio == "custom":
-            ratio = proportional_width / proportional_height
-        else:
-            a, b = aspect_ratio.split(":")
-            ratio = int(a) / int(b)
-
+        ratio = ratio_of(aspect_ratio, orig_width, orig_height, proportional_width, proportional_height)
         target_width, target_height = target_size(orig_width, orig_height, ratio, scale_to_side, scale_to_length)
         if round_to_multiple != "None":
             multiple = int(round_to_multiple)
@@ -122,12 +120,16 @@ class ImageScaleByAspectRatio:
         }.get(method, Image.Resampling.LANCZOS)
 
         out_images = None
-        if frames:
+        if frames and not wants(wanted, "image"):
+            out_images = torch.empty((0, target_height, target_width, 3), dtype=torch.float32)  # not fitted
+        elif frames:
             out_images = torch.stack([
                 pil_to_tensor_hwc(fit_image(_to_pil(f).convert("RGB"), target_width, target_height, fit, sampler, background_color))
                 for f in frames
             ])
-        if mask_frames:
+        if not wants(wanted, "mask"):
+            out_masks = torch.empty((0, target_height, target_width), dtype=torch.float32)  # not fitted
+        elif mask_frames:
             out_masks = torch.stack([
                 pil_to_tensor_hwc(fit_image(_to_pil(m).convert("L"), target_width, target_height, fit, sampler, "black"))
                 for m in mask_frames
@@ -135,7 +137,7 @@ class ImageScaleByAspectRatio:
         else:
             out_masks = torch.zeros((len(frames), target_height, target_width), dtype=torch.float32)
 
-        return (out_images, out_masks, [orig_width, orig_height], target_width, target_height)
+        return drop_unwanted(type(self), (out_images, out_masks, [orig_width, orig_height], target_width, target_height), wanted)
 
 
 # ComfyUI core's nodes.MAX_RESOLUTION.
@@ -182,10 +184,13 @@ class ImageResize:
                 "mask": ("MASK",),
                 "device": (DEVICES, {"tooltip": "Device the frames are processed on (not for lanczos)."}),
             },
+            "hidden": dict(LINK_INPUTS),
         }
 
     RETURN_TYPES = ("IMAGE", "INT", "INT", "MASK")
     RETURN_NAMES = ("IMAGE", "width", "height", "mask")
+    # not computed when nothing links them (nodes/common.py): the sizes do not read them
+    HEAVY_OUTPUTS = ("IMAGE", "mask")
     FUNCTION = "resize"
     CATEGORY = "BCNodes/image"
     DESCRIPTION = ("Resizes the image (and mask) to width x height. The mask follows the image; without a mask, a "
@@ -195,11 +200,13 @@ class ImageResize:
                       "pillarbox"]
 
     def resize(self, image, width, height, upscale_method, keep_proportion, pad_color, crop_position, divisible_by,
-               mask=None, device="cpu"):
+               mask=None, device="cpu", prompt_graph=None, unique_id=None):
         if not isinstance(image, torch.Tensor) or image.ndim != 4:
             raise ValueError("Image Resize: connect an image batch (B, H, W, C)")
-        return resize_image(image, mask, width, height, upscale_method, keep_proportion, pad_color, crop_position,
-                            divisible_by, compute_device(device))
+        wanted = heavy_wanted(type(self), prompt_graph, unique_id)
+        return drop_unwanted(type(self), resize_image(
+            image, mask, width, height, upscale_method, keep_proportion, pad_color, crop_position, divisible_by,
+            compute_device(device), want_image=wants(wanted, "IMAGE"), want_mask=wants(wanted, "mask")), wanted)
 
 
 NODE_CLASS_MAPPINGS = {

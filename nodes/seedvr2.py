@@ -14,6 +14,7 @@ SeedVR2 VAE adapter, its tiling and the frame-shape rules in models/seedvr2/.
 from ..pipelines.seedvr2 import (
     decode as decode_flow, encode as encode_flow, postprocess as postprocess_flow, resize as resize_flow,
 )
+from .common import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
 
 
 class SeedVR2Resize:
@@ -35,10 +36,13 @@ class SeedVR2Resize:
                                              "tooltip": "Resize `image` in bfloat16 on the GPU when CUDA is available. "
                                                         "Without CUDA the resize runs in float32."}),
             },
+            "hidden": dict(LINK_INPUTS),
         }
 
     RETURN_TYPES = ("IMAGE", "IMAGE")
     RETURN_NAMES = ("image", "reference")
+    # each is a resize of its own, not computed when nothing links it (nodes/common.py)
+    HEAVY_OUTPUTS = ("image", "reference")
     OUTPUT_TOOLTIPS = (
         "The frames the VAE encodes: downscaled, resized, clamped, padded to a multiple of 16 and to 4n+1 frames, float16. Wire to VAE Encode.",
         "The colour-correction reference: float32 resize stored as float16, cropped to even, not padded. Wire to SeedVR2 PostProcess.",
@@ -47,8 +51,11 @@ class SeedVR2Resize:
     CATEGORY = "BCNodes/seedvr2"
     SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "resize", "shortest edge", "upscale", "downscale", "pad"]
 
-    def resize(self, image, upscale_factor, downscale_factor, max_resolution, emulate_bf16):
-        return resize_flow.resize(image, upscale_factor, downscale_factor, max_resolution, emulate_bf16)
+    def resize(self, image, upscale_factor, downscale_factor, max_resolution, emulate_bf16, prompt_graph=None, unique_id=None):
+        wanted = heavy_wanted(type(self), prompt_graph, unique_id)
+        return drop_unwanted(type(self), resize_flow.resize(
+            image, upscale_factor, downscale_factor, max_resolution, emulate_bf16, want_image=wants(wanted, "image"),
+            want_reference=wants(wanted, "reference")), wanted)
 
 
 TILED_INPUTS = {

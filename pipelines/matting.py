@@ -16,9 +16,12 @@ from ..models.birefnet.inference import matte
 
 
 def finish(rgb, mask, sensitivity=1.0, mask_blur=0, mask_offset=0, invert_output=False,
-           refine_foreground=False, background="Alpha", background_color="#222222"):
+           refine_foreground=False, background="Alpha", background_color="#222222", want_image=True,
+           want_mask_image=True):
     """Apply the options to a raw matte and build the three outputs.
-    `rgb` is (B, H, W, 3) in 0..1, `mask` (B, H, W) in 0..1, both on the CPU."""
+    `rgb` is (B, H, W, 3) in 0..1, `mask` (B, H, W) in 0..1, both on the CPU. `want_image` /
+    `want_mask_image` False: that output is built from no frame (0 frames); the mask does not read
+    either."""
     m = mask.unsqueeze(1).float()
     if sensitivity < 1.0:
         m = (m * (1 + (1 - sensitivity))).clamp_(0, 1)
@@ -28,10 +31,11 @@ def finish(rgb, mask, sensitivity=1.0, mask_blur=0, mask_offset=0, invert_output
         m = mask_ops.offset_matte(m, mask_offset)
     if invert_output:
         m = 1 - m
-    color = rgb.float()
+    frames = slice(None) if want_image else slice(0)
+    color = rgb[frames].float()
     if refine_foreground:
-        color = mask_ops.refine_foreground(color, m)
-    alpha = m.permute(0, 2, 3, 1)  # (B, H, W, 1)
+        color = mask_ops.refine_foreground(color, m[frames])
+    alpha = m[frames].permute(0, 2, 3, 1)  # (B, H, W, 1)
     if background == "Alpha":
         image = torch.cat((color, alpha), dim=-1)
     else:
@@ -43,16 +47,16 @@ def finish(rgb, mask, sensitivity=1.0, mask_blur=0, mask_offset=0, invert_output
         total = alpha + weight
         image = torch.where(total > 0, (color * alpha + bg * weight) / total.clamp(min=1e-6), torch.zeros_like(color))
     mask_out = m[:, 0]
-    mask_image = mask_out.unsqueeze(-1).expand(-1, -1, -1, 3).contiguous()
+    mask_image = mask_out[slice(None) if want_mask_image else slice(0)].unsqueeze(-1).expand(-1, -1, -1, 3).contiguous()
     return image, mask_out, mask_image
 
 
 def remove_background(image, model, sensitivity, mask_blur, mask_offset, invert_output,
-                      refine_foreground, background, background_color):
+                      refine_foreground, background, background_color, want_image=True, want_mask_image=True):
     """IMAGE (B, H, W, C) and a checkpoint name -> (image, mask, mask_image) as finish builds
     them. An unknown name raises KeyError(name) inside the load, after the cached model is
     evicted."""
     rgb = image[..., :3]
     mask = matte(model, rgb)
     return finish(rgb.cpu(), mask, sensitivity, mask_blur, mask_offset, invert_output,
-                  refine_foreground, background, background_color)
+                  refine_foreground, background, background_color, want_image, want_mask_image)

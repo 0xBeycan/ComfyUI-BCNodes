@@ -10,6 +10,7 @@ No server is started and no browser is needed; only core CPU nodes are used.
 import asyncio
 import copy
 import json
+import logging
 import math
 import os
 import sys
@@ -121,6 +122,152 @@ async def run_twice(prompt, label, extra_data=None):
                 print(f"  [{label}] run 1 executed nothing; the executor is not reporting")
                 return None, None
     return outputs, executed
+
+
+# --- unused heavy outputs return empty (nodes/common.py) ---------------------------------------------
+# The pack's on_prompt handler is on the server (the root __init__ registered it when the pack
+# loaded); a prompt goes the way POST /prompt runs it: the handlers, validate_prompt, execute. The
+# node is Image Resize: IMAGE heavy, width linked to an output node.
+
+UNUSED_A = {"1": N("EmptyImage", width=64, height=48, batch_size=4, color=0),
+            "2": N("BC_ImageResize", image=["1", 0], width=32, height=24, upscale_method="bilinear", keep_proportion="stretch",
+                   pad_color="0, 0, 0", crop_position="center", divisible_by=2),
+            "3": N("BC_MathExpression", expression="a", a=["2", 1])}
+# + IMAGE's frame count shown
+UNUSED_AB = {**UNUSED_A, "4": N("GetImageSize", image=["2", 0]), "5": N("PreviewAny", source=["4", 2])}
+UNUSED_FULL, UNUSED_EMPTY = (4, 24, 32, 3), (0, 24, 32, 3)
+
+
+def another_pack(json_data):
+    """An on_prompt handler of another pack."""
+    return json_data
+
+
+class BCVideoNodesStamp:
+    """ComfyUI-BCVideoNodes' stamping handler, marked as it is there."""
+    bc_link_stamp = True
+
+    def __call__(self, json_data):
+        return json_data
+
+
+class Lines(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+
+async def unused_submit(ex, prompt, via_server=True, edit_after=None):
+    """-> (the stamp, runs of node 2, the frame count node 5 shows or None, IMAGE's shape in the
+    cache or "evicted")."""
+    import server
+
+    json_data = {"prompt": copy.deepcopy(prompt), "client_id": "test"}
+    if via_server:
+        json_data = server.PromptServer.instance.trigger_on_prompt(json_data)
+    if edit_after:
+        edit_after(json_data["prompt"])
+    run = json_data["prompt"]
+    prompt_id = str(uuid.uuid4())
+    valid = await execution.validate_prompt(prompt_id, run, None)
+    assert valid[0], valid[1]
+    ex.server.events.clear()
+    await ex.execute_async(run, prompt_id, {"client_id": "test"}, valid[2])
+    assert ex.success, [m for m in ex.status_messages if m[0] == "execution_error"]
+    entry = ex.caches.outputs.get_local("2")
+    shown = ex.history_result["outputs"].get("5", {}).get("text")
+    return (run["2"]["inputs"].get(pack_common().STAMP), executed_nodes(ex.server).count("2"),
+            int(shown[0]) if shown else None, "evicted" if entry is None else tuple(entry.outputs[0][0].shape))
+
+
+def pack_common():
+    """The pack's nodes/common.py, as ComfyUI loaded it."""
+    import importlib
+
+    return importlib.import_module(nodes.NODE_CLASS_MAPPINGS["BC_ImageResize"].__module__.rsplit(".", 1)[0] + ".common")
+
+
+def unused_executor(kind):
+    args = {"lru": 10 if kind == "LRU" else 0, "ram": 0, "ram_inactive": 0}
+    if kind == "RAM_PRESSURE":
+        import comfy.model_management as mm
+
+        args["ram_inactive"] = min(128.0, mm.total_ram / 1024.0)
+    return execution.PromptExecutor(Server(), cache_type=getattr(execution.CacheType, kind), cache_args=args)
+
+
+async def unused_outputs():
+    import server
+
+    instance = server.PromptServer.instance
+    check("unused outputs: the root __init__ registered the link stamp",
+          [type(h).__name__ for h in instance.on_prompt_handlers] == ["LinkStamp"], f"{instance.on_prompt_handlers}")
+    for kind in ("CLASSIC", "LRU", "RAM_PRESSURE"):
+        ex = unused_executor(kind)
+        p1 = await unused_submit(ex, UNUSED_A)
+        p2 = await unused_submit(ex, UNUSED_AB)
+        p3 = await unused_submit(ex, UNUSED_AB)
+        p4 = await unused_submit(ex, UNUSED_A)
+        p5 = await unused_submit(ex, UNUSED_A)
+        check(f"unused outputs {kind} P1: IMAGE unlinked -> runs, empty in the cache", p1 == ("", 1, None, UNUSED_EMPTY), f"{p1}")
+        check(f"unused outputs {kind} P2: IMAGE linked later -> runs again, the consumer gets 4 frames",
+              p2 == ("IMAGE", 1, 4, UNUSED_FULL), f"{p2}")
+        check(f"unused outputs {kind} P3: the same again -> a cache hit", p3 == ("IMAGE", 0, 4, UNUSED_FULL), f"{p3}")
+        check(f"unused outputs {kind} P4: unlinked again -> empty (run again, or the P1 entry in LRU)",
+              p4[3] == UNUSED_EMPTY and p4[1] == (0 if kind == "LRU" else 1), f"{p4}")
+        check(f"unused outputs {kind} P5: the same again -> nothing runs", p5[1] == 0 and p5[3] == UNUSED_EMPTY, f"{p5}")
+
+    out = await unused_submit(unused_executor("CLASSIC"), UNUSED_A, via_server=False)
+    check("unused outputs: no stamp -> IMAGE full", out == (None, 1, None, UNUSED_FULL), f"{out}")
+    stale = copy.deepcopy(UNUSED_A)
+    stale["2"]["inputs"][pack_common().STAMP] = "IMAGE"
+    out = await unused_submit(unused_executor("CLASSIC"), stale)
+    check("unused outputs: a stale stamp is overwritten", out == ("", 1, None, UNUSED_EMPTY), f"{out}")
+
+    lines = Lines()
+    logging.getLogger().addHandler(lines)
+    toasts = []  # the toast events (the server also carries the nodes' progress text)
+    instance.send_sync = lambda event, data, sid=None: toasts.append((event, data, sid)) if event == pack_common().EVENT else None
+    try:
+        def link_after(prompt):
+            prompt.update({"4": N("GetImageSize", image=["2", 0]), "5": N("PreviewAny", source=["4", 2])})
+
+        out = await unused_submit(unused_executor("CLASSIC"), UNUSED_A, edit_after=link_after)
+        check("unused outputs: a link the stamp missed -> full, with a warning",
+              out == ("", 1, 4, UNUSED_FULL) and any("the prompt links IMAGE, which its link stamp does not list" in line
+                                                      for line in lines.lines), f"{out}")
+
+        lines.lines.clear()
+        instance.add_on_prompt_handler(another_pack)
+        try:
+            out = await unused_submit(unused_executor("CLASSIC"), UNUSED_A)
+        finally:
+            instance.on_prompt_handlers.remove(another_pack)
+        message = "RAM saving of unused outputs is off for this run: test_runtime changes the prompt after it."
+        check("unused outputs: another pack's handler after ours -> off, IMAGE full", out == (None, 1, None, UNUSED_FULL), f"{out}")
+        check("unused outputs: ... a console line and the toast event to the prompt's client",
+              toasts == [(pack_common().EVENT, {"message": message}, "test")] and any(message in line for line in lines.lines),
+              f"{toasts}")
+
+        toasts.clear()
+        stamp = BCVideoNodesStamp()
+        instance.add_on_prompt_handler(stamp)
+        try:
+            out = await unused_submit(unused_executor("CLASSIC"), UNUSED_A)
+        finally:
+            instance.on_prompt_handlers.remove(stamp)
+        check("unused outputs: a stamping handler after ours (BCVideoNodes') -> still on",
+              out == ("", 1, None, UNUSED_EMPTY) and toasts == [], f"{out} {toasts}")
+    finally:
+        logging.getLogger().removeHandler(lines)
+        del instance.send_sync
+
+
+async def main():
+    await setup()
 
 
 async def main():
@@ -498,8 +645,81 @@ async def main():
     out, executed = await run_twice({"1": N("BC_AutoModelDownloader", entries="[]")}, "cache-downloader")
     check("AutoModelDownloader: runs every queue by design", out is not None and executed == ["1"], f"{executed}")
 
+    await unused_outputs()
+    await process_monitor_hook()
+
     print(f"\n{results['pass']} passed, {results['fail']} failed")
     sys.exit(1 if results["fail"] else 0)
+
+
+def pack_module(suffix):
+    """A pack module as ComfyUI's loader named it (the pack directory's path is the package name)."""
+    return next(m for name, m in sys.modules.items() if name.endswith(suffix))
+
+
+async def process_monitor_hook():
+    """Process Monitor: the execution.py hook point found on this ComfyUI and wrapped around the real
+    executor for one armed run, then the same prompt queued again and served from the cache. A
+    Monitor of its own in a temp dir: the pack's MONITOR uses the user directory and stays off."""
+    hook = pack_module(".pipelines.process_monitor.hook")
+    mon = pack_module(".pipelines.process_monitor.monitor")
+    blackbox = pack_module(".pipelines.process_monitor.blackbox")
+    module, reason = hook.find()
+    check("ProcessMonitor: the execution.py hook point is found", module is not None, reason)
+    if module is None:
+        return
+
+    class Probe:
+        def running(self):
+            return None
+
+        def status(self, prompt_id):
+            return "success"
+
+        def last_node(self):
+            return None
+
+        def push(self, payload):
+            pass
+
+    original = module.execute
+    m = mon.Monitor(tempfile.mkdtemp(prefix="bcnodes_pm_"), Probe())
+    m.ram, m.gpu = mon.memory_sources.ram_source(), None
+    m.hook = hook.Hook(module, m)
+    m.hook.install()
+    prompt = {
+        "1": N("EmptyImage", width=64, height=48, batch_size=2, color=0),
+        "2": N("ImageInvert", image=["1", 0]),
+        "3": N("BC_MathExpression", expression="a.width", a=["2", 0]),
+        "4": N("PreviewImage", images=["2", 0]),
+    }
+    ex = execution.PromptExecutor(Server(), cache_type=execution.CacheType.CLASSIC, cache_args={"lru": 0, "ram": 0, "ram_inactive": 0})
+    try:
+        for _ in range(2):
+            m.arm(True)
+            prompt_id = str(uuid.uuid4())
+            valid = await execution.validate_prompt(prompt_id, prompt, None)
+            await ex.execute_async(copy.deepcopy(prompt), prompt_id, {"extra_pnginfo": {"workflow": {"id": "wf-test"}}}, valid[2])
+            with m._lock:
+                m._end_run("success")
+    finally:
+        m.hook.uninstall()
+    check("ProcessMonitor: the hook is removed again", module.execute is original)
+    second, first = [blackbox.read_records(p) for p in blackbox.run_files(m.runs_dir)]
+    ends = {r["node"]: r for r in first if r["type"] == "node_end"}
+    starts = {r["node"]: r for r in first if r["type"] == "node"}
+    image = 2 * 48 * 64 * 3 * 4
+    check("ProcessMonitor: armed run measures every node", sorted(ends) == ["1", "2", "3", "4"]
+          and all(e["state"] == "executed" and e["seconds"] >= 0 for e in ends.values()), f"{ends}")
+    check("ProcessMonitor: outputs by shape and bytes", ends.get("1", {}).get("outputs") == [
+        {"shape": [2, 48, 64, 3], "dtype": "float32", "device": "cpu", "bytes": image}], f"{ends.get('1')}")
+    check("ProcessMonitor: node start sees its input and the cache", starts.get("2", {}).get("inputs", [{}])[0].get("bytes") == image
+          and starts["2"]["cache"] == image, f"{starts.get('2')}")
+    rows = blackbox.run_report(second)["nodes"]
+    check("ProcessMonitor: the second queue is from cache, not measured",
+          sorted(r["node"] for r in rows if r["state"] == "cached") == ["1", "2", "3", "4"] and len(rows) == 4, f"{rows}")
+    check("ProcessMonitor: the run keeps its own time and the measurement for Emulate",
+          first[-1]["type"] == "end" and first[-1]["monitor"]["hook_s"] > 0 and m.measurement("wf-test") is not None)
 
 
 if __name__ == "__main__":

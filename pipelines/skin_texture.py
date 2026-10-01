@@ -42,7 +42,9 @@ def face_gate(face_mask, height):
     return float(min(1.0, face_h / FACE_FULL_FRACTION))
 
 
-def run(image, sam3_model, texture, detail, pore_scale, feather, seed, threshold, mask, exclude_mask):
+def run(image, sam3_model, texture, detail, pore_scale, feather, seed, threshold, mask, exclude_mask, want_image=True):
+    """(image textured inside the skin mask, the skin mask). `want_image` False: neither the face
+    gate nor the texture is worked out, the image is [0, H, W, 3] (the mask does not read them)."""
     b, h, w, _ = image.shape
     gate = 1.0
 
@@ -52,9 +54,10 @@ def run(image, sam3_model, texture, detail, pore_scale, feather, seed, threshold
         model, clip = load(sam3_model)
         skin, _ = detect(model, clip, image, SKIN_PROMPT, threshold)
         drop, _ = detect(model, clip, image, EXCLUDE_PROMPT, threshold)
-        face, _ = detect(model, clip, image, FACE_PROMPT, threshold)
         skin = (skin - drop).clamp(0, 1)
-        gate = min(face_gate(face[i], h) for i in range(b))
+        if want_image:  # the face only gates the texture
+            face, _ = detect(model, clip, image, FACE_PROMPT, threshold)
+            gate = min(face_gate(face[i], h) for i in range(b))
 
     if exclude_mask is not None:
         ex = fit_mask_batch(exclude_mask, h, w, b)
@@ -64,5 +67,7 @@ def run(image, sam3_model, texture, detail, pore_scale, feather, seed, threshold
     if feather > 0:
         skin = gauss_reflect(skin.unsqueeze(1), feather * max(h, w) / 1024.0).squeeze(1).clamp(0, 1)
 
+    if not want_image:
+        return (image.new_empty((0, h, w, 3)), skin.cpu())  # apply_texture's [B, H, W, 3] in the image's dtype
     out = apply_texture(image, skin, texture=texture, detail=detail, pore_scale=pore_scale, seed=seed, gate=gate)
     return (out, skin.cpu())

@@ -55,7 +55,24 @@ def lanczos_scale_by(image_bhwc, factor):
     return torch.stack(frames).to(image_bhwc.device, image_bhwc.dtype)
 
 
-def resize(image, upscale_factor, downscale_factor, max_resolution, emulate_bf16):
+def _encoded(chunk, device, dtype, resolution, max_resolution):
+    """Step 3 on `device` in `dtype`, then the pad of step 4: the frames VAE Encode gets, float16
+    (B, H, W, C) on the CPU."""
+    resized = divisible_pad(side_resize(chunk.to(device=device, dtype=dtype), resolution, max_resolution))
+    return resized.to(device="cpu", dtype=torch.float16).permute(0, 2, 3, 1)
+
+
+def _reference(chunk, resolution, max_resolution):
+    """Step 3 on the CPU in float32, cropped to the even size: the colour-correction reference,
+    float16 (B, H, W, C)."""
+    reference = side_resize(chunk.to(device="cpu", dtype=torch.float32), resolution, max_resolution)
+    h, w = reference.shape[-2:]
+    return reference[:, :, :(h // 2) * 2, :(w // 2) * 2].permute(0, 2, 3, 1).to(torch.float16)
+
+
+def resize(image, upscale_factor, downscale_factor, max_resolution, emulate_bf16, want_image=True, want_reference=True):
+    """(image, reference) as the module doc describes. `want_image` / `want_reference` False: that
+    output's step runs on no frame, its batch has 0 frames (the other output does not read it)."""
     require_image_batch(image, "BC_SeedVR2Resize: connect an image batch (B, H, W, C)")
     image = image[..., :3]
     resolution = int(round(min(image.shape[1], image.shape[2]) * upscale_factor))
@@ -75,19 +92,21 @@ def resize(image, upscale_factor, downscale_factor, max_resolution, emulate_bf16
 
     t = frames.shape[0]
     extra = frames_to_4n1(t)
-    out_image = out_reference = None
+    # an output not wanted is its step on no frame, on the CPU: the empty batch of its size
+    out_image = None if want_image else _encoded(frames[:0], torch.device("cpu"), torch.float32, resolution, max_resolution)
+    out_reference = None if want_reference else _reference(frames[:0], resolution, max_resolution)
     for start in range(0, t, FRAMES_PER_CHUNK):
         chunk = frames[start:start + FRAMES_PER_CHUNK]
-        resized = divisible_pad(side_resize(chunk.to(device=device, dtype=vae_dtype), resolution, max_resolution))
-        resized = resized.to(device="cpu", dtype=torch.float16).permute(0, 2, 3, 1)
-        reference = side_resize(chunk.to(device="cpu", dtype=torch.float32), resolution, max_resolution)
-        h, w = reference.shape[-2:]
-        reference = reference[:, :, :(h // 2) * 2, :(w // 2) * 2].permute(0, 2, 3, 1).to(torch.float16)
-        if out_image is None:
-            out_image = torch.empty((t + extra,) + tuple(resized.shape[1:]), dtype=torch.float16)
-            out_reference = torch.empty((t,) + tuple(reference.shape[1:]), dtype=torch.float16)
-        out_image[start:start + resized.shape[0]] = resized
-        out_reference[start:start + reference.shape[0]] = reference
-    if extra:
+        if want_image:
+            resized = _encoded(chunk, device, vae_dtype, resolution, max_resolution)
+            if out_image is None:
+                out_image = torch.empty((t + extra,) + tuple(resized.shape[1:]), dtype=torch.float16)
+            out_image[start:start + resized.shape[0]] = resized
+        if want_reference:
+            reference = _reference(chunk, resolution, max_resolution)
+            if out_reference is None:
+                out_reference = torch.empty((t,) + tuple(reference.shape[1:]), dtype=torch.float16)
+            out_reference[start:start + reference.shape[0]] = reference
+    if extra and want_image:
         out_image[t:] = out_image[t - 1]
     return (out_image, out_reference)

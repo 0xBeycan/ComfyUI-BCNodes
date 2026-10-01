@@ -7,6 +7,7 @@ import torch
 
 from ..models.sam3.checkpoint import DEFAULT_SAM3, choices
 from ..pipelines import skin_texture
+from .common import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
 
 
 class SkinTexture:
@@ -36,10 +37,14 @@ class SkinTexture:
                 "mask": ("MASK", {"tooltip": "Where to texture. Connected, it replaces the SAM 3 skin detection."}),
                 "exclude_mask": ("MASK", {"tooltip": "Subtracted from the skin mask (added to the eyes / lips exclusion)."}),
             },
+            "hidden": dict(LINK_INPUTS),
         }
 
     RETURN_TYPES = ("IMAGE", "MASK")
     RETURN_NAMES = ("image", "skin_mask")
+    # nodes/common.py: image (the texture) is not computed when nothing links it; skin_mask, which
+    # the texture is applied through, is dropped at return
+    HEAVY_OUTPUTS = ("image", "skin_mask")
     FUNCTION = "run"
     CATEGORY = "BCNodes/image"
     SEARCH_ALIASES = ["BCNodes", "skin texture", "pores", "micro texture", "skin detail", "sam3"]
@@ -47,10 +52,13 @@ class SkinTexture:
                    "field, in linear light, only inside a SAM 3 skin mask (eyes, eyebrows, lips and teeth excluded). "
                    "Put it before upscaling and before grain. Connect a mask to skip the detection.")
 
-    def run(self, image, sam3_model, texture, detail, pore_scale, feather, seed, threshold, mask=None, exclude_mask=None):
+    def run(self, image, sam3_model, texture, detail, pore_scale, feather, seed, threshold, mask=None, exclude_mask=None,
+            prompt_graph=None, unique_id=None):
         if image is None or image.shape[0] == 0:
             return (torch.zeros((0, 64, 64, 3)), torch.zeros((0, 64, 64)))
-        return skin_texture.run(image, sam3_model, texture, detail, pore_scale, feather, seed, threshold, mask, exclude_mask)
+        wanted = heavy_wanted(type(self), prompt_graph, unique_id)
+        return drop_unwanted(type(self), skin_texture.run(image, sam3_model, texture, detail, pore_scale, feather, seed, threshold,
+                                                          mask, exclude_mask, want_image=wants(wanted, "image")), wanted)
 
 
 NODE_CLASS_MAPPINGS = {
