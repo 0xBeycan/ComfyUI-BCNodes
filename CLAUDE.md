@@ -1,7 +1,7 @@
 # ComfyUI-BCNodes
 
-A ComfyUI custom-node pack (`BC_*` utility nodes plus a `web/js` frontend). The node list and
-what each node does are in `README.md`.
+A ComfyUI custom-node pack (`BC_*` utility nodes plus a `web/js` frontend). The node list is in
+`README.md`; what each node does is in `docs/`, one page per menu category.
 
 ## Architecture
 

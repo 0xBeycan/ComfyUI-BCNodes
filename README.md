@@ -4,61 +4,61 @@ Utility nodes for ComfyUI, in one small pack.
 
 | Registration key | Display name | What it does |
 | --- | --- | --- |
-| `BC_AutoBypass` | Auto Bypass | Bypasses its targets automatically when a watched source is empty |
-| `BC_LogicBoolean` | Logic Boolean | 0–1 float → `BOOLEAN` / `NUMBER` / `INT` / `FLOAT` |
-| `BC_IsMaskEmpty` | Is Mask Empty | `MASK` → `BOOLEAN` |
-| `BC_MaskFillHoles` | Mask Fill Holes | Fills enclosed holes in a mask |
-| `BC_MaskGrow` | MaskGrow | Grows / shrinks a mask, then blurs it |
-| `BC_DrawMaskOnImage` | Draw Mask On Image | Paints a colour (with opacity) through a mask onto an image batch |
-| `BC_BlockifyMask` | Blockify Mask | A mask as the blocks of its bounding box that hold any of it |
-| `BC_RepeatMaskBatch` | Repeat Mask Batch | A mask batch repeated `amount` times |
-| `BC_ImageScaleByAspectRatio` | Image Scale By Aspect Ratio | Scales an image / mask to an aspect ratio and side length; `MASK` output is never `None` |
-| `BC_ImageResize` | Image Resize | Resizes an image batch (and mask) to a width and height: stretch, keep the proportion, pad or crop |
-| `BC_JoinImageLists` | Join Image Lists | Concatenates image lists, unlimited inputs |
-| `BC_MathExpression` | Math Expression | Arithmetic over `a`, `b`, `c` without `eval()` |
-| `BC_PromptList` | Prompt List | One prompt per line, as a list |
-| `BC_AnySwitch` | Any Switch | First connected non-None input, any type, unlimited inputs |
-| `BC_SelectSwitch` | Select Switch | Input of the selected named option, any type; only the selected branch runs |
-| `BC_Seed` | Seed | Seed widget; `-1` draws a new random seed on every run |
-| `BC_ShowText` | Show Text | Shows incoming text on the node, passes it on |
-| `BC_ImageComparer` | Image Comparer | Two images on the node, compared with a sliding divider |
-| `BC_PowerLoraLoader` | Power Lora Loader | `MODEL` + any number of LoRA rows → `MODEL`, no CLIP |
-| `BC_AnythingEverywhere` | Anything Everywhere | Feeds unconnected inputs of a type at prompt time |
-| `BC_FastGroupsBypasser` | Fast Groups Bypasser | One bypass toggle per group |
-| `BC_BiRefNetRemoveBackground` | BiRefNet Remove Background | Background removal with BiRefNet, plain torch |
-| `BC_DepthAnythingV2` | Depth Anything | Depth map with Depth Anything V2 Small or Depth Anything 3 (Small, Base, Mono-Large, Metric-Large; all Apache-2.0), near = white, at a ControlNet preprocessor's size or exactly width x height |
-| `BC_SeedVR2Resize` | SeedVR2 Resize | Original image → the padded frame SeedVR2 encodes (lanczos downscale, shortest-edge antialiased bicubic, pad 16, 4n+1 frames) plus the colour reference |
-| `BC_SeedVR2VAEEncode` | SeedVR2 VAE Encode | SeedVR2 VAE encode with the frames streamed from RAM slice by slice, so VRAM does not grow with the frame count |
-| `BC_SeedVR2VAEDecode` | SeedVR2 VAE Decode | SeedVR2 VAE decode with every decoded slice streamed to RAM, so VRAM does not grow with the frame count |
-| `BC_SeedVR2PostProcess` | SeedVR2 PostProcess | Post-Process SeedVR2 Output one frame at a time into one float16 output, no full-size temporaries |
-| `BC_AutoModelDownloader` | Auto Model Downloader | Lists a workflow's models and fetches the missing ones into `models/` |
-| `BC_PostFxApply` | PostFx Apply | Applies a `postfx` film-emulation look (theme + condition + strength) to an image batch, optional look override and mask |
-| `BC_PostFxTheme` | PostFx Theme | Built-in `postfx` theme → `POSTFX_LOOK`, to start a chain from a named look |
-| `BC_PostFxCustomLook` | PostFx Custom Look | Builds a look from common controls, or overrides them on top of an incoming look |
-| `BC_PostFxLut` | PostFx LUT | 3D `.cube` LUT as a look, standalone or layered on a theme |
-| `BC_PostFxSignatureSheet` | PostFx Signature Sheet | Labeled contact sheet of every theme in a category applied to one image |
-| `BC_CaptionAudit` | Caption Audit | Runs `caption-audit` over a LoRA caption folder and draws the report card on the node |
-| `BC_SocialMediaExport` | Social Media Export | One platform-ready derivative per ticked platform, minimum crop, spec-driven |
-| `BC_ImageQualityGate` | Image Quality Gate | Blur / sharpness / noise / clipping / entropy → `PASS` / `SO-SO` / `FAIL` badge, verdict and scores |
-| `BC_SaveImage` | Save Image | Saves images with folder / file names built from prompt widget values, any Pillow format, prompt + workflow embedded; preview only in the gallery, never under the node |
-| `BC_SaveImageWithCaption` | Save Image With Caption | Saves images as PNG and, with a caption connected, the caption next to each image under the same name, for training datasets |
-| `BC_SkinTexture` | Skin Texture | Micro-texture on skin inside a SAM 3 mask: boosts the image's own detail and multiplies in a synthetic pore field, in linear light |
-| — | Align | Align / distribute buttons in the selection toolbox |
-| — | Process Monitor | Not a node: live RAM / VRAM bars, an estimate before a run, per-node measurement, and the reason a killed run died (see [Process Monitor](#process-monitor)) |
+| `BC_AutoBypass` | [Auto Bypass](docs/workflow.md#bc_autobypass--auto-bypass) | Bypasses its targets automatically when a watched source is empty |
+| `BC_LogicBoolean` | [Logic Boolean](docs/logic.md#bc_logicboolean--logic-boolean) | 0–1 float → `BOOLEAN` / `NUMBER` / `INT` / `FLOAT` |
+| `BC_IsMaskEmpty` | [Is Mask Empty](docs/mask.md#bc_ismaskempty--is-mask-empty) | `MASK` → `BOOLEAN` |
+| `BC_MaskFillHoles` | [Mask Fill Holes](docs/mask.md#bc_maskfillholes--mask-fill-holes) | Fills enclosed holes in a mask |
+| `BC_MaskGrow` | [MaskGrow](docs/mask.md#bc_maskgrow--maskgrow) | Grows / shrinks a mask, then blurs it |
+| `BC_DrawMaskOnImage` | [Draw Mask On Image](docs/mask.md#bc_drawmaskonimage--draw-mask-on-image) | Paints a colour (with opacity) through a mask onto an image batch |
+| `BC_BlockifyMask` | [Blockify Mask](docs/mask.md#bc_blockifymask--blockify-mask) | A mask as the blocks of its bounding box that hold any of it |
+| `BC_RepeatMaskBatch` | [Repeat Mask Batch](docs/mask.md#bc_repeatmaskbatch--repeat-mask-batch) | A mask batch repeated `amount` times |
+| `BC_ImageScaleByAspectRatio` | [Image Scale By Aspect Ratio](docs/image.md#bc_imagescalebyaspectratio--image-scale-by-aspect-ratio) | Scales an image / mask to an aspect ratio and side length; `MASK` output is never `None` |
+| `BC_ImageResize` | [Image Resize](docs/image.md#bc_imageresize--image-resize) | Resizes an image batch (and mask) to a width and height: stretch, keep the proportion, pad or crop |
+| `BC_JoinImageLists` | [Join Image Lists](docs/image.md#bc_joinimagelists--join-image-lists) | Concatenates image lists, unlimited inputs |
+| `BC_MathExpression` | [Math Expression](docs/logic.md#bc_mathexpression--math-expression) | Arithmetic over `a`, `b`, `c` without `eval()` |
+| `BC_PromptList` | [Prompt List](docs/text.md#bc_promptlist--prompt-list) | One prompt per line, as a list |
+| `BC_AnySwitch` | [Any Switch](docs/logic.md#bc_anyswitch--any-switch) | First connected non-None input, any type, unlimited inputs |
+| `BC_SelectSwitch` | [Select Switch](docs/logic.md#bc_selectswitch--select-switch) | Input of the selected named option, any type; only the selected branch runs |
+| `BC_Seed` | [Seed](docs/logic.md#bc_seed--seed) | Seed widget; `-1` draws a new random seed on every run |
+| `BC_ShowText` | [Show Text](docs/text.md#bc_showtext--show-text) | Shows incoming text on the node, passes it on |
+| `BC_ImageComparer` | [Image Comparer](docs/workflow.md#bc_imagecomparer--image-comparer) | Two images on the node, compared with a sliding divider |
+| `BC_PowerLoraLoader` | [Power Lora Loader](docs/loaders.md#bc_powerloraloader--power-lora-loader) | `MODEL` + any number of LoRA rows → `MODEL`, no CLIP |
+| `BC_AnythingEverywhere` | [Anything Everywhere](docs/workflow.md#bc_anythingeverywhere--anything-everywhere) | Feeds unconnected inputs of a type at prompt time |
+| `BC_FastGroupsBypasser` | [Fast Groups Bypasser](docs/workflow.md#bc_fastgroupsbypasser--fast-groups-bypasser) | One bypass toggle per group |
+| `BC_BiRefNetRemoveBackground` | [BiRefNet Remove Background](docs/mask.md#bc_birefnetremovebackground--birefnet-remove-background) | Background removal with BiRefNet, plain torch |
+| `BC_DepthAnythingV2` | [Depth Anything](docs/image.md#bc_depthanythingv2--depth-anything) | Depth map with Depth Anything V2 Small or Depth Anything 3 (Small, Base, Mono-Large, Metric-Large; all Apache-2.0), near = white, at a ControlNet preprocessor's size or exactly width x height |
+| `BC_SeedVR2Resize` | [SeedVR2 Resize](docs/seedvr2.md#bc_seedvr2resize--seedvr2-resize) | Original image → the padded frame SeedVR2 encodes (lanczos downscale, shortest-edge antialiased bicubic, pad 16, 4n+1 frames) plus the colour reference |
+| `BC_SeedVR2VAEEncode` | [SeedVR2 VAE Encode](docs/seedvr2.md#bc_seedvr2vaeencode--seedvr2-vae-encode) | SeedVR2 VAE encode with the frames streamed from RAM slice by slice, so VRAM does not grow with the frame count |
+| `BC_SeedVR2VAEDecode` | [SeedVR2 VAE Decode](docs/seedvr2.md#bc_seedvr2vaedecode--seedvr2-vae-decode) | SeedVR2 VAE decode with every decoded slice streamed to RAM, so VRAM does not grow with the frame count |
+| `BC_SeedVR2PostProcess` | [SeedVR2 PostProcess](docs/seedvr2.md#bc_seedvr2postprocess--seedvr2-postprocess) | Post-Process SeedVR2 Output one frame at a time into one float16 output, no full-size temporaries |
+| `BC_AutoModelDownloader` | [Auto Model Downloader](docs/loaders.md#bc_automodeldownloader--auto-model-downloader) | Lists a workflow's models and fetches the missing ones into `models/` |
+| `BC_PostFxApply` | [PostFx Apply](docs/postfx.md#bc_postfxapply--postfx-apply-and-the-look-nodes) | Applies a `postfx` film-emulation look (theme + condition + strength) to an image batch, optional look override and mask |
+| `BC_PostFxTheme` | [PostFx Theme](docs/postfx.md#bc_postfxapply--postfx-apply-and-the-look-nodes) | Built-in `postfx` theme → `POSTFX_LOOK`, to start a chain from a named look |
+| `BC_PostFxCustomLook` | [PostFx Custom Look](docs/postfx.md#bc_postfxapply--postfx-apply-and-the-look-nodes) | Builds a look from common controls, or overrides them on top of an incoming look |
+| `BC_PostFxLut` | [PostFx LUT](docs/postfx.md#bc_postfxapply--postfx-apply-and-the-look-nodes) | 3D `.cube` LUT as a look, standalone or layered on a theme |
+| `BC_PostFxSignatureSheet` | [PostFx Signature Sheet](docs/postfx.md#bc_postfxapply--postfx-apply-and-the-look-nodes) | Labeled contact sheet of every theme in a category applied to one image |
+| `BC_CaptionAudit` | [Caption Audit](docs/analysis.md#bc_captionaudit--caption-audit) | Runs `caption-audit` over a LoRA caption folder and draws the report card on the node |
+| `BC_SocialMediaExport` | [Social Media Export](docs/image.md#bc_socialmediaexport--social-media-export) | One platform-ready derivative per ticked platform, minimum crop, spec-driven |
+| `BC_ImageQualityGate` | [Image Quality Gate](docs/analysis.md#bc_imagequalitygate--image-quality-gate) | Blur / sharpness / noise / clipping / entropy → `PASS` / `SO-SO` / `FAIL` badge, verdict and scores |
+| `BC_SaveImage` | [Save Image](docs/image.md#bc_saveimage--save-image) | Saves images with folder / file names built from prompt widget values, any Pillow format, prompt + workflow embedded; preview only in the gallery, never under the node |
+| `BC_SaveImageWithCaption` | [Save Image With Caption](docs/image.md#bc_saveimagewithcaption--save-image-with-caption) | Saves images as PNG and, with a caption connected, the caption next to each image under the same name, for training datasets |
+| `BC_SkinTexture` | [Skin Texture](docs/image.md#bc_skintexture--skin-texture) | Micro-texture on skin inside a SAM 3 mask: boosts the image's own detail and multiplies in a synthetic pore field, in linear light |
+| — | [Align](docs/workflow.md#align) | Align / distribute buttons in the selection toolbox |
+| — | [Process Monitor](docs/process-monitor.md) | Not a node: live RAM / VRAM bars, an estimate before a run, per-node measurement, and the reason a killed run died (see [Process Monitor](docs/process-monitor.md)) |
 
 Registration keys are BCNodes' own, so the packages above can be installed side by side without a clash. Type `BCNodes` in the node library to see them all; in the menu they sit in these groups:
 
 | Category | Nodes |
 | --- | --- |
-| `BCNodes/logic` | Logic Boolean, Math Expression, Any Switch, Select Switch, Seed |
-| `BCNodes/mask` | Mask Fill Holes, MaskGrow, Draw Mask On Image, Blockify Mask, Repeat Mask Batch, Is Mask Empty, BiRefNet Remove Background |
-| `BCNodes/image` | Image Scale By Aspect Ratio, Image Resize, Join Image Lists, Depth Anything, Social Media Export, Save Image, Save Image With Caption, Skin Texture |
-| `BCNodes/postfx` | PostFx Apply, Theme, Custom Look, LUT, Signature Sheet |
-| `BCNodes/analysis` | Image Quality Gate, Caption Audit |
-| `BCNodes/text` | Prompt List, Show Text |
-| `BCNodes/loaders` | Power Lora Loader, Auto Model Downloader |
-| `BCNodes/seedvr2` | SeedVR2 Resize, VAE Encode, VAE Decode, PostProcess |
-| `BCNodes/workflow` | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
+| [`BCNodes/logic`](docs/logic.md) | Logic Boolean, Math Expression, Any Switch, Select Switch, Seed |
+| [`BCNodes/mask`](docs/mask.md) | Mask Fill Holes, MaskGrow, Draw Mask On Image, Blockify Mask, Repeat Mask Batch, Is Mask Empty, BiRefNet Remove Background |
+| [`BCNodes/image`](docs/image.md) | Image Scale By Aspect Ratio, Image Resize, Join Image Lists, Depth Anything, Social Media Export, Save Image, Save Image With Caption, Skin Texture |
+| [`BCNodes/postfx`](docs/postfx.md) | PostFx Apply, Theme, Custom Look, LUT, Signature Sheet |
+| [`BCNodes/analysis`](docs/analysis.md) | Image Quality Gate, Caption Audit |
+| [`BCNodes/text`](docs/text.md) | Prompt List, Show Text |
+| [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Auto Model Downloader |
+| [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Resize, VAE Encode, VAE Decode, PostProcess |
+| [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
 
 ## Installation
 
@@ -75,693 +75,21 @@ Restart ComfyUI. `requirements.txt` holds `opencv-python` (the morphology of Mas
 
 The Align buttons are not a node; they appear in the toolbox above a multi-selection.
 
-## Nodes
-
-### `BC_LogicBoolean` — Logic Boolean
-
-A `FLOAT` widget in `[0, 1]` (default `1`) is rounded to a boolean.
-
-| Output | Value for widget `0.7` |
-| --- | --- |
-| `BOOLEAN` | `True` |
-| `NUMBER` | `1` |
-| `INT` | `1` |
-| `FLOAT` | `0.7` (unrounded) |
-
-### `BC_IsMaskEmpty` — Is Mask Empty
-
-`MASK` → `BOOLEAN`. `True` when the mask is missing or every pixel is `0`.
-
-### `BC_MaskFillHoles` — Mask Fill Holes
-
-`masks` (`MASK`, optional) → `MASKS`. Fills every fully enclosed hole of each mask in the batch: the mask is quantised to 8 bit, and the background regions that cannot reach the border in 4-connected steps (OpenCV connected components) become foreground — the same result as the earlier scipy `binary_fill_holes` implementation, bit for bit. A hole closed only by diagonal steps is filled; a gap touching the border is not enclosed and stays open. Output is hard `0/1`, `float32`, shape `(B, H, W)`. A missing mask (`None`, an empty tensor, or nothing wired) returns `torch.zeros((1, 64, 64))`.
-
-### `BC_MaskGrow` — MaskGrow
-
-`mask` (`MASK`, optional), widgets `invert_mask` (default `False`), `grow` (`-999..999`, default `4`), `blur` (`0..999`, default `4`) → `mask`.
-
-Optional inversion, then `|grow|` iterations of grey dilation (positive) or erosion (negative) with a cross-shaped 3×3 kernel on the 8-bit mask (OpenCV), then a Gaussian blur of radius `blur` (PIL). The result is the same as the earlier scipy implementation, bit for bit, with the morphology about ten times faster (measured at `grow` 10); frames are written into one preallocated output. A missing mask returns `torch.zeros((1, 64, 64))`.
-
-### `BC_DrawMaskOnImage` — Draw Mask On Image
-
-`image` (`IMAGE`, RGB or RGBA), `mask` (`MASK`), `color` (`STRING`, default `0, 0, 0`), `device` (`cpu` / `gpu`, optional) → `images`.
-
-Each frame is blended towards `color` by `m = mask × alpha`: `rgb × (1 − m) + color × m`; an RGBA frame keeps the larger of its own alpha and `m`. `color` is 1 (grey), 3 (RGB) or 4 (RGBA) comma-separated values — each value above 1 is read as 0–255, any other as 0–1 — or `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa`; the alpha is the opacity, `1` when absent. A mask of another size is scaled to the image (nearest), fewer masks than frames repeat in order, extra masks are ignored.
-
-Frames are blended one at a time on `device` into one preallocated output; the inputs are never copied. A missing or empty mask returns the image unchanged, an empty image batch passes through. A colour in another form, and an image that is neither RGB nor RGBA, raise with what to fix.
-
-### `BC_BlockifyMask` — Blockify Mask
-
-`masks` (`MASK`), `block_size` (`8..512`, default `32`), `device` (`cpu` / `gpu`, optional) → `mask`.
-
-Per mask: the bounding box of its pixels above `0` is cut into `side // block_size` blocks per axis (at least one) of equal size, the last row / column of blocks taking the remainder; a block is `1` when any of its pixels is above `0`, everything else is `0`. Integer counts per frame into one preallocated output, returned on the CPU. A missing or empty mask returns `torch.zeros((1, 64, 64))`.
-
-### `BC_RepeatMaskBatch` — Repeat Mask Batch
-
-`mask` (`MASK`), `amount` (`1..4096`, default `1`) → `mask`. The whole batch repeated `amount` times in order (`m0 m1 m0 m1 …`), as ComfyUI's Repeat Image Batch does for images: one allocation, and `amount = 1` passes the input on without a copy. A missing or empty mask returns `torch.zeros((1, 64, 64))`.
-
-### `BC_ImageScaleByAspectRatio` — Image Scale By Aspect Ratio
-
-`image` (`IMAGE`, optional), `mask` (`MASK`, optional), widgets `aspect_ratio` (`original` / `custom` / `1:1` / `3:2` / `4:3` / `16:9` / `2:3` / `3:4` / `9:16`), `proportional_width` and `proportional_height` (the `custom` ratio), `fit` (`letterbox` / `crop` / `fill`), `method` (`lanczos` / `bicubic` / `hamming` / `bilinear` / `box` / `nearest`), `round_to_multiple` (`8` … `512` / `None`), `scale_to_side` (`None` / `longest` / `shortest` / `width` / `height` / `total_pixel(kilo pixel)`), `scale_to_length` (default `1024`), `background_color` (default `#000000`, the letterbox fill).
-
-| Output | Type | Value |
-| --- | --- | --- |
-| `image` | `IMAGE` | `(B, H, W, 3)` |
-| `mask` | `MASK` | `(B, H, W)`; zeros of the output size when no usable mask came in |
-| `original_size` | `BOX` | `[width, height]` of the input |
-| `width` | `INT` | output width |
-| `height` | `INT` | output height |
-
-The aspect ratio fixes the shape, `scale_to_side` and `scale_to_length` fix the size (fractions truncated), then both sides are rounded **up** to `round_to_multiple`. `letterbox` fits the whole image inside and pads with `background_color`, `crop` centre-crops to the target ratio, `fill` stretches.
-
-Two things worth knowing: the `MASK` output is never `None` — with no mask wired, or ComfyUI's 64×64 placeholder mask, it is `torch.zeros((B, H, W))` — and a mask that does not match the image size, or no image and no mask at all, raises instead of returning `None` on every output.
-
-### `BC_ImageResize` — Image Resize
-
-`image` (`IMAGE`), widgets `width` and `height` (`0..16384`, default `512`), `upscale_method` (`nearest-exact` / `bilinear` / `area` / `bicubic` / `lanczos` / `nvidia_rtx_vsr`), `keep_proportion` (default `stretch`, below), `pad_color` (default `0, 0, 0`), `crop_position` (`center` / `top` / `bottom` / `left` / `right`), `divisible_by` (`0..512`, default `2`); optional `mask` (`MASK`) and `device` (`cpu` / `gpu`).
-
-| Output | Type | Value |
-| --- | --- | --- |
-| `IMAGE` | `IMAGE` | the resized batch |
-| `width` | `INT` | output width |
-| `height` | `INT` | output height |
-| `mask` | `MASK` | the mask resized with the image; without one, the padding (`1` = padding) or a `(1, 64, 64)` zero mask |
-
-| `keep_proportion` | Output |
-| --- | --- |
-| `stretch` | exactly `width × height`; a `0` keeps that side of the source |
-| `resize` | the largest size inside `width × height` at the source aspect; a `0` side is free |
-| `total_pixels` | `width × height` pixels at the source aspect |
-| `crop` | `width × height`; the source is first cropped to that aspect, the window placed at `crop_position` |
-| `pad` | as `resize`, then padded out to `width × height` with `pad_color`, the image placed at `crop_position` |
-| `pad_edge` | as `pad`; the padding is the mean of the image's first / last row and column |
-| `pad_edge_pixel` | as `pad`; the edge pixels are repeated outwards |
-| `pillarbox_blur` | as `pad`; the padding is the frame itself scaled to cover, blurred, 20 % desaturated and dimmed to 35 % |
-
-Both sides are then floored to a multiple of `divisible_by` (`0` or `1` = off); a padded image instead grows its right / bottom padding up to the next multiple. `nearest-exact`, `bilinear`, `area` and `bicubic` resample through torch on `device`; `lanczos` through PIL on 8-bit frames, as ComfyUI's own lanczos does, on the CPU only (`gpu` with `lanczos` raises); `nvidia_rtx_vsr` through NVIDIA RTX Video Super Resolution, which needs the `nvidia-vfx` package and an NVIDIA RTX GPU and rounds the size to a multiple of 8 (not exercised by the tests, which run without one). `pad_color` takes `r, g, b` (all values in 0–1 are scaled by 255, otherwise 0–255), `#rrggbb` / `#rrggbbaa` (the `#` optional), a colour name or one grey value, with one value per image channel (four for RGBA).
-
-The mask follows the image: scaled bilinearly to the image's size first when it differs, then cropped and resampled with it, padded with its own edge values (`1` around the frame for `pillarbox_blur`). ComfyUI's all-zero 64×64 placeholder counts as no mask.
-
-Frames are processed one at a time into one preallocated output; nothing is split into sub-batches and joined again. Deliberate choices:
-
-- An image already at the output size is returned as is, without a copy; an image or crop window that needs no resampling is not resampled, so `lanczos` does not round it through 8 bit.
-- Only an all-zero 64×64 mask is taken as the placeholder; a real 64×64 mask is resized like any other.
-- `pillarbox_blur` returns one mask per incoming mask frame, not one per image frame.
-- A `pad_color` that cannot be read, or whose value count does not match the image's channels, raises with what to fix instead of padding black; it is read only when `pad` actually pads.
-- Settings that would give a side of 0 pixels raise.
-
-### `BC_JoinImageLists` — Join Image Lists
-
-Concatenates image lists (`INPUT_IS_LIST`) and returns the joined list plus each input's length:
-
-| Output | Type | Meaning |
-| --- | --- | --- |
-| `Joined` | `IMAGE` list | all inputs, in slot order |
-| `Sizes` | `INT` list | length of each connected input |
-
-Slots grow on their own: the node starts with `In1` and `In2`; when both are connected `In3` appears, when `In3` is connected `In4` appears, and so on with no limit. Disconnecting a slot in the middle removes it and renumbers the rest. `In1` and `In2` are required.
-
-The backend accepts any number of `InN` inputs, so API prompts can list `In3`, `In4`, … directly; the frontend part only manages the slots on the canvas.
-
-### `BC_BiRefNetRemoveBackground` — BiRefNet Remove Background
-
-`image` (`IMAGE`), `model` (combo) → `IMAGE` (RGBA with alpha = matte, or RGB over a solid colour), `MASK` (the matte, `(B, H, W)`), `MASK_IMAGE` (the matte as an RGB image).
-
-Options, applied to the matte in this order: `sensitivity` (below 1 the matte is amplified, so faint areas count as foreground), `mask_blur` (Gaussian blur of the edges, pixels), `mask_offset` (grow / shrink by one pixel per step), `invert_output` (keep the background instead), `refine_foreground` (hardens the matte edge and scales the colours by it, for cleaner cut-outs on transparent output), `background` (`Alpha` → RGBA output; `Color` → RGB output over `background_color`), `background_color` (colour picker, `#rrggbb`; the picker needs frontend 1.28 or newer — older frontends show the input as a socket and the default `#222222` is used).
-
-The BiRefNet architecture lives in [`models/birefnet/arch/`](models/birefnet/arch/) as a plain `nn.Module` and the weights are loaded straight from safetensors — no `transformers`, no `trust_remote_code`, no `timm`.
-
-| Model | Backbone | Inference size |
-| --- | --- | --- |
-| `BiRefNet-general` (default) | swin_v1_l | 1024 |
-| `BiRefNet_512x512` | swin_v1_l | 512 |
-| `BiRefNet-HR` | swin_v1_l | 2048 |
-| `BiRefNet-portrait` | swin_v1_l | 1024 |
-| `BiRefNet-matting` | swin_v1_l | 1024 |
-| `BiRefNet-HR-matting` | swin_v1_l | 2048 |
-| `BiRefNet_lite` | swin_v1_t | 1024 |
-| `BiRefNet_lite-2K` | swin_v1_t | 2048 |
-| `BiRefNet_dynamic` | swin_v1_l | 1024 |
-| `BiRefNet_lite-matting` | swin_v1_t | 1024 |
-| `Lucida` | swin_v1_l | 1024 |
-
-Weights are fetched from Hugging Face on the node's first run — never at import — into `ComfyUI/models/background_removal/<name>.safetensors` (ComfyUI's own folder for its core BiRefNet nodes, so the weights are shared), through the pack's own downloader (resumable). The model stays loaded between runs and is swapped when a different one is selected. fp16 on CUDA, fp32 elsewhere.
-
-Licenses: the BiRefNet and Swin Transformer code is MIT (see [`models/birefnet/arch/LICENSE`](models/birefnet/arch/LICENSE)); the checkpoints are published under MIT by their authors.
-
-### `BC_DepthAnythingV2` — Depth Anything
-
-`image` (`IMAGE`), `resolution` (`INT`, default `518`, 14–2044, step 14); optional `model` (default `v2-small`) and `width`, `height` (`INT` sockets, both or neither) → `depth` (`IMAGE`, grayscale in all three channels).
-
-| `model` | Model | Weights, fetched on first use |
-| --- | --- | --- |
-| `v2-small` | Depth-Anything-V2-Small, this pack's own code | `depth_anything_v2_vits.pth` (~99 MB) into `ComfyUI/models/depthanything/` |
-| `v3-small` | DA3-Small, through ComfyUI core | `depth_anything_3_small.safetensors` (137,254,980 B) |
-| `v3-base` | DA3-Base, through ComfyUI core | `depth_anything_3_base.safetensors` (541,524,124 B) |
-| `v3-mono-large` | DA3Mono-Large, through ComfyUI core | `depth_anything_3_mono_large.safetensors` (1,336,748,056 B) |
-| `v3-metric-large` | DA3Metric-Large, through ComfyUI core | `depth_anything_3_metric_large.safetensors` (1,336,748,056 B) |
-
-Size: with `width` and `height` not connected, the depth map's short side is `resolution` and its long side keeps the input's aspect, each side rounded half to even — the size comfyui_controlnet_aux's Depth Anything preprocessor gives for that resolution. Connected, it is exactly `width` × `height` (a ControlNet hint at the latent's pixel size, say): a frame of another aspect is covered with its aspect kept and centre-cropped, as core's ControlNet cuts a hint (`center`). The prediction is resampled once, bilinearly, straight to that size. `resolution` is also the short side the model sees, rounded to a multiple of 14: `518` is the size V2 was trained at; a higher value gives finer edges and costs more memory and time.
-
-Values: relative, normalised per frame (min–max): nearest = white, farthest = black — the convention ControlNet depth models expect, so no invert is needed. V2 predicts relative inverse depth, used as it is. DA3 predicts depth: it is inverted (1 / depth) and clipped to its 2nd–98th percentiles, as the DA3 authors' `visualize_depth` does; the metric model gives no metres here (its scale cancels in the normalisation). The Mono and Metric models' sky (probability ≥ 0.3) is set far, as the authors' forward does.
-
-V2: each frame is preprocessed as the authors' `image2tensor` (resized with its aspect kept so the short side is `resolution` and both sides are multiples of 14, bicubic, ImageNet-normalised). Only Depth-Anything-V2-**Small** (ViT-S) is offered: it is the only Depth Anything V2 size released under Apache-2.0 (Base, Large and Giant are CC-BY-NC). The architecture (DPT head + DINOv2 ViT-S) lives in [`models/depth_anything_v2/arch/`](models/depth_anything_v2/arch/) as a plain `nn.Module` — no `transformers`, no xFormers. Attention runs through torch's `scaled_dot_product_attention`, with the same formula and scale as upstream, so the `[heads, N, N]` attention matrix is never built (the memory-efficient kernel on CUDA in fp32, the flash kernel on the CPU). At resolution 1288 on a 9:16 frame (15,089 tokens) that matrix is 5.1 GiB in fp32, and the explicit path held two of them, the scores and their softmax: about 10 GiB (computed). The authors' `depth_anything_v2_vits.pth` (from `depth-anything/Depth-Anything-V2-Small`) is fetched on the node's first run — never at import — through the pack's own downloader, loaded with `torch.load(weights_only=True)`, and kept loaded between runs. fp32 on every device.
-
-DA3: the v3 models run ComfyUI core's Depth Anything 3 — its loader, its preprocessing (`lower_bound_resize`) and its forward, in the dtype core loads the model in, one frame at a time — so they need a ComfyUI with core DA3 (commit 5ece24e7, 2026-06-10); without it the node says to update ComfyUI or choose `v2-small`. The weights are Comfy-Org's repackage (`Comfy-Org/Depth-Anything-3`), fetched into `ComfyUI/models/geometry_estimation/`, the folder core's Load Depth Anything 3 node reads, so the two share them. One model is kept loaded at a time.
-
-Licenses: the Depth Anything V2 and DINOv2 code is Apache-2.0 (see [`models/depth_anything_v2/arch/LICENSE`](models/depth_anything_v2/arch/LICENSE)); the V2 Small checkpoint is published under Apache-2.0 by its authors. DA3-Small, DA3-Base, DA3Mono-Large and DA3Metric-Large are Apache-2.0 (the authors' model cards and the Comfy-Org repackage); DA3-Large, DA3-Giant and DA3Nested are CC-BY-NC-4.0 and not offered. No DA3 code is vendored: it is core's, imported at run time.
-
-### `BC_MathExpression` — Math Expression
-
-`expression` (multiline) plus optional `a`, `b`, `c` (`INT`, `FLOAT`, `IMAGE` or `LATENT`) → `INT`, `FLOAT` (the same value, truncated and as a float). The result is also drawn on the node. Re-evaluated on every run.
-
-The expression is parsed with `ast` and walked with a whitelist — there is no `eval()`. Allowed: numbers; `+ - * / // % **`, `& | ^ << >>`; unary `- + ~ not`; `and` / `or`; comparisons (`== != < <= > >=`, chained) which yield `1` / `0`; the names `a`, `b`, `c`; `a.width` / `a.height` for an `IMAGE` or `LATENT` input (latent sizes are multiplied by 8); `NodeTitle.widget` to read another node's widget by node title or type; and the functions `min max abs round int float pow sqrt floor ceil randomint randomchoice iif`. Anything else — subscripts, strings, lambdas, other attributes or functions — is a `ValueError` naming the offending piece. An empty expression evaluates to `0`; a referenced input that is not connected is an error.
-
-### `BC_PromptList` — Prompt List
-
-`prepend_text`, `multiline_text`, `append_text`, `start_index`, `max_rows` → `prompt` (list), `body_text` (list), `show_help` (string). One entry per line of `multiline_text`, windowed by `start_index` / `max_rows`; `prompt` wraps each line in the prepend / append texts, `body_text` is the bare line. Both lists are `OUTPUT_IS_LIST`, so downstream nodes run once per line.
-
-### `BC_AnySwitch` — Any Switch
-
-Wildcard inputs `any_01`, `any_02`, … → the first one that is connected and not `None`. Nothing connected → `None`. Slots grow as they are connected (one empty slot always waits at the end; empty slots in the middle are removed and the rest renumbered), and the socket type follows whatever is connected so the canvas shows and checks the real type. Useful with an optional branch: wire the optional source first and a fallback second.
-
-### `BC_SelectSwitch` — Select Switch
-
-Named options, one wildcard input each, plus `selected` (a combo of the option names) → the input of the selected option. Like ComfyUI's boolean Switch, but chosen by name and with any number of options. `+ Add option` asks for a name; each option is a row under the combo: click its name to rename it (the link stays), `✕` to remove it. Empty, duplicate and reserved names (`selected`, `self`) are refused. The option list is saved with the workflow. The socket type follows whatever is connected, as in Any Switch.
-
-The option inputs are lazy: only the selected option's branch is executed, so an image can feed two expensive preprocessors and only the selected one runs. The selected option having no input connected is an error naming the option. `selected` can be promoted out of a subgraph or driven by a `STRING` / `COMBO` output.
-
-### `BC_Seed` — Seed
-
-`seed` (`INT`, `-1 … 0xffffffffffffffff`, default `0`) → `SEED`. Three buttons under the widget:
-
-| Button | Effect |
-| --- | --- |
-| `🎲 Randomize Each Time` | Sets the widget to `-1`: every queued run gets a fresh random seed. |
-| `🎲 New Fixed Random` | Writes a concrete random seed into the widget; it then stays fixed. |
-| `♻️ (Use Last Queued Seed)` | Puts the seed of the last queued run back into the widget. Greyed out and in parentheses until a run has used a seed that differs from the widget; after a random run it reads `♻️ <seed>`. |
-
-`-1` never travels: right before a prompt is sent, the frontend replaces it with a drawn seed in the API prompt and in the workflow copy that ends up in image metadata, so dropping a saved image onto the canvas brings the real seed back. A prompt queued through the API with `-1` gets the same treatment on the server. Random seeds are drawn below 2⁵³ so they survive the round trip through JavaScript exactly. The node re-evaluates every run; downstream nodes re-run only when the seed actually changes.
-
-### `BC_ShowText` — Show Text
-
-`text` (`STRING`, input only) → `STRING`. Shows the text in a read-only, growing box on the node and passes it on. A list input shows one box per element and is passed on as a list. The shown text is also written into the workflow metadata of saved images.
-
-### `BC_ImageComparer` — Image Comparer
-
-`image_a`, `image_b` (both optional) → shown on the node, drawn on the canvas itself so it moves with the node. A fills the node; while the pointer is over it, B is painted from the left edge up to the pointer with a divider line and A / B tags; leave the node and A shows alone. With more than one image per side a row of `A1 A2 B1 …` labels above the image picks the pair. The node keeps the size you give it; the image is letterboxed inside. The images are written to ComfyUI's temp folder like Preview Image does; the comparison lives with the run (it survives a tab switch, not a restart) and nothing is saved into the workflow file. Output node, no outputs.
-
-### `BC_PowerLoraLoader` — Power Lora Loader
-
-`model` (`MODEL`) + LoRA rows → `MODEL`. No `CLIP` in or out: each LoRA is applied to the model only (`load_lora_for_models(model, None, …)`), which is what you want for models that do not take a CLIP LoRA anyway.
-
-Each row is one line on the node: a toggle dot, the LoRA file (click to pick from `models/loras` — the list has a filter box), and one strength (`◀ ▶` steps by 0.05, click the number to type). `➕ Add LoRA` appends a row; a right click on a row opens its menu: *Toggle On/Off*, *Move Up*, *Move Down*, *Remove*. Rows are saved with the workflow as `{on, lora, strength}` and reach the backend as `lora_N` in row order; a row that is off, at strength 0, or whose file is missing is skipped (missing files are reported in the console).
-
-### `BC_AnythingEverywhere` — Anything Everywhere
-
-One node, any number of sources. Each source wired into the node is handed to **every unconnected input of the same type** in the workflow when the prompt is built — root graph and subgraph nodes alike. A connected slot takes the type and colour of its link (`VAE`, `CLIP`, …) and an empty `anything` slot is always kept at the bottom for the next one. The node properties `title_regex` and `input_regex` (right click → *Properties Panel*) narrow the targets by node title and input name; a node with a regex takes precedence over one without. A bypassed or muted Anything Everywhere does nothing.
-
-On the canvas the node shows what it reaches: inputs it feeds get a glowing ring in the link's colour, every other free input a small dot (it could be fed), the node itself a green badge in its title bar (yellow when a regex restricts it, dim when it feeds nothing). The translucent phantom links from the node to the inputs it feeds are drawn when the node or the target is selected or under the pointer. Settings → *BCNodes › Anything Everywhere*: *Show links* (all off / selected nodes / mouseover node / selected and mouseover nodes / all on) and *Highlight connected and connectable inputs*.
-
-Implementation: the API prompt that `graphToPrompt` returns is patched with the extra links, so queueing and *Export (API)* both contain them; no real links are drawn. Limits: the Anything Everywhere node and its source must sit in the root graph; a source that is a subgraph node's output is not resolved (a console warning says so).
-
-**API / serverless mode:** the links only exist because the frontend wrote them into the prompt. A prompt exported from the frontend (*Export (API)*) carries them and runs anywhere. A prompt assembled without the frontend has no such links, so any input that depended on Anything Everywhere is simply missing and validation fails with `Required input is missing`. The Python side of the node is a no-op that is never executed.
-
-### `BC_FastGroupsBypasser` — Fast Groups Bypasser
-
-One toggle per group — the groups of the graph the node sits in and the groups inside every subgraph: on = the group's nodes are active, off = bypassed (subgraph nodes inside a group are switched together with their contents). The list follows the graph on a half-second tick — new, renamed and removed groups, and modes changed by other means. Right-click menu: *Bypass all*, *Enable all*, *Toggle all*.
-
-Properties: `sort` (`position`, `alphanumeric` or `custom alphabet`), `customSortAlphabet` (letters, or comma-separated prefixes, that order the `custom alphabet` sort), `matchColors` (comma-separated group colours — names such as `red` or hex values — only matching groups are listed), `matchTitle` (regex; same), `showAllGraphs` (off = only the groups of the graph on screen), `toggleRestriction` (`default`, `max one` — switching a group on switches the others off — or `always one` — same, and the last active group cannot be switched off).
-
-**API / serverless mode:** bypass is a frontend concept. When the frontend builds the prompt, bypassed nodes are already left out and their links routed around them, so an exported prompt reflects the toggles at export time and runs anywhere. A prompt assembled without the frontend cannot be switched by this node; it contains whatever nodes it was given. The Python side of the node is a no-op that is never executed.
-
-### `BC_SeedVR2Resize` — SeedVR2 Resize
-
-`image` (`IMAGE`, the original frames), widgets `upscale_factor` (default `2`), `downscale_factor` (default `0.5`, `1` = none), `max_resolution` (cap on the longest edge, `0` = none, default `4096`), `emulate_bf16` (default on).
-
-| Output | Type | Value |
-| --- | --- | --- |
-| `image` | `IMAGE` | the frames SeedVR2 encodes: downscaled, resized, clamped to `[0, 1]`, zero-padded to a multiple of 16, frame count padded to 4n+1 by repeating the last frame; stored as float16 (VAE Encode casts to float16 anyway) — wire to *SeedVR2 VAE Encode* (video) or *VAE Encode (Tiled)* (single image) |
-| `reference` | `IMAGE` | the colour-correction reference: float32 resize of the same frames stored as float16, cropped to even width / height, original frame count — wire to *SeedVR2 PostProcess* `original_resized_images` |
-
-One node for the whole input stage of the SeedVR2 graph: `ImageScaleBy(lanczos, downscale_factor)` (PIL LANCZOS on 8-bit, exactly ComfyUI's), then a shortest-edge resize with `resolution = shortest edge of the original × upscale_factor` — `torchvision` `resize` with the shortest edge at `resolution` (the long edge is floored), `BICUBIC` with antialias, a second resize to `round(edge × max_resolution / longest)` when the longest edge exceeds `max_resolution` — then the clamp, the pad to a multiple of 16 and the 4n+1 frame padding. ComfyUI's own scale nodes cannot match the middle step: `bicubic` there is `F.interpolate` without antialias (a different cubic kernel) and *Resize Image* rounds the long edge. The resize runs in bfloat16 on the GPU for the frame that gets encoded and again in float32 on the CPU for the colour reference; with `emulate_bf16` on and a CUDA device, `image` carries the bfloat16-rounded values, otherwise it is a float32 resize. Both outputs are stored as float16 (VAE Encode casts `image` to float16 anyway; the float16 rounding of `reference` moves the colour transfer by ~0.1/255), which halves the RAM a long clip takes. Frames go through the GPU four at a time, so a long video batch works.
-
-### `BC_SeedVR2VAEEncode` — SeedVR2 VAE Encode
-
-`pixels` (`IMAGE`, the frames from *SeedVR2 Resize* `image`), `vae` (`VAE`, the SeedVR2 VAE), widgets `tile_size` (default `1024`), `overlap` (default `256`), `temporal_size`, `temporal_overlap` (the four of *VAE Encode (Tiled)*; the temporal two are ignored, as they are there for this VAE) → `LATENT` `(1, 16, T', H/8, W/8)`, float32.
-
-ComfyUI's *VAE Encode (Tiled)* moves the whole clip to the GPU first (after a full float32 `x × 2 − 1` copy in RAM), then encodes it slice by slice, so VRAM grows with the frame count on top of the encoder's fixed working set (over 28 GB for a whole 1080p frame, measured on a 32 GB card): 897 frames at 1080p do not fit a 32 GB card in one tile. This node runs the same slice loop with the same causal memory cache and the same `x × 2 − 1`, but builds each 4-frame input slice on the GPU only when its turn comes; the posterior mode, the crop to the latent size and the `× scaling_factor` follow the native path. VRAM is the encoder's working set whatever the length, and the float32 copy in RAM is gone. Spatial tiling is the native one: the same tile grid, cosine blend on the latent grid and count normalisation as `tiled_vae`, tile by tile with one causal cache at a time, the blend accumulated in float32 in RAM; a `tile_size` that covers the frame means one tile and no blend. At 1080p a whole-frame tile (2048) just fits a 32 GB card; a 1024 tile needs about half. `tests/parity_seedvr2_video.py --vae … --tile …` checks it against `VAE.encode_tiled` (expected: identical latent) and prints both peak VRAMs.
-
-### `BC_SeedVR2VAEDecode` — SeedVR2 VAE Decode
-
-`samples` (`LATENT`), `vae` (`VAE`, the SeedVR2 VAE), widgets `tile_size` (default `1024`), `overlap` (default `256`), `temporal_size`, `temporal_overlap` (the four of *VAE Decode (Tiled)*; the temporal two are ignored, as they are there for this VAE) → `IMAGE` `(B×T, H, W, 3)`, float16, `[0, 1]`.
-
-ComfyUI's *VAE Decode (Tiled)* on the SeedVR2 VAE decodes the whole clip in one call and keeps every decoded frame on the GPU until the end (`slicing_decode` collects the slices and `torch.cat`s them), so VRAM grows with the frame count — a 32 GB card tops out near 190 frames at 1080p. This node runs the same slice loop with the same causal memory cache, the same `/ scaling_factor`, even crop and `(x + 1) / 2` clamp, but moves each decoded slice to RAM as soon as it exists. VRAM is then the decoder's working set for one tile (over 31 GB for a whole 1080p frame, which no 32 GB card fits — 2048 fails at the first slice on a 5090; ~11 GB with a 1024 tile), whatever the length; the clip length is bounded by RAM instead. The frames are stored as float16, which is what the float16 VAE produced — the native node only upcasts them. Spatial tiling is the native one (same latent-grid tiles, same pixel-grid cosine blend and count normalisation as `tiled_vae`), tile by tile with one causal cache at a time; the blend is accumulated in float16 in RAM (12.5 MB per 1080p frame while the node runs) and normalised in float32 per 4-frame chunk, so the result equals the native tiled decode within float16 rounding. `tests/parity_seedvr2_video.py --vae … --tile …` checks it against `VAE.decode_tiled` (expected: equal after rounding to float16) and prints both peak VRAMs.
-
-Both VAE nodes check the free VRAM against the working set first and, when it is short, unload every other model (the DiT is staged in RAM by ComfyUI and reloads on demand); ComfyUI's own loader will not evict one "dynamic" model for another, which is what made the native decode fail next to a resident DiT. With enough VRAM nothing is unloaded.
-
-Measured on a 5090 (32 GB, 92 GB RAM), 720p → 1080p, 7B int8 DiT, both tiles 1024/256: 901 frames (30 s at 30 fps) in one piece, 18 min end to end, linear at ~36 s per second of video; the native tiled decode topped out near 190 frames on the same card. VRAM is flat over the length, RAM is what bounds it (about 61 MB per 1080p frame across the graph's kept outputs, plus a fixed ~13 GB).
-
-Both log their progress next to the progress bar: one line at the start (`897 frames, 6 tile(s) x 224 slice(s)` — the tile count shows at once whether `tile_size` covers the frame) and then every 10 s and at the end (`slice 48/1344, tile 1/6, frame 193/897, VRAM 11.2 GiB used, 41 s elapsed, ~1100 s left`; the VRAM figure is the driver's, what `nvidia-smi` shows).
-
-### `BC_SeedVR2PostProcess` — SeedVR2 PostProcess
-
-`images` (`IMAGE`), `original_resized_images` (`IMAGE`, the reference), widget `color_correction_method` (`lab` / `wavelet` / `adain` / `none`) → `images` (`IMAGE`, float16).
-
-*Post-Process SeedVR2 Output* builds five full-size float32 copies of the clip on the way through (the raw range conversion, the flattening reshape, the result buffer and the add / div / clamp chain), which is what runs a 30-second 1080p clip out of RAM. This node does the same operations in the same order — frame count and size cropped to the reference, `x × 2 − 1`, the colour transfer from `comfy/ldm/seedvr/color_fix.py` on the VAE device, `(x + 1) / 2` clamp, alpha taken from the reference, even crop — one frame at a time into a single preallocated float16 output. The colour maths itself stays float32 per frame, exactly as in the native node. `tests/parity_seedvr2_video.py` checks every method against the native node: equal after rounding to float16 (max difference 2.4e-4, a sixteenth of an 8-bit step).
-
-### `BC_AutoModelDownloader` — Auto Model Downloader
-
-One line per model: a URL, a directory under `ComfyUI/models` and two switches, *HF token needed?* and *Civitai token needed?*. `Add line` adds a line, `Remove last line` drops the last one. Two boxes at the top take a Hugging Face token and a Civitai token.
-
-| Field | Example | Meaning |
-| --- | --- | --- |
-| `model_N` | `https://huggingface.co/owner/repo/resolve/main/model.safetensors` | Direct download URL, from `huggingface.co` or `civitai.com` (or their subdomains) only — a shared workflow carries its URLs, so any other host is refused. Hugging Face `blob/` links are rewritten to `resolve/`. |
-| `dir_N` | `diffusion_models` or `sam3/nested` | Directory under `models/`; created if missing. Write `dir/name.safetensors` to save the file under another name. |
-| `hf_N`, `civitai_N` | `HF token needed?`, `Civitai token needed?` | Mark files that need a token: gated Hugging Face repos, Civitai downloads. |
-| `HF token`, `Civitai token` | — | Paste, press enter. Saved on the server (`user/BCNodes/downloader_tokens.json`, mode 600), never into the workflow, never shown again — the box reads `(saved)`. An empty value clears it. |
-
-The file name comes from the URL; when the URL has none (Civitai-style links) write it after the directory.
-
-What happens:
-
-- **First open.** When a workflow with this node is opened and some of its models are missing, one dialog lists them with a `Download` / `Not now` choice. Files marked as needing a token are tagged, and the dialog shows the token boxes with the files each one is needed for; a download does not start while a required token is missing. `Download` runs the downloads with a progress bar per file. The answer is remembered on the server (`user/BCNodes/downloader_seen.json`, keyed by the model list), so it is asked once per list, on any browser or URL. Nothing is asked when every file is already there.
-- **On the node.** The button reads `Download all models`, `Download missing models (n)` or `All models downloaded`; the status row names the missing files, or the token that is still needed (`needs Civitai token: x.safetensors`) — the button stays disabled until it is entered. A download started from the button reports to the browser console and to the status row, and ends with a small done dialog.
-- **When queued.** The node is an output node: running the workflow — from the UI or through the API with no browser — downloads whatever is still missing before finishing, and fails with a clear message if a required token is not stored.
-
-Downloads stream to `name.part` and are renamed when complete; an interrupted download resumes. The Hugging Face token is sent as a bearer header to huggingface.co, the Civitai token is appended to civitai.com links.
-
-### `BC_PostFxApply` — PostFx Apply, and the look nodes
-
-Film-emulation looks from the [`postfx`](https://github.com/0xBeycan/postfx) pipeline: film stocks, cinematic grades and `.cube` LUTs defined in YAML, running on the CPU. Pick a look, dial a shooting condition and a global strength, and every image gets the same reusable visual identity.
-
-| Node | In → Out | What it does |
-| --- | --- | --- |
-| PostFx Apply | `IMAGE` (+ `look`, `mask`) → `IMAGE` | The core node. Applies a **theme** + **condition** + **strength** to an image batch. `theme = none` passes the image through untouched. A connected `look` overrides the theme dropdown; an optional `mask` limits the effect to the masked region (an all-black mask is ignored). |
-| PostFx Theme | → `POSTFX_LOOK` | Emits a built-in theme as a look, to start a chain from a named theme. |
-| PostFx Custom Look | (`look`) → `POSTFX_LOOK` | Builds a look from common controls (white balance, exposure, contrast, vibrance / saturation, grain, vignette, halation, clarity). With a `look` input, only the knobs moved off neutral override it. |
-| PostFx LUT | (`look`) → `POSTFX_LOOK` | Attaches a 3D `.cube` LUT. Standalone by default; connect a `look` to layer the LUT on top of a theme. |
-| PostFx Signature Sheet | `IMAGE` → `IMAGE` | Labeled contact-sheet grid of every theme in a category, for side-by-side comparison. |
-
-`POSTFX_LOOK` is the link type between the look-producing nodes and PostFx Apply; every look node has an optional `look` input, so they chain in any order:
-
-```
-PostFx Theme (portra_400) → PostFx LUT (my_look.cube) → PostFx Custom Look (grain ↑) → PostFx Apply (condition = neon_night) → Save Image
-```
-
-- **Theme** = the look (colour / grain / lens): 3 texture-only `grain` finishes (fine per-pixel grain, colour untouched — the default social-still finish; chain a signature theme before one for a look), 15 `signature` film stocks and industry grades, 15 `experimental`.
-- **Condition** scales only the texture (grain, chroma noise, halation) for the shooting situation — `neutral`, `day_outdoor`, `overcast`, `indoor_evening`, `neon_night`, `night_flash` — and leaves colour alone.
-- **Strength** `0–1.5` blends the whole effect with the original. **Seed** makes grain deterministic; `batch_seed = increment` gives each frame of a batch its own grain.
-- **LUTs**: drop `.cube` 3D LUTs into this repo's [`luts/`](luts/) folder to see them in the PostFx LUT dropdown, or point `lut_path` at any absolute path. A LUT applies mid-pipeline, so a theme's grade runs before it and grain / vignette / sharpen finish on top.
-
-### `BC_CaptionAudit` — Caption Audit
-
-Audits a LoRA caption set before a training run, with the [`caption-audit`](https://github.com/0xBeycan/caption-audit) package. A token that appears in nearly every caption stops being a describable attribute: the model cannot tell it apart from the trigger word, so it bakes the concept into the identity — it can no longer be prompted in or out. That is a caption distribution problem, and nothing downstream of the dataset fixes it.
-
-A caption set is a **folder**: images plus `.txt` sidecars sharing each image's basename. The node takes the path, runs the audit in-process and draws the report card as a preview inside the node.
-
-| Input | Default | Meaning |
-| --- | --- | --- |
-| `directory` | *(empty = ComfyUI's cwd)* | The caption set to audit. Confined to the ComfyUI tree and the roots named in `BC_CAPTION_ROOTS` — see below. |
-| `trigger` | *(empty)* | The trigger word this LoRA owns. Empty = inferred and marked **[INFERRED]** on the card. |
-| `class_words` | — | Comma-separated, e.g. `woman, car`. Shown as `EXPECTED`, never flagged; coverage is measured per word. |
-| `fuse` | — | Comma-separated attributes you *want* welded to the trigger, e.g. `red scarf`. Shown as `INTENDED`, excluded from `critical`. |
-| `critical_threshold` / `warn_threshold` / `info_threshold` | `0.85` / `0.60` / `0.35` | Document-frequency cut-offs for fused / strong bias / not reported. |
-| `ngram_max` | `3` | Longest phrase analysed; phrases never cross a comma. |
-| `no_stopwords` | `false` | On shows function and relational words too. |
-| `recursive` | `false` | Descend into subdirectories. |
-| `table_rows` | `12` | Rows in the card's term table — the only input that changes the card's size, so the node never resizes between runs. |
-| `images_dir` *(optional)* | — | Where the images live when captions are kept apart. With no images anywhere the audit runs in caption-only mode. |
-
-`directory` and `images_dir` are widget values, and a widget value comes out of the workflow JSON — a graph you downloaded could otherwise point the node at any folder on the machine and read the caption text back out through `report_text` / `report_json`. So both paths are resolved with `realpath` and must land inside the ComfyUI tree (the ComfyUI root, `input/`, `output/`, `user/`). Datasets normally live somewhere else, and the way to allow one is the **`BC_CAPTION_ROOTS`** environment variable — `:`-separated roots on Linux and macOS, `;`-separated on Windows — read from the environment ComfyUI starts in, never from the graph:
-
-```bash
-BC_CAPTION_ROOTS=/path/to/datasets python main.py
-```
-
-A path outside those roots is refused on the error card with the roots listed, the same as a missing folder.
-
-Outputs: `report_image` (the card), `report_text` (the complete terminal report), `report_json` (identical to `caption-audit --format json`), `critical` and `warning` counts. `critical` exists to stop a workflow: wire it into a compare node ahead of the training branch. If the audit cannot run (missing folder, no `.txt` files, thresholds out of order) the node renders an error card and returns `critical = 1` instead of raising — a set that could not be checked has not been cleared.
-
-The card ends with the question the tool refuses to answer: every flagged term has two possible causes with opposite fixes — caption hygiene (delete the word where it is not the point) or dataset composition (collect contrast data) — and telling them apart means looking at the images, which neither the node nor the package does.
-
-### `BC_SocialMediaExport` — Social Media Export
-
-An output node: a full-quality master image in, one platform-ready derivative per ticked platform out, with the **minimum possible cropping** and a controlled, high-fidelity encode — so the platform serves the file as-is instead of re-cropping and re-compressing it. Wire the master into your normal save node *and* into this one; the input passes through untouched on the `images` output and `report` lists one aligned line per (image, platform).
-
-Each platform is an **aspect-ratio band** inside a pixel envelope (`nodes/social_specs.json`, re-read on every execution): a master inside the band is scaled only; outside it, `resize_mode` decides — `crop` trims the minimum on one axis, `pad` keeps every pixel on a blurred cover-scaled copy of itself. `quality` (default 92) is the starting JPEG / WebP quality; a platform with a byte cap steps it down to fit. `allow_upscale` enlarges small masters toward the envelope. Files land under `output/` as `<filename_prefix>_<platform>_00001_.<ext>`. 4:4:4 chroma, progressive encoding and a slightly top-weighted crop anchor are always on.
-
-### `BC_ImageQualityGate` — Image Quality Gate
-
-Single-node quality control for AI-generated images, built for filtering LoRA training sets. Five metrics — blur (block-wise Laplacian variance, optionally **center-weighted** so background bokeh does not inflate the score), sharpness (Laplacian + Tenengrad), noise (Gaussian difference), highlight / shadow clipping and Shannon entropy — each scored against a threshold, folded into a three-tier verdict:
-
-| Verdict | `verdict` | Meaning |
-| --- | --- | --- |
-| PASS | `2` | every metric within its threshold |
-| SO-SO | `1` | no hard failure, but a metric sits in the margin zone (within 1.4× of its threshold) |
-| FAIL | `0` | a metric is past the margin zone |
-
-`shot_type` presets (`close-up`, `medium`, `wide / full-body`) scale the sliders — a close-up is judged stricter on blur and sharpness, a wide shot looser — and `custom` uses the raw values. `blur_var_threshold` is the per-block Laplacian variance that counts as blurry: 20–50 for AI images (distilled models have inherently lower variance), 80–150 for photographs. Outputs: a colour-coded `badge` image with the per-metric breakdown, the integer `verdict` for a Switch node, a text `report` and the five raw scores.
-
-### `BC_SaveImage` — Save Image
-
-`images` (`IMAGE`), optional `positive_text_opt` / `negative_text_opt` (`STRING`, saved into the job data), no outputs. Widgets, in this order: `filename_prefix` (default `ComfyUI`), `filename_keys` (default `sampler_name, cfg, steps, %F %H-%M-%S`), `foldername_prefix`, `foldername_keys` (default `ckpt_name`), `delimiter` (one character, default `-`), `save_job_data` (`disabled` / `prompt` / `basic, prompt` / `basic, sampler, prompt` / `basic, models, sampler, prompt`), `job_data_per_image`, `job_custom_text`, `save_metadata`, `counter_digits` (0–8), `counter_position` (`last` / `first`), `one_counter_per_folder` (unused, kept for widget order), `image_preview`, `output_ext`, `quality` (0–100), `named_keys`.
-
-Folder and file names are built from comma-separated keys. Each key is one of:
-
-| Key | Gives |
-| --- | --- |
-| `cfg`, `sampler_name`, `ckpt_name`, any widget name | that widget's value; when several nodes have it, the highest-numbered node wins |
-| `13.cfg` | the widget of node 13 (falls back to the search above when node 13 is absent) |
-| `ckpt_path`, `lora_path`, `control_net_path` | the folder part of the matching `*_name` widget |
-| `resolution` | `WxH` of the first image |
-| `%F %H-%M-%S` | `strftime` of the run's timestamp |
-| `'text'` | a fixed string, quotes kept |
-| `/key`, `./key`, `../key` | steps into a subfolder before `key`; a bare `/` is a separator |
-| anything else | kept as a literal |
-
-Model names lose their `.safetensors` / `.ckpt` / `.pt` / `.bin` / `.pth` extension, floats are trimmed to 10 significant digits, `named_keys` writes `seed=123` instead of `123`, and `*?:"<>|` are dropped. The counter continues from the highest number already in the folder for that name and extension; `counter_digits` `0` writes a fixed name and overwrites.
-
-`output_ext` lists `.webp` (default), `.png`, `.jpg`, `.jpeg`, `.j2k`, `.jp2`, `.gif`, `.tiff`, `.bmp`, plus `.avif` and `.jxl` when `pillow-avif-plugin` / `pillow-jxl-plugin` are installed. `quality` is the encoder quality for the lossy formats (`100` = lossless for WebP / AVIF / JXL) and maps to PNG compression level 0–9. With `save_metadata` on, the prompt and workflow go into PNG text chunks or, for the other formats, into the EXIF `Make` and `ImageDescription` tags (BMP has neither); ComfyUI loads PNG and WebP back into the editor.
-
-`save_job_data` appends an entry per run to `jobs.json` in the folder (or one `<image>.json` per image with `job_data_per_image`): `basic` = prefix + resolution, `models` = checkpoint / LoRAs / VAE / upscale model, `sampler` = seed / steps / cfg / sampler / scheduler / denoise, `prompt` = the two `*_text_opt` inputs or, when neither is wired, the `text` widgets behind a KSampler's positive / negative links.
-
-`image_preview` only decides whether the saved images are listed in the queue / history gallery. Nothing is ever drawn under the node, so the node keeps the size it was given (`web/js/save_image.js` switches the frontend's output preview off for this node type). Errors while writing raise.
-
-### `BC_SaveImageWithCaption` — Save Image With Caption
-
-`images` (`IMAGE`), optional `caption` (`STRING` input) → `filename` (the last image's file name). Saves each image as a PNG with ComfyUI's own naming, `prefix_00001_.png`, and, with `caption` connected, the caption next to it under the same name, `prefix_00001_.txt`: the layout a training dataset needs. A small node on purpose; Save Image is the one with the name grammar, the formats and the job data.
-
-| Widget | Default | Meaning |
-| --- | --- | --- |
-| `filename_prefix` | `ComfyUI` | The name before the counter. Takes `%date:yyyy-MM-dd%` and `%Node.widget%` (filled in by the frontend when the prompt is queued, as for ComfyUI's Save Image), `%year%` … `%second%`, `%width%`, `%height%`, `%batch_num%` (the image's index in the batch) and `sub/` folders. |
-| `output_folder` | `output` | `output` is ComfyUI's output folder; `output/my_dataset` or `my_dataset` a folder inside it; an absolute path any folder, created when missing. A relative path that leads out of the output folder is refused. |
-| `caption_file_extension` | `.txt` | One of `.txt`, `.caption`, `.json`, `.yaml`, `.yml`, `.md`, `.csv`, `.tsv`, `.xml`, `.log`, `.ini`, `.toml` (the dot may be left out); anything else is an error. |
-
-The counter continues from the files in the folder and never overwrites one: a name whose image or caption file exists already is passed over. The prompt and the workflow are embedded in the PNG unless ComfyUI runs with `--disable-metadata`. Nothing is drawn under the node.
-
-### `BC_SkinTexture` — Skin Texture
-
-Rendered skin comes out as a smooth gradient, and grain laid on top of it reads as noise over plastic. This node puts a surface under the grain. Inside a skin mask it does two things, both in linear light and both as ratios, so colour is untouched and nothing moves:
-
-- **detail** — boosts the image's own high-frequency luminance (a 2 px high-pass at a 1024 px long edge, scaled with the image) so the fine structure the model did render stops being flat.
-- **texture** — multiplies in a synthetic pore field: two band-passed noise octaves at pore scale plus sparse darker pits, unit variance, `1.0` = ±6% luminance modulation. `pore_scale` sets the pore size (1 = about one pixel at 1024 px, scaled with the image).
-
-The mask comes from SAM 3: `sam3_model` is a checkpoint under `models/checkpoints` (the default `sam3.1_multiplex_fp16.safetensors` is downloaded on first use), prompted with `skin` minus `eyes, eyebrows, lips, teeth`; a `face` detection sets the strength — full when the face spans about a third of the frame height, fading as it gets smaller, because pore-scale detail has nowhere to live on a small face. Connect `mask` to skip the detection (body masks from your own SAM 3 prompts, for instance); `exclude_mask` is subtracted either way; `feather` softens the edge. Highlights get 30% of the effect and black none. The mask that was used comes out as `skin_mask`.
-
-Order in a still pipeline: Skin Texture → upscale → PostFx grain last. Keep the clean image for I2V; texture and grain are for the published still.
-
-### Align
-
-With two or more items selected (nodes, groups, reroutes, subgraph nodes), the selection toolbox gains eight buttons: align left / horizontal centers / right / top / vertical centers / bottom, and — from three items — distribute horizontally / vertically. A group moves with its contents. Each action is one undo step.
-
-For keeping things tidy while dragging, ComfyUI's own **Settings → LiteGraph → Canvas → Always snap to grid** does the job; the toolbox's **Arrange** menu re-stacks a selection vertically, horizontally or as a grid.
-
-### `BC_AutoBypass` — Auto Bypass
-
-A frontend-only node that watches a source (LoadImage, VHS_LoadVideo, ...) and flips its targets between **ACTIVE** and **BYPASS** automatically: empty source → targets bypassed, source loaded → targets active.
-
-No Python execution. The node is virtual — it never appears in the prompt sent to the backend; it only rewrites `mode` on the nodes wired into it. It lives entirely in [`web/js/auto_bypass.js`](web/js/auto_bypass.js).
-
-With no Python side, the frontend would title the node with its key; the node's definition carries its display name, so it is titled Auto Bypass from the search box and the node library alike, and a workflow saved with the title `BC_AutoBypass` gets `Auto Bypass` when it loads.
-
-#### The problem it solves
-
-Nodes such as `ImageResizeKJv2` have a **required** `image` input. When the upstream loader is bypassed, the link is gone and prompt validation fails with `Required input is missing: image`. In a workflow with an optional branch (a reference image that is sometimes there, sometimes not) you end up opening the subgraph and bypassing the resize node by hand every run. `Auto Bypass` does that for you.
-
-#### Inputs
-
-| Slot | Type | Meaning |
-| --- | --- | --- |
-| `watch` | `*` | Output of the source to observe (e.g. `LoadImage.IMAGE`). |
-| `force` | `BOOLEAN`, optional | Overrides the watch check: `true` → ACTIVE, `false` → BYPASS. See the note below. |
-| `mode` | `COMBO`, optional | Socket of the `mode` widget. Wire it, or promote the widget out of a subgraph so it is set from the parent graph. See the note below. |
-| `target_1..N` | `*` | Output of each node to control. Dynamic: connecting the last slot opens a new empty one, empty slots in the middle are removed. |
-
-#### Widgets
-
-| Widget | Values | Meaning |
-| --- | --- | --- |
-| `mode` | `auto` / `force_enable` / `force_bypass` | `auto` follows the decision below. The two `force_*` values pin the targets regardless of inputs. |
-| `status` | read-only | Current result and why, e.g. `BYPASS (image empty) -> 2 targets`. |
-
-#### Decision order
-
-1. `mode` is `force_enable` / `force_bypass` → that.
-2. `force` input is connected and resolves to a boolean → that.
-3. Otherwise the `watch` source is **empty** when any of these holds:
-   - `watch` is not connected;
-   - the source node's mode is MUTE (2) or BYPASS (4);
-   - the source's file widget (`image`, `video`, `audio`, `file`, `filename`, `model_file`, `path`, `url`) is an empty string / `None`.
-
-Empty → every target is set to BYPASS. Not empty → every target is set to ACTIVE.
-
-#### Behavior
-
-- Reroutes and virtual pass-through nodes (KJNodes Set/Get and the like) are followed to the real source, with cycle protection.
-- Links that enter a subgraph through its input panel are followed out to the parent graph, so the node can live inside a subgraph while the loader sits outside.
-- Every instance in the root graph and in every subgraph is evaluated together, on a 500 ms tick, on connection changes, and once more right before the prompt is built — so what gets queued always reflects the current state.
-- A target that is itself a subgraph node gets its inner nodes set as well (the frontend does not propagate a subgraph node's mode into its body on its own).
-- If `Auto Bypass` itself is muted or bypassed it stops touching its targets and says so in `status`.
-- A source that is also listed as a target is not treated as "empty" because of its own mode — otherwise it would lock itself in BYPASS.
-
-#### Note on `mode`
-
-`mode` is a widget with a socket. Inside a subgraph you can promote it (or drag its socket to the subgraph's input panel); the value then lives on the subgraph node in the parent graph and wins over the inner widget. The same works through nested subgraphs. When the socket is linked to a node instead, the value is read from that node's widget if it carries one of the three mode strings; otherwise the inner widget value applies.
-
-#### Note on `force`
-
-The frontend cannot see values computed during execution. `force` only resolves when the connected node carries the boolean as a widget — a Primitive node, a BOOL constant node, and similar. If it comes from a node that computes the value at run time (e.g. `Is Mask Empty`) it cannot be read; `status` reports `force unresolved` and the watch check applies instead.
-
-## Unused outputs
-
-A whole-batch IMAGE or MASK output that nothing is connected to comes out as an empty (0-frame)
-tensor instead of staying in ComfyUI's cache until the prompt ends; where it is a step of its own,
-the step does not run at all. That covers Image Resize `IMAGE` and `mask` and Image Scale By Aspect
-Ratio `image` and `mask` (not resized), BiRefNet Remove Background `IMAGE` and `MASK_IMAGE` (not
-built) and `MASK` (the matte, dropped), SeedVR2 Resize `image` and `reference` (each resize runs
-only for a connected output), and Skin Texture `image` (no texture) and `skin_mask` (dropped).
-Connecting such an output later runs the node again.
-
-When a prompt is queued, the pack writes which of these outputs are connected into the node's
-inputs (`bc_linked_heavy`), which makes the link state part of ComfyUI's cache key.
-
-The limit: another custom node pack can change a queued prompt after this pack has read it (an
-`on_prompt` handler that runs after this pack's), and a link it adds could then reach a cached empty
-output. Once every custom node has loaded (at server startup), this pack moves its handler (and
-ComfyUI-BCVideoNodes') after every other pack's. A handler added later, while ComfyUI runs, still
-runs after it: for such a prompt the saving is off, every output comes out full as without this
-feature, and the console says "RAM saving of unused outputs is off for this run: <pack> changes the
-prompt after it." ComfyUI-BCVideoNodes does the same for its own nodes and is not counted.
-
-## Measured against KJNodes and VideoHelperSuite
-
-One Wan Animate replacement workflow, run once with KJNodes (d3cfe21) and VideoHelperSuite
-(4d907be) and once with this pack (075ad7a) and ComfyUI-BCVideoNodes in their place: RTX PRO 6000
-Blackwell (96 GB), ComfyUI 79be670e, a 1080 x 1920, 30 fps clip of 612 frames loaded at 720p (609
-frames of 720 x 1280), the mask nodes on the CPU. Per node: the Process Monitor's time, RAM rise (the node's peak minus its start,
-the container's working set sampled every 100 ms) and output size (what ComfyUI keeps in its
-cache).
-
-| Step, 609 frames | KJNodes | This pack |
-| --- | --- | --- |
-| Grow by 10, no blur | GrowMaskWithBlur (expand 10): 1.2 s, 6.33 GiB, 4.18 GiB (a second, inverted mask) | MaskGrow (grow 10, blur 0): 0.8 s, 2.09 GiB, 2.09 GiB |
-| Blockify, 32 | BlockifyMask: 1.0 s, 4.19 GiB, 2.09 GiB | Blockify Mask: 0.5 s, 2.10 GiB, 2.09 GiB |
-| Paint the mask black | DrawMaskOnImage (`0, 0, 0`): 1.3 s, 19.73 GiB, 6.27 GiB | Draw Mask On Image (`0, 0, 0`): 0.5 s, 6.29 GiB, 6.27 GiB |
-
-Image Resize: the earlier workflow resized the 609 frames from 1080 x 1920 with ImageResizeKJv2
-(lanczos, crop): 13.2 s, a 12.57 GiB RAM rise, 6.27 GiB of output, kept next to the 14.18 GiB of
-full-size frames; the new one loads the video at 720 x 1280 with ComfyUI-BCVideoNodes' Load Video
-instead, so no video resize ran. On single images (to 720 x 1280, in a second workflow that
-animates one image) ImageResizeKJv2 and Image Resize took 0.02-0.03 s each, either pack.
-
-Repeat Mask Batch: one 720 x 1280 mask to 81 frames, VHS Duplicate Masks and Repeat Mask Batch
-both 0.01 s and a 0.28 GiB RAM rise for the 0.28 GiB output: no difference.
-
-## Process Monitor
-
-Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_monitor/`) and `web/js/process_monitor.js`. It shows what a workflow uses — RAM, VRAM, time — live, as an estimate before a run, measured per node during a run, and explains a run that was killed.
-
-**On / off.** One ComfyUI setting, *Settings → BCNodes → Process Monitor*, on by default, applied live, no restart. Off means no thread, no hook into the executor and no file writes. The server keeps a copy of the setting, so a ComfyUI started without a browser (a pod queued through the API) still runs the monitor when it was left on, or never set.
-
-**Top bar.** RAM against its limit, VRAM and the GPU load, once a second, while the monitor is on; and a `PM` button that opens the modal. The button is there with the monitor off too (Emulate and the crash report do not need it on) and turns red when the last run was killed.
-
-| Tab | What it shows |
-| --- | --- |
-| Live | The current values in detail, and the sources: the RAM source (the container's cgroup, or the process RSS outside a container), the VRAM source, and whether per-node measurement is available |
-| Emulate | An estimate of the current workflow, labelled *rough estimate; a real measurement exists only after the workflow has run once* (below) |
-| Last run | The last finished run: status, run time, the monitor's own time (`run 2.9 s, monitor 4.9 ms (0.17%)`), RAM / VRAM peaks, and the per-node table of an armed run. A row click selects and centres the node; a node inside a subgraph centres its subgraph node |
-| Crash | The report of a run that ended without an end record (below) |
-| Settings | Black box on / off, the snapshot threshold, the experimental stop, how many run logs are kept |
-
-**Sources.**
-
-- RAM: inside a memory-limited container, the cgroup (v2 `memory.current` / `memory.max` / `memory.peak` / `memory.events`, or the v1 files of the same counters) — its working set, usage minus the inactive file cache, as `docker stats` shows it. The host's RAM is never used there: it hides the limit the kernel kills at. Outside a container (macOS), the process RSS and the host's swap.
-- VRAM: torch's allocator counters (CUDA, or MPS on Apple silicon). NVML adds the device-wide use (every process) and the GPU load when a binding is installed (`pip install nvidia-ml-py`); it is optional, and without it the Live tab says so and the bar uses torch's counters.
-
-**Black box.** While a prompt runs, one JSON line every 100 ms: RAM and its limit, VRAM, the prompt, the executing node and the Python line the execution thread is on. With per-node measurement available, a line at every node start too: its inputs (shape, dtype, device, bytes), RAM, and the output cache total. Lines are written as they happen (no `fsync`: what the kernel holds survives a process kill), one file per run, in `user/BCNodes/process_monitor/runs/`; the last 20 runs are kept (a setting).
-
-**Threshold snapshot.** Once per run, when RAM crosses 85% of its limit (a setting): first the execution thread's stack and the tensors its locals hold, written at once, then every live tensor of the process grouped by shape / dtype / device with their bytes (`73 × (720, 1280, 3) float32, 11.1 MB each`). Limit: when RAM jumps from below the threshold to the kill within one 100 ms sample, the report names the node and the line but no tensors.
-
-**After a kill.** A RAM OOM is a `SIGKILL`: nothing runs at the end. After the restart the newest run log without an end record is the crash: the report names the node, the line, RAM at the node's start, the growth curve, the tensors alive at the snapshot and the output cache total. The cgroup's `oom_kill` counter confirms an OOM kill (it rose since the run started), or says it was not one. macOS has no OOM kill: there the report says when the run *fell into swap* instead. A VRAM OOM is an ordinary exception: ComfyUI survives it and the run log ends normally.
-
-**Per-node measurement.** Armed from the Last run tab (*Measure next run*), for one run. Per node: time, RAM peak (`memory.peak` reset per node where the kernel allows it, otherwise the 100 ms sampler's maximum; the table says which), VRAM peak, outputs (shape, dtype, device, bytes), the output cache total, models loaded and offloaded. A node served from the cache reads *from cache, not measured*, never 0; the report says whether models were already loaded at the start (first-run and repeat-run profiles differ). It hooks ComfyUI's executor and needs ComfyUI **0.17.0** or newer; on an older ComfyUI it is off and the modal says so, while the bars, Emulate and the black box keep working. An error inside the monitor turns the measurement off with a message; the workflow is never affected.
-
-**Emulate.** Built per component from the workflow as the frontend sends it: model weights from the safetensors headers (no model load), tensors exact from their sizes, every output kept in RAM until the prompt ends (ComfyUI-BCVideoNodes' WanAnimate Preprocess `final_mask` and `bg_images` only when something is connected to them: the node makes them only then), and each node's own transients (copies, lists before a stack or concat) from a cost profile worked out from that node's code. A node without a profile is listed as *not counted*, never guessed; bypassed and muted nodes are listed, not added; subgraphs are expanded. A video workflow also gets a table of resolution (480p / 720p / 1080p) by frame count. The fit check sets the estimate against a 24 GB and a 32 GB GPU and the RAM limit. After an armed run, that workflow's measured nodes replace the formulas, scaled to other sizes; the measurements live in `user/BCNodes/process_monitor/measurements/`, never in the workflow.
-
-**Stop at the threshold** (experimental, off by default) interrupts the prompt when the snapshot is taken. It only works inside nodes that check ComfyUI's interrupt (between sampler steps, for example); a running `torch.stack` or `np.fromiter` cannot be stopped.
-
-**Its own cost.** The monitor counts its own time (the hook on the execution thread, the sampler's CPU time, the snapshot) and reports it with every run. Measured on a 12-node CPU workflow of 2.9 s: 4.2 ms with the black box, 4.9 ms armed (0.15–0.17%).
-
-## Development
-
-```
-ComfyUI-BCNodes/
-  __init__.py              assembles the mappings, nothing else
-  nodes/
-    logic.py               BC_LogicBoolean, BC_IsMaskEmpty
-    mask.py                BC_MaskFillHoles, BC_MaskGrow, BC_DrawMaskOnImage, BC_BlockifyMask, BC_RepeatMaskBatch
-    image_scale.py         BC_ImageScaleByAspectRatio, BC_ImageResize
-    lists.py               BC_JoinImageLists
-    math_expression.py     BC_MathExpression
-    prompt_list.py         BC_PromptList
-    any_switch.py          BC_AnySwitch
-    select_switch.py       BC_SelectSwitch
-    seed.py                BC_Seed
-    show_text.py           BC_ShowText
-    image_comparer.py      BC_ImageComparer
-    power_lora_loader.py   BC_PowerLoraLoader
-    everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
-    seedvr2.py             BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess
-    common.py              wildcard type + flexible optional inputs + slot order + the device widget + unused outputs
-    birefnet.py            BC_BiRefNetRemoveBackground
-    depth_anything.py      BC_DepthAnythingV2
-    downloader.py          BC_AutoModelDownloader + its HTTP routes
-    postfx.py              BC_PostFxApply, BC_PostFxTheme, BC_PostFxCustomLook, BC_PostFxLut, BC_PostFxSignatureSheet
-    caption_audit.py       BC_CaptionAudit
-    social_media_export.py BC_SocialMediaExport (the ComfyUI adapter)
-    social_specs.json      the platform table it reads on every run
-    image_quality_gate.py  BC_ImageQualityGate
-    save_image.py          BC_SaveImage
-    save_image_with_caption.py  BC_SaveImageWithCaption
-    skin_texture.py        BC_SkinTexture
-    process_monitor.py     Process Monitor: its HTTP routes and live event (no nodes)
-  pipelines/               flows that combine models and libs; no ComfyUI node classes
-    matting.py             the BiRefNet matte, then the matte options
-    model_download.py      downloader lines resolved to files under ComfyUI/models, token gate
-    postfx.py              the postfx adapter: dropdown catalogs, looks, apply, contact sheet
-    skin_texture.py        SAM 3 prompts, face gate, mask assembly, texture call
-    quality_gate.py        shot profiles, the three-tier checks, verdict, report, badge
-    social_export.py       Social Media Export geometry / encoding engine, no ComfyUI or torch imports
-    save_image.py          Save Image name grammar, job JSON, save loop; Save Image With Caption's folder,
-                           caption extension check, save loop
-    depth_anything.py      Depth Anything: output size (short side or cover + crop), per-frame normalisation
-    caption_audit/
-      audit.py             audit plumbing: package guard, allowed roots, run_audit, reports
-      card.py              the fixed-size card
-    seedvr2/
-      resize.py            BC_SeedVR2Resize flow
-      encode.py            streaming tiled VAE encode
-      decode.py            streaming tiled VAE decode
-      postprocess.py       per-frame colour correction
-      progress.py          progress bar + timed log lines of the slice loops
-    process_monitor/       the Process Monitor
-      monitor.py           sampler thread, runs, per-node records, threshold snapshot
-      hook.py              the hook into ComfyUI's executor: detection, install, the per-node wrapper
-      blackbox.py          run logs, rotation, the Last run and Crash reports
-      emulate.py           the estimate before a run: graph, weights, fit check, calibration
-      profiles.py          per-node-type cost profiles for Emulate
-      settings.py          the monitor's settings file
-  models/                  one package per model; __init__.py imports those that register
-    common/
-      registry.py          model families (matting, depth): register / names / get
-      download.py          weight download with console progress
-    birefnet/
-      checkpoints.py       the 11 checkpoints, registered as matting models
-      weights.py           weights folder (ComfyUI/models/background_removal) and download
-      loader.py            one model loaded at a time
-      inference.py         resize, normalise, run, matte back to size
-      arch/                BiRefNet + Swin v1 architecture (see LICENSE in the folder)
-    depth_anything_v2/     Depth Anything V2 Small, registered as v2-small in the depth family
-      weights.py           weights folder (ComfyUI/models/depthanything) and download
-      loader.py            the model, loaded once
-      inference.py         resize as the authors, run, resample to the size asked for
-      arch/                DPT head + DINOv2 ViT-S architecture (see LICENSE in the folder)
-    depth_anything_3/      Depth Anything 3 over ComfyUI core, registered as v3-small, v3-base, v3-mono-large,
-                           v3-metric-large in the depth family (no code vendored)
-      weights.py           Comfy-Org/Depth-Anything-3 files into ComfyUI/models/geometry_estimation
-      loader.py            one model at a time, core's loader
-      inference.py         core's preprocess and forward, sky, inverse depth, percentile clip
-    seedvr2/               adapters over ComfyUI's SeedVR2 VAE
-      vae.py               VAE check + VRAM room
-      tiling.py            tile plan + blend weights
-      frames.py            shortest-edge resize, pad, 4n+1 frame count
-    sam3/                  adapter over ComfyUI's SAM 3
-      checkpoint.py        default checkpoint, combo list, path (downloads the default)
-      loader.py            one checkpoint held at a time
-      detect.py            text detection through ComfyUI's SAM3_Detect
-  libs/                    model-independent helpers
-    image.py               IMAGE frame <-> PIL, fit into a target size
-    geometry.py            integer size arithmetic for resizing; a ControlNet preprocessor's output size
-    filters.py             the two separable Gaussians (reflect, replicate)
-    mask.py                fill holes, grow / blur, draw a colour through a mask, blockify, offset, refine foreground, fit a mask batch
-    resize.py              Image Resize: size plan, crop / resample / pad per frame
-    color.py               hex colour parser, sRGB <-> linear
-    texture.py             the skin-texture engine
-    image_metrics.py       blur / sharpness / noise / clipping / entropy
-    math_expression.py     the whitelisted expression evaluator
-    download.py            HTTP download with resume, allowed hosts, token store
-    files.py               the next image counter from the files in a folder
-    image_write.py         Save Image formats, metadata, writer
-    memory_sources.py      RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers
-    tensor_census.py       tensor bytes per storage; the live tensor census
-    safetensors_info.py    weights from a safetensors header
-  luts/                    drop .cube LUTs here for PostFx LUT (gitignored)
-  web/js/
-    auto_bypass.js         the BC_AutoBypass virtual node
-    join_image_lists.js    unlimited slots for Join Image Lists
-    any_switch.js          unlimited slots + type following for Any Switch
-    select_switch.js       named option slots, rows and the selected combo for Select Switch
-    wildcard_type.js       socket type following, shared by the two switches
-    math_expression.js     result overlay for Math Expression
-    seed.js                Seed buttons + prompt rewrite of -1
-    show_text.js           Show Text boxes
-    comparer.js            image comparer widget
-    power_lora_loader.js   LoRA rows
-    fast_groups_bypasser.js  group toggles
-    anything_everywhere.js prompt-time input filling
-    auto_model_downloader.js  node UI, first-open dialog, progress
-    align.js               toolbox align / distribute buttons
-    save_image.js          no output preview under Save Image
-    save_image_with_caption.js  the frontend's text replacements in its filename_prefix
-    process_monitor.js     Process Monitor: top bar, modal, the on / off setting
-    bcnodes_api.js         JSON calls to the pack's routes (downloader, Process Monitor)
-  locales/en/main.json     tooltips for the Align buttons
-  tests/
-    test_import_time.py    import gate
-    test_nodes.py          every node with None / empty input, plus plain spot checks
-    test_runtime.py        headless ComfyUI: real validation + execution
-    test_layers.py         layer rule + module-level import rule, checked statically
-    layers/                pytest unit tests per layer (nodes/, pipelines/, models/, libs/)
-    conftest.py _harness.py  ComfyUI stubs, package binding
-    parity_seedvr2_video.py  BC_SeedVR2VAEEncode / VAEDecode / PostProcess vs ComfyUI's own nodes, numerically
-```
-
-Tests:
-
-```
-python tests/test_import_time.py                  # import budget and heavy-module ban
-python tests/test_nodes.py                        # None / empty input never raises unexpectedly
-COMFYUI_DIR=../ComfyUI python tests/test_runtime.py   # nodes through ComfyUI's validate_prompt + PromptExecutor
-python -m pytest tests -q                         # layer rule, unit tests
-python tests/parity_seedvr2_video.py --comfy ../ComfyUI --vae ../ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors   # SeedVR2 VAE Encode / Decode / PostProcess against ComfyUI's nodes (GPU for the VAE)
-```
-
-The tests need `postfx` and `caption-audit` importable: `pip install -r requirements.txt`, or `PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts.
-
-The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, Select Switch running only the selected lazy branch, and that a genuine type mismatch is still rejected.
-
-Every module in `nodes/`, `pipelines/`, `models/` and `libs/` imports only `torch`, `numpy` and the standard library at module level; `scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*` and the pip packages `postfx` / `caption_audit` are imported inside the functions that use them (the downloader also touches `server` / `aiohttp`, which ComfyUI has loaded already), so the pack adds nothing to ComfyUI's startup. `python tests/test_import_time.py` checks that.
+## Documentation
+
+- [Logic](docs/logic.md) — booleans, arithmetic, switches and the seed
+- [Mask](docs/mask.md) — mask checks, fill / grow / draw / blockify / repeat, BiRefNet background removal
+- [Image](docs/image.md) — scaling and resizing, image lists, depth maps, social media export, saving, skin texture
+- [PostFx](docs/postfx.md) — film-emulation looks: themes, custom looks, LUTs, signature sheets
+- [Analysis](docs/analysis.md) — the caption set audit and the image quality gate
+- [Text](docs/text.md) — prompt lists and showing text
+- [Loaders](docs/loaders.md) — LoRA loading and the model downloader
+- [SeedVR2](docs/seedvr2.md) — the SeedVR2 input stage, streaming VAE encode / decode, post-processing
+- [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, Auto Bypass, the Align buttons
+- [Unused outputs](docs/unused-outputs.md) — unconnected whole-batch outputs come out empty
+- [Measurements](docs/measurements.md) — time, RAM and output size of the mask nodes and Image Resize against the nodes they replace
+- [Process Monitor](docs/process-monitor.md) — RAM / VRAM live, an estimate before a run, per-node measurement, the report of a killed run
+- [Development](docs/development.md) — the repository layout, the tests and the import rule
 
 ## Third-party code
 

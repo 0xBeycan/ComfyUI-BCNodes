@@ -1,5 +1,5 @@
 {
-  "_comment": "Platform specs for the SocialMediaExport ComfyUI node. Keys beginning with '_' are metadata/comments and are ignored by the loader (they are not selectable platforms). Each platform is an aspect-ratio BAND (ar_min..ar_max), a pixel envelope (max_w x max_h), an optional upscale floor (min_w), an output format, and an optional byte cap (max_bytes). See README.md for the meaning of every field and the verification status of every number. Edit this file freely; it is re-read on every node execution (no restart needed).",
+  "_comment": "Platform specs for the SocialMediaExport ComfyUI node. Keys beginning with '_' are metadata/comments and are ignored by the loader (they are not selectable platforms). Each platform is an aspect-ratio BAND (ar_min..ar_max), a pixel envelope (max_w x max_h), an optional upscale floor (min_w), an output format, and an optional byte cap (max_bytes). See docs/image.md for the meaning of every field and the verification status of every number. Edit this file freely; it is re-read on every node execution (no restart needed).",
   "_schema": {
     "ar_min": "float, smallest allowed width/height ratio (tallest image) before cropping",
     "ar_max": "float, largest allowed width/height ratio (widest image) before cropping",
