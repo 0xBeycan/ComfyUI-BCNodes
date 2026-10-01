@@ -51,6 +51,34 @@ def main():
     check("MaskGrow empty tensor", lambda: torch.equal(mg.mask_grow(False, -2, 0, mask=empty_mask)[0], blank) or _fail())
     check("MaskGrow nothing wired", lambda: torch.equal(mg.mask_grow(True, 4, 4)[0], blank) or _fail())
 
+    dmi = m["mask"].DrawMaskOnImage()
+    img = torch.rand(2, 8, 8, 3)
+    check("DrawMaskOnImage no mask -> image unchanged", lambda: dmi.apply(img, None, "255, 0, 0")[0] is img or _fail())
+    check("DrawMaskOnImage empty mask -> image unchanged", lambda: dmi.apply(img, empty_mask, "255, 0, 0")[0] is img or _fail())
+    check("DrawMaskOnImage empty image batch", lambda: dmi.apply(torch.zeros((0, 8, 8, 3)), blank, "0, 0, 0")[0].shape == (0, 8, 8, 3) or _fail())
+    check("DrawMaskOnImage None image -> ValueError", lambda: _raises(ValueError, lambda: dmi.apply(None, blank, "0, 0, 0")))
+    check("DrawMaskOnImage full mask, opaque red -> red", lambda: torch.equal(dmi.apply(img, torch.ones(1, 8, 8), "255, 0, 0")[0], torch.tensor([1.0, 0.0, 0.0]).expand(2, 8, 8, 3)) or _fail())
+
+    bm = m["mask"].BlockifyMask()
+    check("BlockifyMask None", lambda: torch.equal(bm.process(None, 32)[0], blank) or _fail())
+    check("BlockifyMask empty tensor", lambda: torch.equal(bm.process(empty_mask, 32)[0], blank) or _fail())
+    check("BlockifyMask zero mask stays zero", lambda: torch.equal(bm.process(torch.zeros(2, 16, 16), 8)[0], torch.zeros(2, 16, 16)) or _fail())
+
+    rmb = m["mask"].RepeatMaskBatch()
+    check("RepeatMaskBatch None", lambda: torch.equal(rmb.repeat(None, 3)[0], blank) or _fail())
+    check("RepeatMaskBatch empty tensor", lambda: torch.equal(rmb.repeat(empty_mask, 3)[0], blank) or _fail())
+    check("RepeatMaskBatch 2 masks x 3 -> 6, in batch order", lambda: (lambda x: torch.equal(rmb.repeat(x, 3)[0], torch.cat([x, x, x])))(torch.rand(2, 4, 4)) or _fail())
+
+    irs = m["image_scale"].ImageResize()
+    resize_kw = dict(width=32, height=32, upscale_method="bilinear", keep_proportion="pad", pad_color="0, 0, 0", crop_position="center", divisible_by=2)
+    check("ImageResize None image -> ValueError", lambda: _raises(ValueError, lambda: irs.resize(None, **resize_kw)))
+    check("ImageResize empty batch", lambda: irs.resize(torch.zeros((0, 16, 8, 3)), **resize_kw)[0].shape == (0, 32, 32, 3) or _fail())
+    at_size = torch.rand(1, 32, 32, 3)
+    check("ImageResize at the output size -> the same tensor, (1, 64, 64) zero mask",
+          lambda: (lambda r: r[0] is at_size and r[1:3] == (32, 32) and torch.equal(r[3], blank))(irs.resize(at_size, **resize_kw)) or _fail())
+    check("ImageResize pad without a mask -> padding mask, 1 = padding",
+          lambda: (lambda r: r[0].shape == (1, 32, 32, 3) and r[3].shape == (1, 32, 32) and r[3][0, 0, 0] == 1 and r[3][0, 16, 16] == 0)(irs.resize(torch.rand(1, 16, 8, 3), **resize_kw)) or _fail())
+
     isr = m["image_scale"].ImageScaleByAspectRatio()
     scale_kw = dict(aspect_ratio="original", proportional_width=1, proportional_height=1, fit="crop", method="lanczos",
                     round_to_multiple="16", scale_to_side="longest", scale_to_length=64, background_color="#000000")
@@ -141,14 +169,6 @@ def main():
     ic = m["image_comparer"].ImageComparer()
     check("ImageComparer nothing wired", lambda: ic.compare() == {"ui": {"a_images": [], "b_images": []}} or _fail())
     check("ImageComparer empty batches", lambda: ic.compare(torch.zeros((0, 8, 8, 3)), torch.zeros((0, 8, 8, 3))) == {"ui": {"a_images": [], "b_images": []}} or _fail())
-
-    vc = m["video_comparer"].VideoComparer()
-    check("VideoComparer nothing wired", lambda: vc.compare() == {"ui": {"bc_video": []}} or _fail())
-    check("VideoComparer empty batches", lambda: vc.compare(24.0, torch.zeros((0, 8, 8, 3)), torch.zeros((0, 8, 8, 3))) == {"ui": {"bc_video": []}} or _fail())
-    check("VideoComparer fps None", lambda: vc.compare(None) == {"ui": {"bc_video": []}} or _fail())
-    fit = m["libs.video"].fit_frame
-    check("VideoComparer fit: larger clip is cropped, not scaled", lambda: (lambda x: torch.equal(fit(x, 64, 32), x[:32, :64, :3]))(torch.rand(33, 65, 4)) or _fail())
-    check("VideoComparer fit: smaller clip letterboxed, aspect kept", lambda: (lambda f: f.shape == (720, 1280, 3) and f[:, :16].abs().sum() == 0 and f[:, -16:].abs().sum() == 0 and f[:, 16:-16].abs().sum() > 0)(fit(torch.ones(480, 832, 3), 1280, 720)) or _fail())
 
     pl2 = m["power_lora_loader"].PowerLoraLoader()
     check("PowerLoraLoader no model", lambda: pl2.load_loras() == (None,) or _fail())

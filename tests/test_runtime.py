@@ -283,34 +283,39 @@ async def main():
     check("ImageComparer: a_images / b_images previews", out and len(out["3"]["a_images"]) == 2 and len(out["3"]["b_images"]) == 1 and out["3"]["a_images"][0]["type"] == "temp")
     check("ImageComparer: one side only", out and len(out["4"]["a_images"]) == 2 and out["4"]["b_images"] == [])
 
-    # Video Comparer: both batches in ONE mp4 in temp, A | B side by side, cut
-    # to the shorter clip; the info tells the widget how to split it.
+    # Mask ports end to end: Draw Mask On Image paints through a full mask, Blockify keeps a full
+    # mask full, Repeat Mask Batch triples the batch.
     out, _ = await run({
-        "1": N("EmptyImage", width=65, height=33, batch_size=6, color=0),   # odd sizes get trimmed to even
-        "2": N("EmptyImage", width=64, height=32, batch_size=4, color=16777215),
-        "3": N("BC_VideoComparer", fps=12.0, video_a=["1", 0], video_b=["2", 0]),
-        "4": N("BC_VideoComparer", fps=12.0, video_b=["2", 0]),
-    }, "videocomparer")
-    info = out["3"]["bc_video"][0] if out and out["3"]["bc_video"] else None
-    ok = info is not None and info["sides"] == ["A", "B"] and info["frames"] == {"A": 6, "B": 4} and info["fps"] == 12.0 and info["audio"] is False
-    if ok:
-        import av
-        import folder_paths
-        with av.open(os.path.join(folder_paths.get_temp_directory(), info["filename"])) as clip:
-            v = clip.streams.video[0]
-            ok = (v.width, v.height, v.frames) == (128, 32, 4) and not clip.streams.audio
-    check("VideoComparer: A | B -> one 128x32 mp4, 4 frames, no audio", ok)
-    check("VideoComparer: one side only", out is not None and out["4"]["bc_video"][0]["sides"] == ["B"])
+        "1": N("EmptyImage", width=32, height=16, batch_size=2, color=0),
+        "2": N("SolidMask", value=1.0, width=32, height=16),
+        "3": N("BC_DrawMaskOnImage", image=["1", 0], mask=["2", 0], color="255, 0, 0, 0.5", device="cpu"),
+        "4": N("ImageToMask", image=["3", 0], channel="red"),
+        "5": N("BC_IsMaskEmpty", mask=["4", 0]),
+        "6": N("PreviewAny", source=["5", 0]),
+        "7": N("BC_BlockifyMask", masks=["2", 0], block_size=8, device="cpu"),
+        "8": N("BC_RepeatMaskBatch", mask=["7", 0], amount=3),
+        "9": N("MaskToImage", mask=["8", 0]),
+        "10": N("GetImageSize", image=["9", 0]),
+        "11": N("BC_MathExpression", expression="a * 1000000 + b * 1000 + c", a=["10", 0], b=["10", 1], c=["10", 2]),
+    }, "mask-ports")
+    check("DrawMaskOnImage: validates, runs, paints the red channel", out is not None and out["6"]["text"] == ["False"])
+    check("BlockifyMask -> RepeatMaskBatch: 32x16, 1 mask x 3", out is not None and out["11"]["value"] == [32016003])
 
-    # Audio is muxed in as AAC and cut to the clip; an unequal size is letterboxed.
-    import torch
-    vc = sys.modules[nodes.NODE_CLASS_MAPPINGS["BC_VideoComparer"].__module__]
-    audio = {"waveform": torch.zeros((1, 2, 48000)), "sample_rate": 16000}
-    info = vc._encode([("A", torch.zeros((12, 8, 16, 3))), ("B", torch.ones((12, 16, 32, 3)))], 12.0, audio)
-    with av.open(os.path.join(folder_paths.get_temp_directory(), info["filename"])) as clip:
-        v, a = clip.streams.video[0], clip.streams.audio[0]
-        ok = info["audio"] is True and (v.width, v.height, v.frames) == (64, 16, 12) and a.codec_context.name == "aac" and a.sample_rate == 16000 and abs(float(a.duration * a.time_base) - 1.0) < 0.15
-    check("VideoComparer: audio -> AAC track, cut to the clip; smaller side letterboxed", ok)
+    # Image Resize: four outputs; pad writes the padding mask; width / height are INTs.
+    out, _ = await run({
+        "1": N("EmptyImage", width=96, height=48, batch_size=2, color=0),
+        "2": N("BC_ImageResize", image=["1", 0], width=64, height=64, upscale_method="lanczos", keep_proportion="pad",
+               pad_color="0, 0, 0", crop_position="center", divisible_by=2),
+        "3": N("BC_MathExpression", expression="a * 1000 + b", a=["2", 1], b=["2", 2]),
+        "4": N("BC_MathExpression", expression="a.width * 1000 + a.height", a=["2", 0]),
+        "5": N("BC_MathExpression", expression="a.width * 1000 + a.height", a=["2", 3]),
+        "6": N("BC_ImageResize", image=["1", 0], width=0, height=24, upscale_method="area", keep_proportion="crop",
+               pad_color="0, 0, 0", crop_position="left", divisible_by=8, device="cpu"),
+        "7": N("BC_MathExpression", expression="a * 1000 + b", a=["6", 1], b=["6", 2]),
+    }, "image-resize")
+    check("ImageResize: pad 96x48 -> 64x64, INT outputs", out is not None and out["3"]["value"] == [64064] and out["4"]["value"] == [64064])
+    check("ImageResize: pad without a mask -> 64x64 padding mask", out is not None and out["5"]["value"] == [64064])
+    check("ImageResize: crop, width 0 keeps the source width -> 96x24", out is not None and out["7"]["value"] == [96024])
 
     # Anything Everywhere / Fast Groups Bypasser: present in the prompt, never executed, never in the way.
     out, _ = await run({
@@ -348,7 +353,11 @@ async def main():
         "SelectSwitch": {"1": N("BC_MathExpression", expression="7"), "2": N("BC_SelectSwitch", selected="option_a", option_a=["1", 0]), "3": N("PreviewAny", source=["2", 0])},
         "ShowText": {"1": N("BC_PromptList", prepend_text="", multiline_text="x\ny", append_text="", start_index=0, max_rows=10), "2": N("BC_ShowText", text=["1", 0]), "3": N("PreviewAny", source=["2", 0])},
         "ImageComparer": {"1": image, "2": N("BC_ImageComparer", image_a=["1", 0], image_b=["1", 0])},
-        "VideoComparer": {"1": N("EmptyImage", width=16, height=8, batch_size=4, color=0), "2": N("BC_VideoComparer", fps=12.0, video_a=["1", 0])},
+        "DrawMaskOnImage": {"1": image, "2": solid, "3": N("BC_DrawMaskOnImage", image=["1", 0], mask=["2", 0], color="0, 0, 0"), "4": N("BC_MathExpression", expression="a.width", a=["3", 0])},
+        "BlockifyMask": {"1": solid, "2": N("BC_BlockifyMask", masks=["1", 0], block_size=8), "3": N("BC_MathExpression", expression="a.width", a=["2", 0])},
+        "RepeatMaskBatch": {"1": solid, "2": N("BC_RepeatMaskBatch", mask=["1", 0], amount=2), "3": N("BC_MathExpression", expression="a.width", a=["2", 0])},
+        "ImageResize": {"1": image, "2": N("BC_ImageResize", image=["1", 0], width=8, height=8, upscale_method="bilinear", keep_proportion="stretch",
+                                           pad_color="0, 0, 0", crop_position="center", divisible_by=2), "3": N("BC_MathExpression", expression="a.width", a=["2", 0])},
         "PowerLoraLoader": {"1": N("BC_PowerLoraLoader"), "2": N("PreviewAny", source=["1", 0])},
         "AnythingEverywhere / FastGroupsBypasser": {"1": N("BC_MathExpression", expression="3"), "2": N("BC_AnythingEverywhere", anything=["1", 0]), "3": N("BC_FastGroupsBypasser"), "4": N("PreviewAny", source=["1", 0])},
     }

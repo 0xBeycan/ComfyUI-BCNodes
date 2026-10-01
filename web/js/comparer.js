@@ -1,21 +1,13 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
-// Image Comparer and Video Comparer — drawn straight onto the node canvas,
-// so they move with the node and never lag behind it.
+// Image Comparer — drawn straight onto the node canvas, so it moves with the
+// node and never lags behind it.
 //
 // Slide mode: A fills the node; while the pointer is over the node, B is
 // painted from the left edge up to the pointer, with a divider line and A/B
 // tags. Leave the node and A is shown alone. The node keeps whatever size
 // the user gives it; the media is letterboxed inside.
-//
-// Video: the same, from ONE hidden <video> that holds A and B side by side
-// (nodes/video_comparer.py encodes them into a single file), each half
-// painted into its own place — one decoder, one clock, nothing to keep in
-// sync. Nothing plays until asked: the play button in the top row or a
-// click on the video toggles playback, the seek bar at the bottom scrubs,
-// the clip loops. Clips of different length were cut to the shorter one
-// and a note says so; with an audio track a speaker button mutes it.
 //
 // What is shown comes from app.nodeOutputs, the frontend's record of every
 // node's last output: filled by the "executed" event, restored with the
@@ -24,9 +16,7 @@ import { api } from "../../../scripts/api.js";
 // comparison lives with the run.
 
 const IMAGE_NODE = "BC_ImageComparer";
-const VIDEO_NODE = "BC_VideoComparer";
 const WIDGET_TYPE = "BC_COMPARER";
-const BAR_H = 22;
 const TAG_FONT = "bold 12px sans-serif";
 
 function viewUrl(info) {
@@ -43,41 +33,26 @@ function storedOutput(node) {
 }
 
 // ---------------------------------------------------------------------------
-// Media entries: {name, url, kind: "image" | "video", el}
-// A video entry also carries sides (["A", "B"], ["A"] or ["B"]: which halves
-// the file holds, left to right), audio and note.
+// Media entries: {name, url, el}
 // ---------------------------------------------------------------------------
 
 // A source that fails to load (a temp file gone after a restart, typically)
 // is marked and drawn as "not available" instead of loading forever.
 function loadMedia(entry, node) {
 	if (entry.el) return entry.el;
-	const failed = () => {
+	const img = new Image();
+	img.src = entry.url;
+	img.onload = () => node.setDirtyCanvas(true, false);
+	img.onerror = () => {
 		entry.failed = true;
 		node.setDirtyCanvas(true, false);
 	};
-	if (entry.kind === "video") {
-		const v = document.createElement("video");
-		v.playsInline = true;
-		v.preload = "auto";
-		v.loop = true;
-		v.src = entry.url;
-		v.addEventListener("loadeddata", () => node.setDirtyCanvas(true, false));
-		v.addEventListener("error", failed);
-		entry.el = v;
-	} else {
-		const img = new Image();
-		img.src = entry.url;
-		img.onload = () => node.setDirtyCanvas(true, false);
-		img.onerror = failed;
-		entry.el = img;
-	}
+	entry.el = img;
 	return entry.el;
 }
 
 function mediaSize(el, entry) {
 	if (!el || entry?.failed) return [0, 0];
-	if (el.tagName === "VIDEO") return el.readyState >= 1 ? [el.videoWidth, el.videoHeight] : [0, 0];
 	return el.complete ? [el.naturalWidth, el.naturalHeight] : [0, 0];
 }
 
@@ -95,11 +70,10 @@ function fitRect(w, h, x, y, bw, bh) {
 // ---------------------------------------------------------------------------
 
 class ComparerWidget {
-	constructor(node, video) {
+	constructor(node) {
 		this.type = WIDGET_TYPE;
 		this.name = "comparer";
 		this.node = node;
-		this.video = video;
 		this.value = { entries: [] };
 		this.serialize = false; // not written to the workflow file
 		this.options = { serialize: false }; // not sent in the prompt
@@ -108,8 +82,6 @@ class ComparerWidget {
 		this.b = null;
 		this.hover = null; // local x while the pointer is over the node
 		this.hits = [];
-		this.muted = false;
-		this.raf = null;
 	}
 
 	// ---- entries ------------------------------------------------------------
@@ -124,20 +96,12 @@ class ComparerWidget {
 	}
 
 	setEntries(entries) {
-		this.stop();
-		this.value = { entries: entries.map((e) => ({ name: e.name, url: e.url, kind: e.kind, sides: e.sides, audio: e.audio, note: e.note, failed: false })) };
+		this.value = { entries: entries.map((e) => ({ name: e.name, url: e.url, failed: false })) };
 		const all = this.value.entries;
-		if (this.video) {
-			// One clip holds both sides; A and B are its halves.
-			const clip = all.find((e) => e.kind === "video" && Array.isArray(e.sides));
-			this.select(clip?.sides.includes("A") ? clip : null, clip?.sides.includes("B") ? clip : null);
-		} else {
-			this.select(all.find((e) => e.name.startsWith("A")), all.find((e) => e.name.startsWith("B")));
-		}
+		this.select(all.find((e) => e.name.startsWith("A")), all.find((e) => e.name.startsWith("B")));
 	}
 
 	select(a, b) {
-		this.stop();
 		this.a = a ?? null;
 		this.b = b ?? null;
 		for (const e of [this.a, this.b]) if (e) loadMedia(e, this.node);
@@ -146,23 +110,11 @@ class ComparerWidget {
 
 	fromExecuted(message) {
 		const entries = [];
-		if (this.video) {
-			for (const info of message?.bc_video ?? []) {
-				const sides = info.sides ?? ["A", "B"];
-				const f = info.frames ?? {};
-				let note = "";
-				if (sides.length === 2 && f.A !== f.B && info.fps) {
-					note = `A ${(f.A / info.fps).toFixed(2)}s · B ${(f.B / info.fps).toFixed(2)}s — cut to the shorter clip`;
-				}
-				entries.push({ name: sides.join(""), url: viewUrl(info), kind: "video", sides, audio: !!info.audio, note });
-			}
-		} else {
-			const a = message?.a_images ?? [];
-			const b = message?.b_images ?? [];
-			const many = a.length > 1 || b.length > 1;
-			a.forEach((info, i) => entries.push({ name: many ? `A${i + 1}` : "A", url: viewUrl(info), kind: "image" }));
-			b.forEach((info, i) => entries.push({ name: many ? `B${i + 1}` : "B", url: viewUrl(info), kind: "image" }));
-		}
+		const a = message?.a_images ?? [];
+		const b = message?.b_images ?? [];
+		const many = a.length > 1 || b.length > 1;
+		a.forEach((info, i) => entries.push({ name: many ? `A${i + 1}` : "A", url: viewUrl(info) }));
+		b.forEach((info, i) => entries.push({ name: many ? `B${i + 1}` : "B", url: viewUrl(info) }));
 		this.setEntries(entries);
 	}
 
@@ -178,31 +130,25 @@ class ComparerWidget {
 		return pos[0] >= bx && pos[0] <= bx + bw && pos[1] >= by && pos[1] <= by + bh;
 	}
 
-	// The media box: below the top row (play / time / selector), above the seek bar.
+	// The media box: below the selector row when there is one.
 	box(y) {
 		const [w, h] = this.node.size;
-		const top = y + (this.video || this.value.entries.length > 2 ? 22 : 0);
-		const bottom = h - (this.video ? BAR_H : 4);
+		const top = y + (this.value.entries.length > 2 ? 22 : 0);
+		const bottom = h - 4;
 		return [4, top, w - 8, Math.max(20, bottom - top)];
 	}
 
-	// What to paint for one side: the element and the source rect inside it.
-	// An image entry is the whole picture; a video entry is split into its
-	// sides, left to right.
-	source(entry, side) {
+	// What to paint for one side: the element and its size.
+	source(entry) {
 		if (!entry) return null;
 		const el = loadMedia(entry, this.node);
 		const [w, h] = mediaSize(el, entry);
 		if (!w || !h) return null;
-		const sides = entry.sides ?? [side];
-		const i = sides.indexOf(side);
-		if (i < 0) return null;
-		const sw = w / sides.length;
-		return { el, sx: i * sw, sw, sh: h };
+		return { el, w, h };
 	}
 
 	paint(ctx, src, rect) {
-		ctx.drawImage(src.el, src.sx, 0, src.sw, src.sh, rect[0], rect[1], rect[2], rect[3]);
+		ctx.drawImage(src.el, 0, 0, src.w, src.h, rect[0], rect[1], rect[2], rect[3]);
 	}
 
 	draw(ctx, node, width, y) {
@@ -213,16 +159,15 @@ class ComparerWidget {
 		guard(() => this.sync());
 		this.hits = [];
 		ctx.save();
-		if (this.video) this.drawTopRow(ctx, node, width, y);
 		if (this.value.entries.length > 2) this.drawSelector(ctx, width, y);
 		const [bx, by, bw, bh] = this.box(y);
 		ctx.fillStyle = "#111";
 		ctx.fillRect(bx, by, bw, bh);
 
-		const srcA = this.source(this.a, "A");
-		const srcB = this.source(this.b, "B");
-		const rectA = srcA ? fitRect(srcA.sw, srcA.sh, bx, by, bw, bh) : null;
-		const rectB = srcB ? fitRect(srcB.sw, srcB.sh, bx, by, bw, bh) : null;
+		const srcA = this.source(this.a);
+		const srcB = this.source(this.b);
+		const rectA = srcA ? fitRect(srcA.w, srcA.h, bx, by, bw, bh) : null;
+		const rectB = srcB ? fitRect(srcB.w, srcB.h, bx, by, bw, bh) : null;
 
 		if (!rectA && !rectB) {
 			const pending = [this.a, this.b].some((e) => e && !e.failed);
@@ -250,7 +195,6 @@ class ComparerWidget {
 				this.tag(ctx, "A", bx + bw - 8, by + 8, "right");
 			}
 		}
-		if (this.video) this.drawBar(ctx, node, y);
 		ctx.restore();
 	}
 
@@ -276,8 +220,7 @@ class ComparerWidget {
 			total += w + gap;
 			return { e, w };
 		});
-		// centred, but to the right of the play button when there is one
-		let x = Math.max(this.video ? 120 : 0, (width - total + gap) / 2);
+		let x = Math.max(0, (width - total + gap) / 2);
 		for (const { e, w } of items) {
 			const on = e === this.a || e === this.b;
 			ctx.fillStyle = on ? "#ddd" : "#777";
@@ -294,175 +237,19 @@ class ComparerWidget {
 
 	// ---- pointer ------------------------------------------------------------
 
-	// Hit areas live anywhere on the node (selector row, play button, seek
-	// bar), so clicks are routed from the node's onMouseDown, not from the
-	// widget row litegraph would limit `mouse` to.
-	hitAt(pos) {
-		return this.hits.find((h) => pos[0] >= h.x && pos[0] <= h.x + h.w && pos[1] >= h.y && pos[1] <= h.y + h.h);
-	}
-
+	// The selector row's hit areas are routed from the node's onMouseDown,
+	// not from the widget row litegraph would limit `mouse` to.
 	click(pos) {
-		const h = this.hitAt(pos);
-		if (h) {
-			if (h.seek) h.seek(pos[0]);
-			else h.action?.();
-			return true;
-		}
-		// A click on the video itself toggles playback, like a video player.
-		if (this.video && this.clip() && this.inBox(pos)) {
-			this.toggle();
-			return true;
-		}
-		return false;
+		const h = this.hits.find((h) => pos[0] >= h.x && pos[0] <= h.x + h.w && pos[1] >= h.y && pos[1] <= h.y + h.h);
+		if (!h) return false;
+		h.action();
+		return true;
 	}
 
-	// Clicks inside the widget's own row (the top row) arrive here instead.
+	// Clicks inside the widget's own row arrive here instead.
 	mouse(event, pos) {
 		if (event.type !== "pointerdown" && event.type !== "mousedown") return false;
 		return this.click(pos);
-	}
-
-	// ---- video --------------------------------------------------------------
-
-	// The one <video> behind A and B, once it has metadata.
-	clip() {
-		const el = (this.a ?? this.b)?.el;
-		return el && el.tagName === "VIDEO" && el.readyState >= 1 ? el : null;
-	}
-
-	// Top row: play / pause at the left, time, the speaker when there is audio,
-	// the note at the right.
-	drawTopRow(ctx, node, width, y) {
-		const v = this.clip();
-		if (!v) return;
-		const t = v.currentTime || 0;
-		const d = v.duration || 0;
-		const cy = y + 10;
-
-		ctx.fillStyle = "#ddd";
-		const cx = 18;
-		if (!v.paused) {
-			ctx.fillRect(cx - 5, cy - 6, 3, 12);
-			ctx.fillRect(cx + 2, cy - 6, 3, 12);
-		} else {
-			ctx.beginPath();
-			ctx.moveTo(cx - 5, cy - 6);
-			ctx.lineTo(cx + 6, cy);
-			ctx.lineTo(cx - 5, cy + 6);
-			ctx.fill();
-		}
-		this.hits.push({ x: 4, y: y - 2, w: 30, h: 24, action: () => this.toggle() });
-
-		ctx.font = "11px sans-serif";
-		ctx.textBaseline = "middle";
-		ctx.textAlign = "left";
-		ctx.fillStyle = "#bbb";
-		const time = `${t.toFixed(2)} / ${d.toFixed(2)}`;
-		ctx.fillText(time, 34, cy);
-
-		const entry = this.a ?? this.b;
-		if (entry?.audio) {
-			const sx = 34 + ctx.measureText(time).width + 12;
-			this.drawSpeaker(ctx, sx, cy, this.muted);
-			this.hits.push({ x: sx - 4, y: y - 2, w: 24, h: 24, action: () => this.toggleMute() });
-		}
-		if (entry?.note) {
-			ctx.textAlign = "right";
-			ctx.fillStyle = "#e0b060";
-			ctx.font = "10px sans-serif";
-			ctx.fillText(entry.note, width - 6, cy);
-		}
-	}
-
-	// A small speaker: body + cone, two arcs when sounding, a slash when muted.
-	drawSpeaker(ctx, x, cy, muted) {
-		ctx.fillStyle = muted ? "#777" : "#ddd";
-		ctx.strokeStyle = ctx.fillStyle;
-		ctx.lineWidth = 1.5;
-		ctx.beginPath();
-		ctx.moveTo(x, cy - 3);
-		ctx.lineTo(x + 3, cy - 3);
-		ctx.lineTo(x + 7, cy - 6);
-		ctx.lineTo(x + 7, cy + 6);
-		ctx.lineTo(x + 3, cy + 3);
-		ctx.lineTo(x, cy + 3);
-		ctx.closePath();
-		ctx.fill();
-		if (muted) {
-			ctx.beginPath();
-			ctx.moveTo(x + 9, cy - 4);
-			ctx.lineTo(x + 15, cy + 4);
-			ctx.stroke();
-		} else {
-			for (const r of [4, 7]) {
-				ctx.beginPath();
-				ctx.arc(x + 7, cy, r, -Math.PI / 3, Math.PI / 3);
-				ctx.stroke();
-			}
-		}
-	}
-
-	// Bottom: the seek bar alone, full width.
-	drawBar(ctx, node, y) {
-		const [w, h] = node.size;
-		const v = this.clip();
-		if (!v) return;
-		const t = v.currentTime || 0;
-		const d = v.duration || 0;
-		const top = h - BAR_H;
-		const cy = top + BAR_H / 2;
-		const tx = 10;
-		const tw = w - 20;
-		ctx.fillStyle = "#333";
-		ctx.fillRect(tx, cy - 2, tw, 4);
-		ctx.fillStyle = "#4a90e2";
-		ctx.fillRect(tx, cy - 2, d ? (tw * Math.min(t, d)) / d : 0, 4);
-		const px = tx + (d ? (tw * Math.min(t, d)) / d : 0);
-		ctx.beginPath();
-		ctx.arc(px, cy, 5, 0, Math.PI * 2);
-		ctx.fillStyle = "#e6e6e6";
-		ctx.fill();
-		this.hits.push({ x: 4, y: top, w: w - 8, h: BAR_H, action: null, seek: (x) => this.seek(((Math.min(Math.max(x, tx), tx + tw) - tx) / tw) * d) });
-	}
-
-	toggle() {
-		const v = this.clip();
-		if (!v) return;
-		if (!v.paused) return this.stop();
-		v.muted = this.muted;
-		v.play().catch(() => {});
-		// Repaint on every frame while it plays.
-		const step = () => {
-			if (v.paused) {
-				this.raf = null;
-				this.node.setDirtyCanvas(true, false);
-				return;
-			}
-			this.node.setDirtyCanvas(true, false);
-			this.raf = requestAnimationFrame(step);
-		};
-		if (this.raf) cancelAnimationFrame(this.raf);
-		this.raf = requestAnimationFrame(step);
-	}
-
-	stop() {
-		this.clip()?.pause();
-		if (this.raf) cancelAnimationFrame(this.raf);
-		this.raf = null;
-		this.node.setDirtyCanvas?.(true, false);
-	}
-
-	seek(t) {
-		const v = this.clip();
-		if (v) v.currentTime = Math.max(0, t);
-		this.node.setDirtyCanvas(true, false);
-	}
-
-	toggleMute() {
-		this.muted = !this.muted;
-		const v = this.clip();
-		if (v) v.muted = this.muted;
-		this.node.setDirtyCanvas(true, false);
 	}
 }
 
@@ -478,28 +265,24 @@ function guard(fn) {
 	}
 }
 
-function install(nodeType, video) {
+function install(nodeType) {
 	const onNodeCreated = nodeType.prototype.onNodeCreated;
 	nodeType.prototype.onNodeCreated = function (...args) {
 		const r = onNodeCreated?.apply(this, args);
-		this.bcComparer = new ComparerWidget(this, video);
+		this.bcComparer = new ComparerWidget(this);
 		this.addCustomWidget(this.bcComparer);
-		this.setSize([Math.max(this.size[0], 320), Math.max(this.size[1], video ? 300 : 260)]);
+		this.setSize([Math.max(this.size[0], 320), Math.max(this.size[1], 260)]);
 		return r;
 	};
 
 	// The divider follows the pointer only while it is over the media box;
-	// over the title, the top row or the seek bar the node shows A alone.
+	// over the title or the selector row the node shows A alone.
 	const onMouseMove = nodeType.prototype.onMouseMove;
 	nodeType.prototype.onMouseMove = function (event, pos, ...rest) {
 		const r = onMouseMove?.apply(this, [event, pos, ...rest]);
 		const cmp = this.bcComparer;
 		if (cmp) {
 			cmp.hover = cmp.inBox(pos) ? pos[0] : null;
-			if (event.buttons & 1) {
-				const seek = cmp.hits.find((h) => h.seek && pos[0] >= h.x && pos[0] <= h.x + h.w && pos[1] >= h.y && pos[1] <= h.y + h.h);
-				if (seek) seek.seek(pos[0]);
-			}
 			this.setDirtyCanvas(true, false);
 		}
 		return r;
@@ -528,20 +311,11 @@ function install(nodeType, video) {
 		if (this.bcComparer?.click(pos)) return true;
 		return onMouseDown?.apply(this, [event, pos, ...rest]);
 	};
-
-	// Never let a widget problem escape into graph teardown: an exception in
-	// onRemoved aborts LGraph.clear() half way and corrupts the next workflow.
-	const onRemoved = nodeType.prototype.onRemoved;
-	nodeType.prototype.onRemoved = function (...args) {
-		guard(() => this.bcComparer?.stop());
-		return onRemoved?.apply(this, args);
-	};
 }
 
 app.registerExtension({
 	name: "BCNodes.Comparers",
 	beforeRegisterNodeDef(nodeType, nodeData) {
-		if (nodeData?.name === IMAGE_NODE) install(nodeType, false);
-		if (nodeData?.name === VIDEO_NODE) install(nodeType, true);
+		if (nodeData?.name === IMAGE_NODE) install(nodeType);
 	},
 });

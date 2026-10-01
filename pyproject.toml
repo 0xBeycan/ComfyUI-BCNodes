@@ -6,8 +6,9 @@ authors = [{ name = "0xBeycan" }]
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"
-# postfx and caption-audit back the PostFx and Caption Audit nodes; everything else ships with ComfyUI.
-dependencies = ["postfx>=1.1.0", "caption-audit>=1.3"]
+# postfx and caption-audit back the PostFx and Caption Audit nodes, opencv-python the mask morphology;
+# everything else ships with ComfyUI.
+dependencies = ["postfx>=1.1.0", "caption-audit>=1.3", "opencv-python"]
 
 [project.urls]
 Homepage = "https://github.com/0xBeycan/ComfyUI-BCNodes"

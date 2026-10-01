@@ -22,8 +22,8 @@ The root `__init__.py` only registers: it imports the node modules and merges th
 their order is the menu order. `WEB_DIRECTORY = "./web"`.
 
 ```
-nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index
-nodes/<domain>.py             one per domain (24); social_specs.json is the user-editable platform table
+nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, compute_device (the device widgets)
+nodes/<domain>.py             one per domain (23); social_specs.json is the user-editable platform table
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
@@ -41,7 +41,7 @@ models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 
 libs/image.py                 tensor_to_pil_u8, pil_to_tensor_hwc, fit_image
 libs/mask.py filters.py       mask ops; the two Gaussians (reflect / replicate), kept apart on purpose
 libs/color.py geometry.py texture.py image_metrics.py
-libs/video.py                 side-by-side geometry and PyAV writer
+libs/resize.py                Image Resize: size plan, crop / resample / pad per frame
 libs/math_expression.py       whitelisted AST evaluator with injected resolvers
 libs/download.py              HTTP download with resume, host list, token store
 libs/files.py image_write.py  output counters; image formats, metadata, write_image
@@ -73,9 +73,9 @@ uses it. The only exception is the downloader's guarded `server`/`aiohttp`. Gate
 of its HEAVY list loaded, every layer module cold-imported with `PYTHONSAFEPATH=1`) and the static
 check in `tests/test_layers.py`.
 
-A lazy import that looks unused can be an order lock: `import av` in `nodes/video_comparer.py`
-`_encode` and `from PIL import Image` in `nodes/save_image.py` `save_images` make a missing PyAV
-or Pillow fail before any other work. Keep them where they are.
+A lazy import that looks unused can be an order lock: `from PIL import Image` in
+`nodes/save_image.py` `save_images` makes a missing Pillow fail before any other work. Keep it
+where it is.
 
 ## How to add a node
 
@@ -120,6 +120,20 @@ or Pillow fail before any other work. Keep them where they are.
 - Two near-copies are merged only after they are proven identical; a difference is a question
   for the owner. One-caller helpers live next to their caller. Converters (float <-> uint8,
   PIL <-> tensor) that differ in any detail are never unified without the owner's word.
+
+## Optimization principles
+
+- Speed and RAM are equal priorities. No RAM saving that makes generation slower.
+- Bit-exact output is not required, but the output never drifts from the origin. A departure
+  from the origin is a widget setting, never hidden behaviour.
+- A port of a third-party node does the same job in our style: preallocated outputs, no
+  list -> stack/cat, no clones of read-only inputs, no leaks. Read the original first and never
+  reproduce its bugs. Take the logic only: no import of, dependency on or reference to the
+  original.
+- Precision is decided per tensor, by measurement, never globally.
+- Unused heavy outputs are not kept (the mechanism comes in a later change).
+- A node never resizes itself to its content; previews and widgets scale to the node.
+- Values that can differ between uses are widgets, not constants.
 
 ## Tests and gates
 

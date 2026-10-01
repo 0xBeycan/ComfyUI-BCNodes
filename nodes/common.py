@@ -1,4 +1,4 @@
-"""Shared bits for node definitions. Imports nothing beyond the stdlib."""
+"""Shared bits for node definitions. Imports nothing beyond the stdlib at module level."""
 
 
 class AnyType(str):
@@ -45,3 +45,17 @@ class FlexibleOptionalInputType(dict):
 def slot_index(pattern, name):
     m = pattern.match(name)
     return int(m.group(1)) if m else float("inf")
+
+
+DEVICES = ["cpu", "gpu"]
+
+
+def compute_device(choice):
+    """A `device` widget (DEVICES) as a torch device: "gpu" is ComfyUI's torch device."""
+    import torch
+
+    if choice == "gpu":
+        import comfy.model_management
+
+        return comfy.model_management.get_torch_device()
+    return torch.device("cpu")

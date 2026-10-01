@@ -1,12 +1,15 @@
-"""Image scale node.
+"""Image scale nodes.
 
     BC_ImageScaleByAspectRatio (Image Scale By Aspect Ratio)
+    BC_ImageResize             (Image Resize)
 
-Five outputs, with integer-truncation size arithmetic and round-up to the
-multiple. The MASK output is never None — with no usable mask it is a zero
-mask of the output size — and the two failure cases raise instead of
-returning `(None, None, None, 0, 0)`. PIL is imported inside the
-function.
+Image Scale By Aspect Ratio: five outputs, with integer-truncation size arithmetic and round-up
+to the multiple. The MASK output is never None — with no usable mask it is a zero mask of the
+output size — and the two failure cases raise instead of returning `(None, None, None, 0, 0)`.
+PIL is imported inside the function.
+
+Image Resize: stretch / keep proportion / pad / crop to a width and height, frame by frame into
+one preallocated output (libs/resize.py).
 """
 
 import numpy as np
@@ -14,6 +17,8 @@ import torch
 
 from ..libs.geometry import round_up_to_multiple, target_size
 from ..libs.image import fit_image, pil_to_tensor_hwc
+from ..libs.resize import resize_image
+from .common import DEVICES, compute_device
 
 RATIOS = ["original", "custom", "1:1", "3:2", "4:3", "16:9", "2:3", "3:4", "9:16"]
 FITS = ["letterbox", "crop", "fill"]
@@ -133,10 +138,76 @@ class ImageScaleByAspectRatio:
         return (out_images, out_masks, [orig_width, orig_height], target_width, target_height)
 
 
+# ComfyUI core's nodes.MAX_RESOLUTION.
+MAX_RESOLUTION = 16384
+UPSCALE_METHODS = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos", "nvidia_rtx_vsr"]
+KEEP_PROPORTIONS = ["stretch", "resize", "pad", "pad_edge", "pad_edge_pixel", "crop", "pillarbox_blur", "total_pixels"]
+CROP_POSITIONS = ["center", "top", "bottom", "left", "right"]
+
+
+class ImageResize:
+    """Resize an image batch (and a mask) to a width and height: stretch, keep the proportion, pad or crop."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "width": ("INT", {"default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1,
+                                  "tooltip": "0 = the source width (or free, when the proportion is kept)."}),
+                "height": ("INT", {"default": 512, "min": 0, "max": MAX_RESOLUTION, "step": 1,
+                                   "tooltip": "0 = the source height (or free, when the proportion is kept)."}),
+                "upscale_method": (UPSCALE_METHODS, {"tooltip": "lanczos runs on the CPU (PIL, 8-bit); nvidia_rtx_vsr "
+                                                                "needs the nvidia-vfx package and an NVIDIA RTX GPU and "
+                                                                "rounds the size to a multiple of 8."}),
+                "keep_proportion": (KEEP_PROPORTIONS, {"default": "stretch",
+                                                       "tooltip": "stretch: exactly width x height. resize: the largest size "
+                                                                  "inside width x height at the source aspect. pad / pad_edge / "
+                                                                  "pad_edge_pixel / pillarbox_blur: resize, then pad out to "
+                                                                  "width x height with pad_color / the edge mean / the edge "
+                                                                  "pixels / a blurred cover of the frame. crop: crop to the "
+                                                                  "target aspect, then resize. total_pixels: width x height "
+                                                                  "pixels at the source aspect."}),
+                "pad_color": ("STRING", {"default": "0, 0, 0",
+                                         "tooltip": "Padding colour for pad: 'r, g, b' in 0-255 or 0-1, #rrggbb, a colour name "
+                                                    "or one grey value."}),
+                "crop_position": (CROP_POSITIONS, {"default": "center",
+                                                   "tooltip": "Where the crop window sits (crop), or where the image sits "
+                                                              "inside the padding (pad modes)."}),
+                "divisible_by": ("INT", {"default": 2, "min": 0, "max": 512, "step": 1,
+                                         "tooltip": "Floor both sides to a multiple of this; padding grows to the next "
+                                                    "multiple instead. 0 or 1 = off."}),
+            },
+            "optional": {
+                "mask": ("MASK",),
+                "device": (DEVICES, {"tooltip": "Device the frames are processed on (not for lanczos)."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "INT", "INT", "MASK")
+    RETURN_NAMES = ("IMAGE", "width", "height", "mask")
+    FUNCTION = "resize"
+    CATEGORY = "BCNodes/image"
+    DESCRIPTION = ("Resizes the image (and mask) to width x height. The mask follows the image; without a mask, a "
+                   "padded image returns the padding as the mask (1 = padding). An image already at the output size "
+                   "is passed through untouched.")
+    SEARCH_ALIASES = ["BCNodes", "image resize", "resize image", "scale image", "pad image", "crop image", "letterbox",
+                      "pillarbox"]
+
+    def resize(self, image, width, height, upscale_method, keep_proportion, pad_color, crop_position, divisible_by,
+               mask=None, device="cpu"):
+        if not isinstance(image, torch.Tensor) or image.ndim != 4:
+            raise ValueError("Image Resize: connect an image batch (B, H, W, C)")
+        return resize_image(image, mask, width, height, upscale_method, keep_proportion, pad_color, crop_position,
+                            divisible_by, compute_device(device))
+
+
 NODE_CLASS_MAPPINGS = {
     "BC_ImageScaleByAspectRatio": ImageScaleByAspectRatio,
+    "BC_ImageResize": ImageResize,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "BC_ImageScaleByAspectRatio": "Image Scale By Aspect Ratio",
+    "BC_ImageResize": "Image Resize",
 }

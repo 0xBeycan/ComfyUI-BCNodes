@@ -9,7 +9,11 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_IsMaskEmpty` | Is Mask Empty | `MASK` → `BOOLEAN` |
 | `BC_MaskFillHoles` | Mask Fill Holes | Fills enclosed holes in a mask |
 | `BC_MaskGrow` | MaskGrow | Grows / shrinks a mask, then blurs it |
+| `BC_DrawMaskOnImage` | Draw Mask On Image | Paints a colour (with opacity) through a mask onto an image batch |
+| `BC_BlockifyMask` | Blockify Mask | A mask as the blocks of its bounding box that hold any of it |
+| `BC_RepeatMaskBatch` | Repeat Mask Batch | A mask batch repeated `amount` times |
 | `BC_ImageScaleByAspectRatio` | Image Scale By Aspect Ratio | Scales an image / mask to an aspect ratio and side length; `MASK` output is never `None` |
+| `BC_ImageResize` | Image Resize | Resizes an image batch (and mask) to a width and height: stretch, keep the proportion, pad or crop |
 | `BC_JoinImageLists` | Join Image Lists | Concatenates image lists, unlimited inputs |
 | `BC_MathExpression` | Math Expression | Arithmetic over `a`, `b`, `c` without `eval()` |
 | `BC_PromptList` | Prompt List | One prompt per line, as a list |
@@ -18,7 +22,6 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_Seed` | Seed | Seed widget; `-1` draws a new random seed on every run |
 | `BC_ShowText` | Show Text | Shows incoming text on the node, passes it on |
 | `BC_ImageComparer` | Image Comparer | Two images on the node, compared with a sliding divider |
-| `BC_VideoComparer` | Video Comparer | Two frame batches (+ optional audio) played as one clip, compared with a sliding divider |
 | `BC_PowerLoraLoader` | Power Lora Loader | `MODEL` + any number of LoRA rows → `MODEL`, no CLIP |
 | `BC_AnythingEverywhere` | Anything Everywhere | Feeds unconnected inputs of a type at prompt time |
 | `BC_FastGroupsBypasser` | Fast Groups Bypasser | One bypass toggle per group |
@@ -46,14 +49,14 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | Category | Nodes |
 | --- | --- |
 | `BCNodes/logic` | Logic Boolean, Math Expression, Any Switch, Select Switch, Seed |
-| `BCNodes/mask` | Mask Fill Holes, MaskGrow, Is Mask Empty, BiRefNet Remove Background |
-| `BCNodes/image` | Image Scale By Aspect Ratio, Join Image Lists, Depth Anything V2, Social Media Export, Save Image, Skin Texture |
+| `BCNodes/mask` | Mask Fill Holes, MaskGrow, Draw Mask On Image, Blockify Mask, Repeat Mask Batch, Is Mask Empty, BiRefNet Remove Background |
+| `BCNodes/image` | Image Scale By Aspect Ratio, Image Resize, Join Image Lists, Depth Anything V2, Social Media Export, Save Image, Skin Texture |
 | `BCNodes/postfx` | PostFx Apply, Theme, Custom Look, LUT, Signature Sheet |
 | `BCNodes/analysis` | Image Quality Gate, Caption Audit |
 | `BCNodes/text` | Prompt List, Show Text |
 | `BCNodes/loaders` | Power Lora Loader, Auto Model Downloader |
 | `BCNodes/seedvr2` | SeedVR2 Resize, VAE Encode, VAE Decode, PostProcess |
-| `BCNodes/workflow` | Image Comparer, Video Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
+| `BCNodes/workflow` | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
 
 ## Installation
 
@@ -66,7 +69,7 @@ git clone https://github.com/0xBeycan/ComfyUI-BCNodes
 pip install -r ComfyUI-BCNodes/requirements.txt
 ```
 
-Restart ComfyUI. `requirements.txt` holds the two packages that back the PostFx and Caption Audit nodes, [`postfx`](https://github.com/0xBeycan/postfx) and [`caption-audit`](https://github.com/0xBeycan/caption-audit); everything else ships with ComfyUI. Without them the pack still loads and only those nodes are absent. If this repository is still present under its old name `ComfyUI-AutoBypass`, delete that folder — its `AutoBypass` node is this pack's `BC_AutoBypass`.
+Restart ComfyUI. `requirements.txt` holds `opencv-python` (the morphology of MaskGrow and the hole filling of Mask Fill Holes) and the two packages that back the PostFx and Caption Audit nodes, [`postfx`](https://github.com/0xBeycan/postfx) and [`caption-audit`](https://github.com/0xBeycan/caption-audit); everything else ships with ComfyUI. Without `postfx` and `caption-audit` the pack still loads and only those nodes are absent. If this repository is still present under its old name `ComfyUI-AutoBypass`, delete that folder — its `AutoBypass` node is this pack's `BC_AutoBypass`.
 
 The Align buttons are not a node; they appear in the toolbox above a multi-selection.
 
@@ -89,13 +92,31 @@ A `FLOAT` widget in `[0, 1]` (default `1`) is rounded to a boolean.
 
 ### `BC_MaskFillHoles` — Mask Fill Holes
 
-`masks` (`MASK`, optional) → `MASKS`. Fills every fully enclosed hole of each mask in the batch (`scipy.ndimage.binary_fill_holes`); a gap touching the border is not enclosed and stays open. Output is hard `0/1`, `float32`, shape `(B, H, W)`. A missing mask (`None`, an empty tensor, or nothing wired) returns `torch.zeros((1, 64, 64))`.
+`masks` (`MASK`, optional) → `MASKS`. Fills every fully enclosed hole of each mask in the batch: the mask is quantised to 8 bit, and the background regions that cannot reach the border in 4-connected steps (OpenCV connected components) become foreground — the same result as the earlier scipy `binary_fill_holes` implementation, bit for bit. A hole closed only by diagonal steps is filled; a gap touching the border is not enclosed and stays open. Output is hard `0/1`, `float32`, shape `(B, H, W)`. A missing mask (`None`, an empty tensor, or nothing wired) returns `torch.zeros((1, 64, 64))`.
 
 ### `BC_MaskGrow` — MaskGrow
 
 `mask` (`MASK`, optional), widgets `invert_mask` (default `False`), `grow` (`-999..999`, default `4`), `blur` (`0..999`, default `4`) → `mask`.
 
-Optional inversion, then `|grow|` iterations of grey dilation (positive) or erosion (negative) with a cross-shaped 3×3 kernel, then a Gaussian blur of radius `blur`. A missing mask returns `torch.zeros((1, 64, 64))`.
+Optional inversion, then `|grow|` iterations of grey dilation (positive) or erosion (negative) with a cross-shaped 3×3 kernel on the 8-bit mask (OpenCV), then a Gaussian blur of radius `blur` (PIL). The result is the same as the earlier scipy implementation, bit for bit, with the morphology about ten times faster (measured at `grow` 10); frames are written into one preallocated output. A missing mask returns `torch.zeros((1, 64, 64))`.
+
+### `BC_DrawMaskOnImage` — Draw Mask On Image
+
+`image` (`IMAGE`, RGB or RGBA), `mask` (`MASK`), `color` (`STRING`, default `0, 0, 0`), `device` (`cpu` / `gpu`, optional) → `images`.
+
+Each frame is blended towards `color` by `m = mask × alpha`: `rgb × (1 − m) + color × m`; an RGBA frame keeps the larger of its own alpha and `m`. `color` is 1 (grey), 3 (RGB) or 4 (RGBA) comma-separated values — each value above 1 is read as 0–255, any other as 0–1 — or `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa`; the alpha is the opacity, `1` when absent. A mask of another size is scaled to the image (nearest), fewer masks than frames repeat in order, extra masks are ignored.
+
+Frames are blended one at a time on `device` into one preallocated output; the inputs are never copied. A missing or empty mask returns the image unchanged, an empty image batch passes through. A colour in another form, and an image that is neither RGB nor RGBA, raise with what to fix.
+
+### `BC_BlockifyMask` — Blockify Mask
+
+`masks` (`MASK`), `block_size` (`8..512`, default `32`), `device` (`cpu` / `gpu`, optional) → `mask`.
+
+Per mask: the bounding box of its pixels above `0` is cut into `side // block_size` blocks per axis (at least one) of equal size, the last row / column of blocks taking the remainder; a block is `1` when any of its pixels is above `0`, everything else is `0`. Integer counts per frame into one preallocated output, returned on the CPU. A missing or empty mask returns `torch.zeros((1, 64, 64))`.
+
+### `BC_RepeatMaskBatch` — Repeat Mask Batch
+
+`mask` (`MASK`), `amount` (`1..4096`, default `1`) → `mask`. The whole batch repeated `amount` times in order (`m0 m1 m0 m1 …`), as ComfyUI's Repeat Image Batch does for images: one allocation, and `amount = 1` passes the input on without a copy. A missing or empty mask returns `torch.zeros((1, 64, 64))`.
 
 ### `BC_ImageScaleByAspectRatio` — Image Scale By Aspect Ratio
 
@@ -112,6 +133,40 @@ Optional inversion, then `|grow|` iterations of grey dilation (positive) or eros
 The aspect ratio fixes the shape, `scale_to_side` and `scale_to_length` fix the size (fractions truncated), then both sides are rounded **up** to `round_to_multiple`. `letterbox` fits the whole image inside and pads with `background_color`, `crop` centre-crops to the target ratio, `fill` stretches.
 
 Two things worth knowing: the `MASK` output is never `None` — with no mask wired, or ComfyUI's 64×64 placeholder mask, it is `torch.zeros((B, H, W))` — and a mask that does not match the image size, or no image and no mask at all, raises instead of returning `None` on every output.
+
+### `BC_ImageResize` — Image Resize
+
+`image` (`IMAGE`), widgets `width` and `height` (`0..16384`, default `512`), `upscale_method` (`nearest-exact` / `bilinear` / `area` / `bicubic` / `lanczos` / `nvidia_rtx_vsr`), `keep_proportion` (default `stretch`, below), `pad_color` (default `0, 0, 0`), `crop_position` (`center` / `top` / `bottom` / `left` / `right`), `divisible_by` (`0..512`, default `2`); optional `mask` (`MASK`) and `device` (`cpu` / `gpu`).
+
+| Output | Type | Value |
+| --- | --- | --- |
+| `IMAGE` | `IMAGE` | the resized batch |
+| `width` | `INT` | output width |
+| `height` | `INT` | output height |
+| `mask` | `MASK` | the mask resized with the image; without one, the padding (`1` = padding) or a `(1, 64, 64)` zero mask |
+
+| `keep_proportion` | Output |
+| --- | --- |
+| `stretch` | exactly `width × height`; a `0` keeps that side of the source |
+| `resize` | the largest size inside `width × height` at the source aspect; a `0` side is free |
+| `total_pixels` | `width × height` pixels at the source aspect |
+| `crop` | `width × height`; the source is first cropped to that aspect, the window placed at `crop_position` |
+| `pad` | as `resize`, then padded out to `width × height` with `pad_color`, the image placed at `crop_position` |
+| `pad_edge` | as `pad`; the padding is the mean of the image's first / last row and column |
+| `pad_edge_pixel` | as `pad`; the edge pixels are repeated outwards |
+| `pillarbox_blur` | as `pad`; the padding is the frame itself scaled to cover, blurred, 20 % desaturated and dimmed to 35 % |
+
+Both sides are then floored to a multiple of `divisible_by` (`0` or `1` = off); a padded image instead grows its right / bottom padding up to the next multiple. `nearest-exact`, `bilinear`, `area` and `bicubic` resample through torch on `device`; `lanczos` through PIL on 8-bit frames, as ComfyUI's own lanczos does, on the CPU only (`gpu` with `lanczos` raises); `nvidia_rtx_vsr` through NVIDIA RTX Video Super Resolution, which needs the `nvidia-vfx` package and an NVIDIA RTX GPU and rounds the size to a multiple of 8 (not exercised by the tests, which run without one). `pad_color` takes `r, g, b` (all values in 0–1 are scaled by 255, otherwise 0–255), `#rrggbb` / `#rrggbbaa` (the `#` optional), a colour name or one grey value, with one value per image channel (four for RGBA).
+
+The mask follows the image: scaled bilinearly to the image's size first when it differs, then cropped and resampled with it, padded with its own edge values (`1` around the frame for `pillarbox_blur`). ComfyUI's all-zero 64×64 placeholder counts as no mask.
+
+Frames are processed one at a time into one preallocated output; nothing is split into sub-batches and joined again. Deliberate choices:
+
+- An image already at the output size is returned as is, without a copy; an image or crop window that needs no resampling is not resampled, so `lanczos` does not round it through 8 bit.
+- Only an all-zero 64×64 mask is taken as the placeholder; a real 64×64 mask is resized like any other.
+- `pillarbox_blur` returns one mask per incoming mask frame, not one per image frame.
+- A `pad_color` that cannot be read, or whose value count does not match the image's channels, raises with what to fix instead of padding black; it is read only when `pad` actually pads.
+- Settings that would give a side of 0 pixels raise.
 
 ### `BC_JoinImageLists` — Join Image Lists
 
@@ -201,12 +256,6 @@ The option inputs are lazy: only the selected option's branch is executed, so an
 ### `BC_ImageComparer` — Image Comparer
 
 `image_a`, `image_b` (both optional) → shown on the node, drawn on the canvas itself so it moves with the node. A fills the node; while the pointer is over it, B is painted from the left edge up to the pointer with a divider line and A / B tags; leave the node and A shows alone. With more than one image per side a row of `A1 A2 B1 …` labels above the image picks the pair. The node keeps the size you give it; the image is letterboxed inside. The images are written to ComfyUI's temp folder like Preview Image does; the comparison lives with the run (it survives a tab switch, not a restart) and nothing is saved into the workflow file. Output node, no outputs.
-
-### `BC_VideoComparer` — Video Comparer
-
-`video_a`, `video_b` as **`IMAGE` frame batches** (optional), `audio` (`AUDIO`, optional) plus `fps` (default 24). Feed it what *Load Video → Get Video Components* gives, or any frames you generated — no video pack needed. Both batches are written into **one** H.264 MP4 in ComfyUI's `temp/` folder, A and B side by side in the same frame (PyAV, which ComfyUI already depends on), so the browser decodes a single stream and the two sides cannot drift apart. Clips are cut to the shorter one, a smaller frame is letterboxed into the larger one, odd sizes lose one row / column, and the audio is muxed in as AAC, cut to the clip.
-
-On the node: the two halves layered with the same divider as the image comparer — the divider follows the pointer only while it is over the video. Nothing plays until asked: the ▶ / ⏸ button in the top row or a click on the video toggles playback, the seek bar at the bottom scrubs, the clip loops. With audio connected a speaker button in the top row mutes it. Clips of different length show a note. Output node, no outputs.
 
 ### `BC_PowerLoraLoader` — Power Lora Loader
 
@@ -463,8 +512,8 @@ ComfyUI-BCNodes/
   __init__.py              assembles the mappings, nothing else
   nodes/
     logic.py               BC_LogicBoolean, BC_IsMaskEmpty
-    mask.py                BC_MaskFillHoles, BC_MaskGrow
-    image_scale.py         BC_ImageScaleByAspectRatio
+    mask.py                BC_MaskFillHoles, BC_MaskGrow, BC_DrawMaskOnImage, BC_BlockifyMask, BC_RepeatMaskBatch
+    image_scale.py         BC_ImageScaleByAspectRatio, BC_ImageResize
     lists.py               BC_JoinImageLists
     math_expression.py     BC_MathExpression
     prompt_list.py         BC_PromptList
@@ -473,11 +522,10 @@ ComfyUI-BCNodes/
     seed.py                BC_Seed
     show_text.py           BC_ShowText
     image_comparer.py      BC_ImageComparer
-    video_comparer.py      BC_VideoComparer
     power_lora_loader.py   BC_PowerLoraLoader
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
     seedvr2.py             BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess
-    common.py              wildcard type + flexible optional inputs + slot order
+    common.py              wildcard type + flexible optional inputs + slot order + the device widget
     birefnet.py            BC_BiRefNetRemoveBackground
     depth_anything.py      BC_DepthAnythingV2
     downloader.py          BC_AutoModelDownloader + its HTTP routes
@@ -532,11 +580,11 @@ ComfyUI-BCNodes/
     image.py               IMAGE frame <-> PIL, fit into a target size
     geometry.py            integer size arithmetic for resizing
     filters.py             the two separable Gaussians (reflect, replicate)
-    mask.py                fill holes, grow / blur, offset, refine foreground, fit a mask batch
+    mask.py                fill holes, grow / blur, draw a colour through a mask, blockify, offset, refine foreground, fit a mask batch
+    resize.py              Image Resize: size plan, crop / resample / pad per frame
     color.py               hex colour parser, sRGB <-> linear
     texture.py             the skin-texture engine
     image_metrics.py       blur / sharpness / noise / clipping / entropy
-    video.py               side-by-side geometry + the MP4 writer
     math_expression.py     the whitelisted expression evaluator
     download.py            HTTP download with resume, allowed hosts, token store
     files.py               the next image counter from the files in a folder
@@ -551,7 +599,7 @@ ComfyUI-BCNodes/
     math_expression.js     result overlay for Math Expression
     seed.js                Seed buttons + prompt rewrite of -1
     show_text.js           Show Text boxes
-    comparer.js            image / video comparer widget
+    comparer.js            image comparer widget
     power_lora_loader.js   LoRA rows
     fast_groups_bypasser.js  group toggles
     anything_everywhere.js prompt-time input filling

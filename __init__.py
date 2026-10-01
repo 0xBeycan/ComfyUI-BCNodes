@@ -12,7 +12,11 @@ Nodes:
     BC_IsMaskEmpty               MASK -> BOOLEAN
     BC_MaskFillHoles             fill enclosed holes in a mask
     BC_MaskGrow                  grow / shrink + blur a mask
+    BC_DrawMaskOnImage           paint a colour through a mask onto an image
+    BC_BlockifyMask              a mask as the blocks of its bounding box that hold it
+    BC_RepeatMaskBatch           a mask batch repeated n times
     BC_ImageScaleByAspectRatio   scale image / mask to an aspect ratio and side length
+    BC_ImageResize               resize image / mask: stretch, keep proportion, pad or crop
     BC_JoinImageLists            concatenate image lists, unbounded inputs
     BC_BiRefNetRemoveBackground  BiRefNet matting, plain torch
     BC_DepthAnythingV2           Depth Anything V2 Small depth map, near = white, plain torch
@@ -24,7 +28,6 @@ Nodes:
     BC_Seed                      seed widget; -1 = new random seed every run
     BC_ShowText                  show incoming text on the node, pass it on
     BC_ImageComparer             two images, divider comparison on the node
-    BC_VideoComparer             two videos (VHS_FILENAMES), synced divider comparison
     BC_PowerLoraLoader           MODEL + LoRA rows -> MODEL (no CLIP)
     BC_AnythingEverywhere        feeds unconnected inputs of a type at prompt time
     BC_FastGroupsBypasser        one bypass toggle per group
@@ -51,13 +54,13 @@ in the selection toolbox.
 from .nodes import (
     any_switch, birefnet, caption_audit, depth_anything, downloader, everywhere, image_comparer, image_quality_gate, image_scale, lists,
     logic, mask, math_expression, postfx, power_lora_loader, prompt_list, save_image, seed, seedvr2, select_switch, show_text, skin_texture,
-    social_media_export, video_comparer,
+    social_media_export,
 )
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
-                image_comparer, video_comparer, power_lora_loader, everywhere, seedvr2,
+                image_comparer, power_lora_loader, everywhere, seedvr2,
                 postfx, caption_audit, social_media_export, image_quality_gate, save_image, skin_texture):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(_module.NODE_DISPLAY_NAME_MAPPINGS)

@@ -1,3 +1,5 @@
-# Backs the PostFx and Caption Audit nodes; everything else ships with ComfyUI.
+# postfx and caption-audit back the PostFx and Caption Audit nodes; opencv-python the mask
+# morphology and hole filling (MaskGrow, Mask Fill Holes). Everything else ships with ComfyUI.
 postfx>=1.1.0
 caption-audit>=1.3
+opencv-python

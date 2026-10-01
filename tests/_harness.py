@@ -3,7 +3,7 @@
 PKG_DIR, PKG_NAME, stub_comfy and load_package are tests/test_nodes.py's harness, moved here
 verbatim so every test binds the pack the same way. load_package now returns a ModuleMap: the
 same eager node modules by short name, plus any other pack module by its dotted path, imported
-on first access (m["libs.video"]), so a later move edits one access line instead of a module
+on first access (m["libs.mask"]), so a later move edits one access line instead of a module
 list. Imports only the standard library at module level (stub_comfy imports torch when called).
 """
 
@@ -99,7 +99,7 @@ def stub_comfy(tmp):
 class ModuleMap(dict):
     """Modules of one package binding. The eager entries are keyed by node module name
     (m["logic"]); any other key is a dotted path under the package, imported when first read
-    (m["libs.video"] -> <package>.libs.video)."""
+    (m["libs.mask"] -> <package>.libs.mask)."""
 
     def __init__(self, package, eager):
         super().__init__(eager)
@@ -115,7 +115,7 @@ def load_package():
     sys.modules[PKG_NAME] = pkg
     return ModuleMap(PKG_NAME, {name: importlib.import_module(f"{PKG_NAME}.nodes.{name}")
             for name in ("logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
-                         "image_comparer", "video_comparer", "power_lora_loader", "everywhere", "seedvr2",
+                         "image_comparer", "power_lora_loader", "everywhere", "seedvr2",
                          "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "skin_texture")})
 
 
