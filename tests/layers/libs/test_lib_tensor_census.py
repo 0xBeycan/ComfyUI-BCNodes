@@ -214,3 +214,14 @@ def test_weights_of_other_formats_are_their_file_size(bcnodes, tmp_path):
     bad.write_bytes((2 ** 40).to_bytes(8, "little") + b"{}")
     with pytest.raises(ValueError, match="not a safetensors header"):
         si.weights_info(str(bad))
+
+
+def test_module_bytes_counts_each_weight_once(tc):
+    a = torch.nn.Linear(10, 10)  # 100 + 10 float32
+    b = torch.nn.Linear(10, 10, bias=False)
+    b.weight = a.weight  # tied: the same storage in both
+    meta = torch.nn.Linear(1000, 1000, device="meta")  # no memory
+    assert tc.module_bytes(a) == 110 * 4
+    assert tc.module_bytes(a, b, None, meta) == 110 * 4
+    a.register_buffer("stats", torch.zeros(5, dtype=torch.float64))
+    assert tc.module_bytes(a) == 110 * 4 + 40

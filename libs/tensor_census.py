@@ -1,5 +1,6 @@
 """Tensor sizes from metadata: shape, dtype, device and storage bytes, never a copy.
 
+  - module_bytes: the weights of nn.Modules, for what dropping a cached model frees;
   - describe / storage_bytes / sized: what a ComfyUI value holds (IMAGE, MASK, a LATENT dict, a CONDITIONING list),
     tensors found through lists, tuples and dicts only (a model object is not walked: its weights
     are reported as loaded models, not as node outputs);
@@ -108,6 +109,15 @@ def storage_bytes(value, covered=None):
         device, storage, _ = _memory(t)
         total += covered.claim(device, *storage)
     return total
+
+
+def module_bytes(*modules):
+    """Bytes of the parameters and buffers of `modules` (torch nn.Modules; None is skipped), each byte
+    counted once across all of them: what dropping them frees when nothing else holds them. Meta
+    tensors hold no memory."""
+    tensors = [t for m in modules if m is not None for t in m.state_dict(keep_vars=True).values()
+               if isinstance(t, torch.Tensor) and t.device.type != "meta"]
+    return storage_bytes(tensors)
 
 
 def sized(value):

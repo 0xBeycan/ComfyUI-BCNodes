@@ -903,6 +903,11 @@ async def process_monitor_clear():
     again = await queue_prompt()
     check("ProcessMonitor clear: the next prompt runs normally, every node again (nothing cached)",
           first == ["1", "2", "3"] and again == ["1", "2", "3"], f"{first} {again}")
+    pack_hooks = getattr(instance, "bc_full_clear_hooks", None) or []
+    detail = next((s["detail"] for s in report.get("steps", []) if s["name"] == "pack_models"), None)
+    check("ProcessMonitor clear: the pack's hook is in the server's bc_full_clear_hooks and the report has its row",
+          [h.__qualname__ for h in pack_hooks] == ["release_pack_models"] and detail is not None
+          and [r["hook"].split()[-1] for r in detail] == ["release_pack_models"] and detail[0]["error"] is None, f"{pack_hooks} {detail}")
     status_handler = handlers[("GET", "/bcnodes/monitor/status")]
     body = json.loads((await status_handler(make_mocked_request("GET", "/bcnodes/monitor/status"))).text)
     check("ProcessMonitor clear: the status route carries the baseline", body.get("baseline") == report.get("baseline"))

@@ -101,9 +101,11 @@ Rules that keep it cheap and safe:
   threads' tuple builds. No frame's locals are read from another thread: a thread's stack is read
   as its code objects (`stack_codes`).
 - The full clear frees each part with the call that owns it, each step measured on its own:
-  ComfyUI's own free (the `/free` flags, run by its prompt worker and waited for), this pack's model
-  slots, `gc.collect`, ComfyUI's cast buffers and torch's allocator caches, glibc's `malloc_trim`.
-  It runs only with the prompt queue empty. Page cache is reported, never dropped.
+  ComfyUI's own free (the `/free` flags, run by its prompt worker and waited for), the packs' own
+  model caches (every hook in `bc_full_clear_hooks`, this pack's `release_pack_models` among them),
+  `gc.collect`, ComfyUI's cast buffers and torch's allocator caches, glibc's `malloc_trim`. It runs
+  only with the prompt queue empty. Page cache is reported, never dropped. A hook that raises is
+  reported by name and the clear goes on.
 - Emulate profiles are derived from the node's code. A part that cannot be derived is
   "not counted" with a note, never guessed. A profile keyed by another pack's class name is data;
   its comments describe what the node does to memory, not the other pack's code.
@@ -170,8 +172,10 @@ where it is.
   `models/common/registry.py`.
 - A `models/<name>/` package: architecture, weights (download through
   `models.common.download.fetch_with_progress`), a single-slot cache as in
-  `models/birefnet/loader.py` with its `unload()`, which the full clear calls (add it to
-  `_pack_models` in `pipelines/process_monitor/clear.py`), model-specific pre/post-processing.
+  `models/birefnet/loader.py` with its `unload()` (drops the slot, returns {name: bytes of its
+  weights} through `libs/tensor_census.module_bytes`, {} when empty), which the full clear calls (add
+  it to `release_pack_models` in `pipelines/process_monitor/clear.py`), model-specific
+  pre/post-processing.
 - Register each member with `register(FAMILY, name, entry)` in the package, and add one import
   line to `models/__init__.py` so the registry is filled before any lookup. A node combo is
   `registry.names(FAMILY)`, a lookup `registry.get(FAMILY, name)`.
@@ -245,7 +249,13 @@ Saved workflows must load and run unchanged. Never change: node keys, display na
 event name, the location of `nodes/social_specs.json` and of `luts/`. Also locked: the stamp key
 `bc_linked_heavy` (part of every heavy node's cache key) and the `bc_link_stamp` marker on the
 stamping handler, which ComfyUI-BCVideoNodes' handler reads to leave ours out of "another pack" and
-`stamps_last` reads to move it last (and ours reads on its).
+`stamps_last` reads to move it last (and ours reads on its). Also locked, shared with
+ComfyUI-BCVideoNodes: `bc_full_clear_hooks`, a list attribute on `PromptServer.instance`. Whichever
+pack registers first creates it (`getattr(server, "bc_full_clear_hooks", None)`, a new list when
+None). Each entry is a zero-argument callable that drops that pack's cached models and returns
+{model name: bytes it held} (counted from the tensors it dropped; {} when nothing was loaded),
+idempotent; the next node call loads the model again. This pack registers `release_pack_models`
+(`nodes/process_monitor.py`); the full clear's `pack_models` step calls every entry.
 
 ## Closed decisions
 

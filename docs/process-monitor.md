@@ -35,14 +35,14 @@ Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_moni
 | Step | What it frees |
 | --- | --- |
 | `comfyui_free` | ComfyUI's own free, what `POST /free` with `unload_models` and `free_memory` asks for: every model unloaded, every cached node output and node object of the earlier prompts dropped. It runs on ComfyUI's prompt worker; the clear waits until it is done. |
-| `pack_models` | This pack's model slots (BiRefNet, Depth Anything V2 and 3, SAM 3), which keep a model between runs outside ComfyUI's caches |
+| `pack_models` | The models packs keep between runs outside ComfyUI's caches, through the hooks they register (`bc_full_clear_hooks`): this pack's BiRefNet, Depth Anything V2 and 3 and SAM 3, and ComfyUI-BCVideoNodes' pose models and SAM 3.1 Multiplex. Each hook reports what it dropped; one that fails is named in the report and the clear goes on. |
 | `garbage` | Python's garbage collector: objects only reference cycles kept |
 | `torch_caches` | ComfyUI's cast buffers, the free blocks of torch's GPU allocator (CUDA or MPS) and torch's pinned host cache |
 | `malloc_trim` | Linux (glibc): freed memory glibc keeps in its arenas for reuse goes back to the system (`malloc_trim(0)`) |
 
-The report sets the baseline against the readings before and after the clear: RAM as the bar shows it, the process's RSS split into its own memory (RssAnon) and pages mapped from files (RssFile) on Linux (the USS on macOS, which keeps freed pages in the RSS until it needs them), the container's anon / page cache split, glibc's free blocks, pinned host memory, and VRAM allocated, reserved and on the device. Per step: what it found and what it freed. Last, the tensors something still references after the clear, grouped by shape (the same census as the crash report).
+The report sets the baseline against the readings before and after the clear: RAM as the bar shows it, the process's RSS split into its own memory (RssAnon) and pages mapped from files (RssFile) on Linux (the USS on macOS, which keeps freed pages in the RSS until it needs them), the container's anon / page cache split, glibc's free blocks, pinned host memory, and VRAM allocated, reserved and on the device. Per step: what it found and what it freed; per hook, each model it dropped and its weights. Last, the tensors something still references after the clear, grouped by shape (the same census as the crash report).
 
-What the clear cannot free, and a restart would: a model or tensor another pack keeps in its own cache (it shows in that list), and the libraries and GPU kernels loaded during the run. The page cache (files read or mapped, the container's `file`) is shown, not dropped: the kernel takes it back when memory runs short, and a restart keeps it too. The next run loads its models again, so it starts slower.
+What the clear cannot free, and a restart would: a model or tensor a pack without a hook keeps in its own cache (it shows in that list), and the libraries and GPU kernels loaded during the run. The page cache (files read or mapped, the container's `file`) is shown, not dropped: the kernel takes it back when memory runs short, and a restart keeps it too. The next run loads its models again, so it starts slower.
 
 **Stop at the threshold** (experimental, off by default) interrupts the prompt when the snapshot is taken. It only works inside nodes that check ComfyUI's interrupt (between sampler steps, for example); a running `torch.stack` or `np.fromiter` cannot be stopped.
 

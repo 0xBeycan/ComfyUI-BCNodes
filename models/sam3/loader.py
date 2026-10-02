@@ -1,6 +1,7 @@
 """The SAM 3 model cache: one checkpoint (model and clip) held at a time. comfy.sd is
 imported on the first load."""
 
+from ...libs.tensor_census import module_bytes
 from .checkpoint import path
 
 
@@ -11,11 +12,13 @@ class _Sam3:
 
 
 def unload():
-    """Drops the cached checkpoint (it loads again on its node's next run); returns its name, or
-    None when none was held."""
-    name = _Sam3.name if _Sam3.model is not None else None
+    """Drops the cached checkpoint, model and text encoder (it loads again on its node's next run):
+    {its name: bytes of their weights}, {} when none was held."""
+    held = {}
+    if _Sam3.model is not None:
+        held[_Sam3.name] = module_bytes(_Sam3.model.model, getattr(_Sam3.clip, "cond_stage_model", None))
     _Sam3.name, _Sam3.model, _Sam3.clip = None, None, None
-    return name
+    return held
 
 
 def load(name):

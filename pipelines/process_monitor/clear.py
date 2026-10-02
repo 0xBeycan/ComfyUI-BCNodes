@@ -7,9 +7,11 @@ The steps, in order, each measured on its own (a reading before and after it):
                 by its prompt worker and waited for: every model unloaded and dropped from model
                 management, the executor's caches (every node output and node object of the earlier
                 prompts) replaced by empty ones, then its gc.collect and empty_cache.
-  pack_models   this pack's model slots (BiRefNet, Depth Anything V2 and 3, SAM 3): they keep a model
-                between runs outside ComfyUI's caches, so its free cannot drop them. Each loads again
-                on its node's next run.
+  pack_models   every hook in `bc_full_clear_hooks` on ComfyUI's server: each pack that keeps models
+                between runs outside ComfyUI's caches (which its free cannot drop) registers one that
+                drops them and returns {model name: bytes}. This pack's (release_pack_models: BiRefNet,
+                Depth Anything V2 and 3, SAM 3) is one of them. Each model loads again on its node's
+                next run. A hook that raises is reported by name; the clear goes on.
   garbage       gc.collect(): what only reference cycles kept after the steps above.
   torch_caches  ComfyUI's cast buffers (the VRAM it keeps for weights cast on the fly), the free blocks
                 of torch's caching allocator (CUDA or MPS, through ComfyUI's soft_empty_cache) and
@@ -25,10 +27,11 @@ first use). Page cache (files read or mapped, the cgroup's `file`) is reported, 
 kernel reclaims it under pressure, and a restart of the process does not free it either.
 
 The probe is the node layer's adapter over ComfyUI's server: busy() -> message or None,
-request_free(), free_done() -> bool.
+request_free(), free_done() -> bool, full_clear_hooks() -> [(name, hook)].
 """
 
 import gc
+import logging
 import threading
 import time
 from typing import TypedDict
@@ -56,6 +59,13 @@ class Step(TypedDict):
     found: str  # what it found to free
     seconds: float
     freed: dict  # counter -> bytes, the reading before the step minus the one after (negative: grew)
+    detail: list  # pack_models: a HookResult per hook; [] for the other steps
+
+
+class HookResult(TypedDict):
+    hook: str  # the pack and the function
+    freed: dict  # model name -> bytes of the weights it dropped, as the hook reports them
+    error: str | None
 
 
 class Report(TypedDict):
@@ -88,38 +98,63 @@ def reading(ram, gpu):
     return out
 
 
-def _comfyui_free(probe, timeout):
+def _comfyui_free(clear):
     models = loaded_models()
-    probe.request_free()
-    deadline = time.monotonic() + timeout
-    while not probe.free_done():
-        message = probe.busy()
+    clear.probe.request_free()
+    deadline = time.monotonic() + clear.free_timeout
+    while not clear.probe.free_done():
+        message = clear.probe.busy()
         if message:
             raise Busy(f"a prompt started during the full clear: ComfyUI frees after it ends. {message}")
         if time.monotonic() > deadline:
-            raise RuntimeError(f"ComfyUI's prompt worker did not finish its free within {timeout:.0f} s; "
+            raise RuntimeError(f"ComfyUI's prompt worker did not finish its free within {clear.free_timeout:.0f} s; "
                                "look at the server log, then clear again.")
         time.sleep(POLL_S)
     if not models:
-        return "no model was loaded"
-    return f"{len(models)} model(s) unloaded: " + ", ".join(f"{m['name']} ({_gb(m['bytes'])} on the device)" for m in models)
+        return "no model was loaded", []
+    return f"{len(models)} model(s) unloaded: " + ", ".join(f"{m['name']} ({_gb(m['bytes'])} on the device)" for m in models), []
 
 
-def _pack_models():
+def release_pack_models():
+    """This pack's full-clear hook: drops its model slots (BiRefNet, Depth Anything V2 and 3, SAM 3);
+    {model name: bytes of its weights}."""
     from ...models.birefnet import loader as birefnet
     from ...models.depth_anything_3 import loader as depth_anything_3
     from ...models.depth_anything_v2 import loader as depth_anything_v2
     from ...models.sam3 import loader as sam3
 
-    held = [name for name in (birefnet.unload(), depth_anything_v2.unload(), depth_anything_3.unload(), sam3.unload()) if name]
-    return "dropped: " + ", ".join(held) if held else "none held"
+    return {**birefnet.unload(), **depth_anything_v2.unload(), **depth_anything_3.unload(), **sam3.unload()}
 
 
-def _garbage():
-    return f"{gc.collect()} unreachable objects collected"
+def _call_hook(name, hook):
+    try:
+        freed = hook()
+        if not isinstance(freed, dict):
+            raise TypeError(f"returned {type(freed).__name__}, expected a dict of model name -> bytes")
+        return HookResult(hook=name, freed={str(k): int(v) for k, v in freed.items()}, error=None)
+    except Exception as e:  # another pack's hook: report it, never fail the clear
+        logging.exception("[BCNodes] Process Monitor: the full-clear hook %s failed", name)
+        return HookResult(hook=name, freed={}, error=f"{type(e).__name__}: {e}")
 
 
-def _torch_caches():
+def _pack_models(clear):
+    rows = [_call_hook(name, hook) for name, hook in clear.probe.full_clear_hooks()]
+    if not rows:
+        return "no pack registered a hook", rows
+
+    def text(r):
+        if r["error"]:
+            return f"{r['hook']}: failed ({r['error']})"
+        return f"{r['hook']}: " + (", ".join(f"{m} {_gb(b)}" for m, b in r["freed"].items()) or "nothing loaded")
+
+    return "; ".join(text(r) for r in rows), rows
+
+
+def _garbage(clear):
+    return f"{gc.collect()} unreachable objects collected", []
+
+
+def _torch_caches(clear):
     import comfy.model_management as mm
 
     found = []
@@ -137,22 +172,22 @@ def _torch_caches():
         if empty_host is not None:
             empty_host()
             found.append("torch's pinned host cache emptied")
-    return "; ".join(found) or "no GPU cache on this device"
+    return "; ".join(found) or "no GPU cache on this device", []
 
 
-def _malloc_trim():
+def _malloc_trim(clear):
     lib = memory_sources.glibc()
     if lib is None:
-        return "not glibc (macOS, musl): nothing to trim"
+        return "not glibc (macOS, musl): nothing to trim", []
     held = lib.free_bytes()
     released = lib.trim()
     return (f"glibc held {_gb(held)} in free blocks" if held is not None else "glibc older than 2.33: free blocks not counted") + \
-        ("; pages released" if released else "; nothing to release")
+        ("; pages released" if released else "; nothing to release"), []
 
 
 STEPS = (
-    ("comfyui_free", "ComfyUI's own free (POST /free): every model unloaded, every cached node output dropped", None),
-    ("pack_models", "this pack's model slots dropped (BiRefNet, Depth Anything, SAM 3); they load again when needed", _pack_models),
+    ("comfyui_free", "ComfyUI's own free (POST /free): every model unloaded, every cached node output dropped", _comfyui_free),
+    ("pack_models", "the packs' own model caches dropped (their bc_full_clear_hooks); they load again when needed", _pack_models),
     ("garbage", "Python's garbage collector: objects only reference cycles kept", _garbage),
     ("torch_caches", "ComfyUI's cast buffers, the GPU allocator's cache and torch's pinned host cache emptied", _torch_caches),
     ("malloc_trim", "glibc's malloc_trim(0): freed memory its arenas keep for reuse goes back to the system", _malloc_trim),
@@ -191,10 +226,10 @@ class FullClear:
             steps, last = [], before
             for name, text, fn in STEPS:
                 t0 = time.perf_counter()
-                found = _comfyui_free(self.probe, self.free_timeout) if fn is None else fn()
+                found, detail = fn(self)
                 now = reading(ram, gpu)
                 steps.append(Step(name=name, text=text, found=found, seconds=round(time.perf_counter() - t0, 3),
-                                  freed=_freed(last, now)))
+                                  freed=_freed(last, now), detail=detail))
                 last = now
             return Report(baseline=self.baseline, before=before, after=last, steps=steps, remaining=census(top=12))
         finally:

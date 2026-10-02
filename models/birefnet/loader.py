@@ -2,6 +2,7 @@
 
 import torch
 
+from ...libs.tensor_census import module_bytes
 from ..common import registry
 from ..common.registry import MATTING
 from .weights import weights_path
@@ -15,11 +16,11 @@ class _Loaded:
 
 
 def unload():
-    """Drops the cached model (it loads again on its node's next run); returns its name, or None
-    when none was held."""
-    name = _Loaded.name if _Loaded.model is not None else None
+    """Drops the cached model (it loads again on its node's next run): {its name: bytes of its
+    weights}, {} when none was held."""
+    held = {_Loaded.name: module_bytes(_Loaded.model)} if _Loaded.model is not None else {}
     _Loaded.name, _Loaded.model, _Loaded.device, _Loaded.dtype = None, None, None, None
-    return name
+    return held
 
 
 def load(name):
@@ -31,7 +32,7 @@ def load(name):
 
     from .arch import BiRefNet
 
-    if unload() is not None:
+    if unload():
         mm.soft_empty_cache()
 
     ckpt = registry.get(MATTING, name)

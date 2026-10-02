@@ -2,6 +2,7 @@
 
 import torch
 
+from ...libs.tensor_census import module_bytes
 from .weights import weights_path
 
 
@@ -11,9 +12,9 @@ class _Loaded:
 
 
 def unload():
-    """Drops the cached model (it loads again on its node's next run); returns its name, or None
-    when none was held."""
-    held = "Depth Anything V2 Small" if _Loaded.model is not None else None
+    """Drops the cached model (it loads again on its node's next run): {its name: bytes of its
+    weights}, {} when none was held."""
+    held = {"Depth Anything V2 Small": module_bytes(_Loaded.model)} if _Loaded.model is not None else {}
     _Loaded.model, _Loaded.device = None, None
     return held
 

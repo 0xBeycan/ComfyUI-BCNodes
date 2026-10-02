@@ -39,12 +39,16 @@ class Ram:
 
 
 class Probe:
-    """ComfyUI's queue and prompt worker: busy() answers `busy`; the free is done after `polls` checks."""
+    """ComfyUI's queue, prompt worker and full-clear hooks: busy() answers `busy`; the free is done after
+    `polls` checks."""
 
-    def __init__(self, busy=None, polls=2):
-        self.busy_message, self.polls = busy, polls
+    def __init__(self, busy=None, polls=2, hooks=()):
+        self.busy_message, self.polls, self.hooks = busy, polls, list(hooks)
         self.requested = 0
         self.checks = 0
+
+    def full_clear_hooks(self):
+        return self.hooks
 
     def busy(self):
         return self.busy_message
@@ -62,14 +66,18 @@ def full_clear(cl, probe=None, ram=None, timeout=5.0):
     return cl.FullClear(probe or Probe(), lambda: (ram, None), free_timeout=timeout)
 
 
-def test_refused_while_a_prompt_runs_or_waits(cl, bcnodes):
-    sam3 = bcnodes["models.sam3.loader"]
-    sam3._Sam3.name, sam3._Sam3.model = "held.safetensors", object()
-    probe = Probe(busy="1 prompt(s) running and 0 queued: wait until the queue is empty, then clear again.")
+def with_probe(cl, probe, timeout=5.0):
+    """What a step function is handed: the clear, for its probe and timeout."""
+    return full_clear(cl, probe, timeout=timeout)
+
+
+def test_refused_while_a_prompt_runs_or_waits(cl):
+    called = []
+    probe = Probe(busy="1 prompt(s) running and 0 queued: wait until the queue is empty, then clear again.",
+                  hooks=[("BCNodes ours", lambda: called.append(1) or {})])
     with pytest.raises(cl.Busy, match="wait until the queue is empty"):
         full_clear(cl, probe).run()
-    assert probe.requested == 0 and sam3._Sam3.model is not None  # nothing done
-    sam3.unload()
+    assert probe.requested == 0 and called == []  # nothing done
 
 
 def test_refused_while_another_clear_runs(cl):
@@ -92,7 +100,7 @@ def test_report_baseline_before_after_and_each_step(cl):
     assert [s["name"] for s in report["steps"]] == ["comfyui_free", "pack_models", "garbage", "torch_caches", "malloc_trim"]
     assert report["baseline"]["ram"] == 30 * GIB and report["before"]["ram"] == 29 * GIB and report["after"]["ram"] == 24 * GIB
     for step in report["steps"]:
-        assert step["text"] and isinstance(step["found"], str) and step["seconds"] >= 0
+        assert step["text"] and isinstance(step["found"], str) and step["seconds"] >= 0 and step["detail"] == []
         assert step["freed"]["ram"] == GIB  # each reading one GiB below the one before it
     assert {"rss", "rss_anon", "rss_file", "uss", "malloc_free", "comfy_pinned", "cgroup"} <= set(report["after"])
     assert set(report["remaining"]) >= {"groups", "total_bytes"}
@@ -101,9 +109,9 @@ def test_report_baseline_before_after_and_each_step(cl):
 
 def test_comfyui_free_waits_for_the_worker(cl):
     probe = Probe(polls=3)
-    found = cl._comfyui_free(probe, timeout=5.0)
+    found, detail = cl._comfyui_free(with_probe(cl, probe))
     assert probe.requested == 1 and probe.checks == 4  # three answers "not yet", then done
-    assert found == "no model was loaded"
+    assert found == "no model was loaded" and detail == []
 
 
 def test_comfyui_free_names_the_models_it_unloads(cl, monkeypatch):
@@ -117,36 +125,79 @@ def test_comfyui_free_names_the_models_it_unloads(cl, monkeypatch):
             return 2 * GIB
 
     monkeypatch.setattr(mm, "current_loaded_models", [Loaded()])
-    assert cl._comfyui_free(Probe(polls=0), timeout=5.0) == "1 model(s) unloaded: WAN21 (2.00 GB on the device)"
+    assert cl._comfyui_free(with_probe(cl, Probe(polls=0)))[0] == "1 model(s) unloaded: WAN21 (2.00 GB on the device)"
 
 
 def test_comfyui_free_times_out_with_a_message(cl):
     with pytest.raises(RuntimeError, match="did not finish its free within"):
-        cl._comfyui_free(Probe(polls=10 ** 9), timeout=0.2)
+        cl._comfyui_free(with_probe(cl, Probe(polls=10 ** 9), timeout=0.2))
 
 
 def test_a_prompt_started_during_the_free_stops_the_clear(cl):
     probe = Probe(polls=10 ** 9)
     probe.free_done = lambda: setattr(probe, "busy_message", "1 prompt(s) running and 0 queued: wait") or False
     with pytest.raises(cl.Busy, match="a prompt started during the full clear"):
-        cl._comfyui_free(probe, timeout=5.0)
+        cl._comfyui_free(with_probe(cl, probe))
 
 
-def test_pack_models_drops_every_slot(cl, bcnodes):
+def linear(n):
+    """A module of n float32 weights and no bias: 4 n bytes."""
+    return torch.nn.Linear(n, 1, bias=False)
+
+
+def test_release_pack_models_drops_every_slot_and_counts_its_bytes(cl, bcnodes):
     birefnet, dav2 = bcnodes["models.birefnet.loader"], bcnodes["models.depth_anything_v2.loader"]
     da3, sam3 = bcnodes["models.depth_anything_3.loader"], bcnodes["models.sam3.loader"]
-    weights = [torch.zeros(8) for _ in range(5)]
-    refs = [weakref.ref(w) for w in weights]
-    birefnet._Loaded.name, birefnet._Loaded.model = "BiRefNet-general", weights[0]
-    dav2._Loaded.model = weights[1]
-    da3._Loaded.name, da3._Loaded.patcher = "v3-small", weights[2]
-    sam3._Sam3.name, sam3._Sam3.model, sam3._Sam3.clip = "sam3.safetensors", weights[3], weights[4]
-    del weights
-    found = cl._pack_models()
-    assert found == "dropped: BiRefNet-general, Depth Anything V2 Small, v3-small, sam3.safetensors"
+    modules = [linear(n) for n in (100, 200, 300, 400, 500)]
+    refs = [weakref.ref(m.weight) for m in modules]
+    birefnet._Loaded.name, birefnet._Loaded.model = "BiRefNet-general", modules[0]
+    dav2._Loaded.model = modules[1]
+    da3._Loaded.name, da3._Loaded.patcher = "v3-small", types.SimpleNamespace(model=modules[2])  # a ModelPatcher
+    sam3._Sam3.name, sam3._Sam3.model = "sam3.safetensors", types.SimpleNamespace(model=modules[3])
+    sam3._Sam3.clip = types.SimpleNamespace(cond_stage_model=modules[4])  # comfy.sd.CLIP
+    del modules
+    assert cl.release_pack_models() == {"BiRefNet-general": 400, "Depth Anything V2 Small": 800, "v3-small": 1200,
+                                        "sam3.safetensors": 1600 + 2000}
     assert all(r() is None for r in refs)  # nothing else held them: freed at once
     assert (birefnet._Loaded.model, dav2._Loaded.model, da3._Loaded.patcher, sam3._Sam3.model, sam3._Sam3.clip) == (None,) * 5
-    assert cl._pack_models() == "none held"
+    assert cl.release_pack_models() == {}  # idempotent
+
+
+def test_pack_models_calls_every_hook_and_reports_a_failing_one(cl):
+    calls = []
+
+    def ours():
+        calls.append("ours")
+        return {"BiRefNet-general": GIB}
+
+    def broken():
+        calls.append("broken")
+        raise RuntimeError("its loader is gone")
+
+    def theirs():
+        calls.append("theirs")
+        return {}
+
+    def wrong():
+        return ["not", "a", "dict"]
+
+    probe = Probe(hooks=[("BCNodes ours", ours), ("Other broken", broken), ("BCVideoNodes theirs", theirs), ("Other wrong", wrong)])
+    found, rows = cl._pack_models(with_probe(cl, probe))
+    assert calls == ["ours", "broken", "theirs"]  # a failing hook does not stop the next one
+    assert rows[0] == {"hook": "BCNodes ours", "freed": {"BiRefNet-general": GIB}, "error": None}
+    assert rows[1] == {"hook": "Other broken", "freed": {}, "error": "RuntimeError: its loader is gone"}
+    assert rows[2] == {"hook": "BCVideoNodes theirs", "freed": {}, "error": None}
+    assert rows[3]["error"].startswith("TypeError: returned list, expected a dict")
+    assert found == ("BCNodes ours: BiRefNet-general 1.00 GB; Other broken: failed (RuntimeError: its loader is gone); "
+                     "BCVideoNodes theirs: nothing loaded; Other wrong: failed (TypeError: returned list, expected a dict of model name -> bytes)")
+    assert cl._pack_models(with_probe(cl, Probe())) == ("no pack registered a hook", [])
+
+
+def test_the_report_carries_each_hooks_result(cl):
+    probe = Probe(hooks=[("BCNodes release_pack_models", lambda: {"v3-small": 7})])
+    report = full_clear(cl, probe).run()
+    step = next(s for s in report["steps"] if s["name"] == "pack_models")
+    assert step["detail"] == [{"hook": "BCNodes release_pack_models", "freed": {"v3-small": 7}, "error": None}]
 
 
 def test_garbage_frees_what_only_a_cycle_keeps(cl):
@@ -160,10 +211,10 @@ def test_garbage_frees_what_only_a_cycle_keeps(cl):
     gc.disable()  # the automatic collector must not get there first
     try:
         assert ref() is not None
-        found = cl._garbage()
+        found = cl._garbage(None)
     finally:
         gc.enable()
-    assert ref() is None and found.endswith("unreachable objects collected")
+    assert ref() is None and found[0].endswith("unreachable objects collected")
 
 
 def test_torch_caches_resets_comfyuis_cast_buffers(cl, monkeypatch):
@@ -173,10 +224,10 @@ def test_torch_caches_resets_comfyuis_cast_buffers(cl, monkeypatch):
     monkeypatch.setattr(mm, "STREAM_CAST_BUFFERS", {None: torch.zeros(GIB // 1024, dtype=torch.int8)}, raising=False)
     monkeypatch.setattr(mm, "reset_cast_buffers", lambda: calls.append("reset"), raising=False)
     monkeypatch.setattr(mm, "soft_empty_cache", lambda force=False: calls.append("empty"))
-    assert "ComfyUI's cast buffers held 0.00 GB" in cl._torch_caches() and calls == ["reset"]
+    assert "ComfyUI's cast buffers held 0.00 GB" in cl._torch_caches(None)[0] and calls == ["reset"]
     monkeypatch.delattr(mm, "reset_cast_buffers")
     calls.clear()
-    cl._torch_caches()
+    cl._torch_caches(None)
     assert calls == ["empty"]  # an older ComfyUI: its empty_cache alone
 
 
@@ -195,9 +246,9 @@ class FakeGlibc:
 def test_malloc_trim_returns_glibcs_free_blocks(cl, monkeypatch):
     lib = FakeGlibc(3 * GIB)
     monkeypatch.setattr(cl.memory_sources, "glibc", lambda: lib)
-    assert cl._malloc_trim() == "glibc held 3.00 GB in free blocks; pages released" and lib.trimmed == 1
+    assert cl._malloc_trim(None) == ("glibc held 3.00 GB in free blocks; pages released", []) and lib.trimmed == 1
     monkeypatch.setattr(cl.memory_sources, "glibc", lambda: None)
-    assert cl._malloc_trim().startswith("not glibc")
+    assert cl._malloc_trim(None)[0].startswith("not glibc")
 
 
 def test_reading_takes_glibc_and_comfyuis_pinned_memory(cl, monkeypatch):

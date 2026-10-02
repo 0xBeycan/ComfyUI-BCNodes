@@ -416,8 +416,13 @@ function renderClear(r) {
 		table(["Step", "What it did", "Found", "RAM freed", "Own memory freed", "VRAM reserved freed", "Time"], r.steps.map((s) => ({
 			cells: [s.name, s.text, s.found, freed(s, "ram"), freed(s, s.freed.rss_anon != null ? "rss_anon" : s.freed.uss != null ? "uss" : "rss"), freed(s, "vram_reserved"), secs(s.seconds)],
 		}))),
+		el("h4", {}, "Model caches the packs dropped (their full-clear hooks)"),
+		table(["Hook", "Model", "Weights"], (r.steps.find((s) => s.name === "pack_models")?.detail ?? []).flatMap((h) =>
+			h.error ? [{ cells: [h.hook, el("span", { class: "bcpm-bad" }, `failed: ${h.error}`), "–"] }]
+				: Object.keys(h.freed).length ? Object.entries(h.freed).map(([m, b]) => ({ cells: [h.hook, m, gb(b)] }))
+					: [{ cells: [h.hook, "nothing loaded", "–"] }])),
 		el("h4", {}, `Tensors still referenced after the clear: ${gb(r.remaining.total_bytes)}`),
-		el("div", { class: "bcpm-note" }, "What the clear cannot free: a model or tensor another pack keeps in its own cache (listed here), and the libraries and GPU kernels loaded during the run. The page cache (files read or mapped) is reported, not dropped: the kernel takes it back when memory runs short, and a restart keeps it too."),
+		el("div", { class: "bcpm-note" }, "What the clear cannot free: a model or tensor a pack without a full-clear hook keeps in its own cache (listed here), and the libraries and GPU kernels loaded during the run. The page cache (files read or mapped) is reported, not dropped: the kernel takes it back when memory runs short, and a restart keeps it too."),
 		r.remaining.groups.length ? censusTable(r.remaining) : el("div", { class: "bcpm-note" }, "None of 1 MB or more."));
 }
 

@@ -10,6 +10,12 @@ At startup the monitor runs when its saved setting says so (user/BCNodes/process
 settings.json, written by the ComfyUI setting "BCNodes.ProcessMonitor.Enabled"; on when there is no
 file), so a server queued through the API without a browser still gets the black box. Once every
 custom node has loaded (the server's startup), the full clear's baseline is read, monitor on or off.
+
+The full clear drops the packs' own model caches through `bc_full_clear_hooks`, a list on
+PromptServer.instance (a contract shared with ComfyUI-BCVideoNodes, locked): whichever pack registers
+first creates it; each entry is a zero-argument callable that drops that pack's cached models and
+returns {model name: bytes it held}, {} when nothing was loaded; idempotent, and the next node call
+loads the model again. This pack registers release_pack_models there.
 """
 
 import asyncio
@@ -20,8 +26,11 @@ import sys
 from ..libs import memory_sources
 from ..libs.download import user_file
 from ..libs.safetensors_info import weights_info
-from ..pipelines.process_monitor.clear import Busy, FullClear
+from ..pipelines.process_monitor.clear import Busy, FullClear, release_pack_models
 from ..pipelines.process_monitor.monitor import Monitor, stack_codes
+from .common import _pack_of
+
+FULL_CLEAR_HOOKS = "bc_full_clear_hooks"  # the attribute on PromptServer.instance (locked)
 
 EVENT = "bcnodes.monitor"
 
@@ -84,6 +93,12 @@ class ServerProbe:
         the code objects on its stack, never from a frame's locals."""
         queue = self.server.prompt_queue
         return not queue.get_flags(reset=False) and type(queue).get.__code__ in self._worker_stack()
+
+    def full_clear_hooks(self):
+        """[(name, hook)] of the packs' full-clear hooks, in their order; a name is the pack and the
+        function."""
+        return [(f"{_pack_of(hook)} {getattr(hook, '__qualname__', type(hook).__name__)}", hook)
+                for hook in list(getattr(self.server, FULL_CLEAR_HOOKS, None) or [])]
 
 
 class ComfyEnv:
@@ -171,6 +186,12 @@ def _register():
         return ram, monitor.gpu if monitor.gpu is not None else memory_sources.gpu_source()
 
     clear = FullClear(monitor.probe, sources)
+    hooks = getattr(server, FULL_CLEAR_HOOKS, None)
+    if hooks is None:  # the first pack to register creates the list
+        hooks = []
+        setattr(server, FULL_CLEAR_HOOKS, hooks)
+    if release_pack_models not in hooks:
+        hooks.append(release_pack_models)
 
     async def off_loop(fn, *args):
         return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
