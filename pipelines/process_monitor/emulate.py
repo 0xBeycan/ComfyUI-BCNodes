@@ -152,7 +152,8 @@ def _profile(node, types, ctx):
 
 def _ratio(prompt, measured_nodes, scenario):
     """Scenario pixels over the measured run's pixels at the video loader, or None (no measurement,
-    or no loader to scale by). 1.0 for the workflow as it is."""
+    or no loader to scale by: an unlinked images output is measured with 0 frames). 1.0 for the
+    workflow as it is."""
     if not measured_nodes:
         return None
     if scenario is None:
@@ -161,7 +162,8 @@ def _ratio(prompt, measured_nodes, scenario):
         m = measured_nodes.get(nid)
         if node["class_type"] in VIDEO_LOADERS and m and m.get("outputs"):
             n, h, w = m["outputs"][0]["shape"][:3]
-            return scenario["frames"] * scenario["h"] * scenario["w"] / (n * h * w)
+            if n * h * w:
+                return scenario["frames"] * scenario["h"] * scenario["w"] / (n * h * w)
     return None
 
 

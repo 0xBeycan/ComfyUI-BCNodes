@@ -92,6 +92,6 @@ def test_seedvr2_framing_downscale(em):
               frame_count="3", precision="fp32")
     row = rows(em, {"1": three, "2": N("BC_SeedVR2FramingDownscale", image=["1", 0])})["2"]
     assert row["transient"] == 3 * sam_input * 4 + 2 * 3 * 1280 * 720 * 4
-    # a float16 batch is scaled to 1008 x 1008 in float16; the masks are float32
+    # a float16 batch: each group of four read as its float32 levels first, then scaled to 1008 x 1008 in float32
     row = rows(em, {**reference(5), "3": N("BC_SeedVR2FramingDownscale", image=["2", 1])})["3"]
-    assert row["transient"] == 4 * sam_input * 2 + 2 * 4 * 1280 * 720 * 4
+    assert row["transient"] == 4 * sam_input * 4 + 2 * 4 * 1280 * 720 * 4 + 4 * 1280 * 720 * 3 * 4

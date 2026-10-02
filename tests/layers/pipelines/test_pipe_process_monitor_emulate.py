@@ -290,6 +290,17 @@ def test_video_table_and_calibration(em):
     assert out["calibrated"] and out["measure_cost_s"] == pytest.approx(0.0015)
 
 
+def test_a_loader_measured_without_frames_scales_nothing(em):
+    # an armed run whose loader's images were not linked: measured with 0 frames, so there is no pixel count to
+    # scale the scenarios by; they keep their formulas instead of dividing by zero
+    env = Env(videos={"clip.mp4": CLIP})
+    measured = {"nodes": {"1": {"state": "executed", "outputs": [{"shape": [0, 1280, 720, 3]}], "output_bytes": 0,
+                                "ram_start": GIB, "ram_peak": GIB}}}
+    r = em.estimate(old_chain(), env, {"frames": 161, "w": 720, "h": 1280}, measured)
+    assert all(row["status"] != "measured" for row in r["rows"])
+    assert r == em.estimate(old_chain(), env, {"frames": 161, "w": 720, "h": 1280})
+
+
 # -- the profiles of the video nodes, each worked out by hand from the node's code ----------------
 
 PORTRAIT = {"width": 1080, "height": 1920, "frames": 609, "fps": 30.0}
@@ -557,9 +568,9 @@ def test_bcnodes_image_nodes_and_switches(em):
          "6": N("BC_SelectSwitch", selected="b", a=["8", 0], b=["2", 2])}
     rows = rows_of(em, p)
     assert [o["shape"] for o in rows["1"]["outputs"]] == [[1, 576, 1024, 3], [1, 576, 1024]]
-    assert rows["1"]["transient"] == 576 * 1024 * 3 * 4  # the image list; the mask is zeros, not listed
+    assert rows["1"]["transient"] == 0  # one frame at a time into preallocated outputs
     assert [o["shape"] for o in rows["2"]["outputs"]] == [[1, 480, 640, 4], [1, 480, 640], [1, 480, 640, 3]]
-    assert rows["2"]["transient"] == 0  # the mattes go into one preallocated batch, the mask output
+    assert rows["2"]["transient"] == one  # one frame at a time: its raw matte
     # short side 518, 640 * 518 / 480 = 690.67 -> 691; one frame at a time into the preallocated output
     assert rows["3"]["outputs"][0]["shape"] == [1, 518, 691, 3] and rows["3"]["transient"] == 0
     assert rows["4"]["outputs"][0]["shared"] and rows["4"]["output_bytes"] == 0
@@ -570,8 +581,9 @@ def test_bcnodes_image_nodes_and_switches(em):
     p["4"]["inputs"]["theme"] = "kodak"
     rows = rows_of(em, p)
     assert rows["3"]["outputs"][0]["shape"] == [1, 480, 832, 3]
-    assert rows["2"]["transient"] == one + 480 * 640 * 3 * 4 and rows["2"]["outputs"][0]["shape"] == [1, 480, 640, 3]
-    assert rows["4"]["transient"] == 2 * 480 * 640 * 3 * 4
+    # the raw matte, the blurred one and the "over" blend's background term (the blend made in the output), per frame
+    assert rows["2"]["transient"] == 2 * one + 480 * 640 * 3 * 4 and rows["2"]["outputs"][0]["shape"] == [1, 480, 640, 3]
+    assert rows["4"]["transient"] == 480 * 640 * 3 * 4  # the processed frame, clipped into the output
     p["3"]["inputs"].update(width=["9", 1], height=["9", 2])  # sizes from links: known at run time only
     row = rows_of(em, p)["3"]
     assert row["status"] == "not counted" and "width / height come from links" in row["note"]
@@ -583,23 +595,24 @@ def test_a_passed_on_input_is_counted_once(em):
     rows = rows_of(em, p)
     mask = 609 * 1280 * 720 * 4
     assert rows["3"]["cache_after"] == rows["2"]["cache_after"] + rows["3"]["output_bytes"]
-    assert rows["4"]["output_bytes"] == mask and not rows["4"]["outputs"][0]["shared"]  # a new float32 mask built on it
-    assert rows["4"]["transient"] == mask  # the half mask read as float32: copied whole first
+    assert rows["4"]["output_bytes"] == mask // 2 and not rows["4"]["outputs"][0]["shared"]  # a new half mask built on it
+    assert rows["4"]["transient"] == 2 * MASK  # a frame read as float32 levels, its blurred levels
 
 
-def test_bcnodes_mask_nodes_make_float32(em):
-    # BCNodes' mask nodes read their mask as float32 and output float32: a half mask (SAM 3.1's on Load Video's
-    # half clip) is copied to float32 whole first; Draw Mask On Image's output is float32 whatever the image's dtype
+def test_bcnodes_mask_nodes_keep_the_dtype(em):
+    # BCNodes' mask nodes give a half mask (SAM 3.1's on Load Video's half clip) a half output, one frame at a
+    # time, each frame read as its float32 levels; Draw Mask On Image's output takes the image's dtype
     p = {"1": loader(), "2": N("BCVSAM3VideoTrack", images=["1", 0]), "3": N("BC_MaskGrow", mask=["2", 0]),
          "4": N("BC_BlockifyMask", masks=["2", 0], block_size=32), "5": N("BC_MaskFillHoles", masks=["2", 0]),
          "6": N("BC_DrawMaskOnImage", image=["1", 0], mask=["2", 0], color="0, 0, 0")}
     rows = rows_of(em, p)
     for node in "345":
-        assert rows[node]["outputs"][0]["shape"] == [609, 1280, 720] and rows[node]["output_bytes"] == 609 * MASK, node
-        assert rows[node]["transient"] == 609 * MASK, node
-    assert rows["6"]["outputs"][0]["shape"] == [609, 1280, 720, 3] and rows["6"]["output_bytes"] == 609 * FRAME
-    assert rows["6"]["transient"] == 609 * MASK
-    p["1"] = loader(precision="fp32")  # a float32 mask is read as it is
+        assert rows[node]["outputs"][0]["shape"] == [609, 1280, 720] and rows[node]["output_bytes"] == 609 * MASK // 2, node
+    # Grow: the frame's levels and its blurred levels; Blockify compares the half frame itself; Fill Holes: the levels
+    assert [rows[node]["transient"] for node in "345"] == [2 * MASK, 0, MASK]
+    assert rows["6"]["outputs"][0]["shape"] == [609, 1280, 720, 3] and rows["6"]["output_bytes"] == 609 * FRAME // 2
+    assert rows["6"]["transient"] == 2 * FRAME + MASK  # the frame's levels, its float32 blend, the mask's levels
+    p["1"] = loader(precision="fp32")  # float32 in, float32 out, each frame made in the output
     rows = rows_of(em, p)
     assert [rows[node]["transient"] for node in "3456"] == [0, 0, 0, 0]
-    assert rows["6"]["output_bytes"] == 609 * FRAME
+    assert [rows[node]["output_bytes"] for node in "3456"] == [609 * MASK] * 3 + [609 * FRAME]
