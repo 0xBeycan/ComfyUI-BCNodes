@@ -88,8 +88,10 @@ Rules that keep it cheap and safe:
   feature (ComfyUI 0.17.0+). The wrapper always awaits the original and returns its result
   untouched; an error in the monitor turns the measurement off with a message.
 - Counters only, never tensor copies: cgroup files, allocator statistics, shape x dtype. The one
-  scan over all objects is the threshold snapshot, once per run, after the execution thread's own
-  tensors are written.
+  scan over all objects is the threshold snapshot, once per run, after the stack record is
+  written. That pass is one C-level call with the collector paused (`libs/tensor_census.census`)
+  and must stay one: a Python loop over `gc.get_objects()` breaks other threads' tuple builds.
+  No frame's locals are read from the monitor thread.
 - Emulate profiles are derived from the node's code. A part that cannot be derived is
   "not counted" with a note, never guessed. A profile keyed by another pack's class name is data;
   its comments describe what the node does to memory, not the other pack's code.

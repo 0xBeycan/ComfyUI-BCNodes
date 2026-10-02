@@ -7,7 +7,9 @@ import asyncio
 import enum
 import sys
 import threading
+import time
 import types
+import weakref
 from collections import namedtuple
 
 import pytest
@@ -278,7 +280,7 @@ def test_sampler_runs_and_threshold_snapshot(mon, bcnodes, tmp_path, monkeypatch
     recs = records(bcnodes, tmp_path)
     assert [r["type"] for r in recs] == ["start", "sample", "sample", "snapshot", "snapshot", "sample", "end"]
     quick, full = recs[3], recs[4]
-    assert (quick["scope"], full["scope"]) == ("execution thread locals", "whole process")
+    assert "census" not in quick and quick["stopped"]  # the stack record, written before the census
     assert full["ram"] == 900 and full["stopped"] and stopped == [True] and isinstance(full["census"]["groups"], list)
     assert recs[-1]["status"] == "success" and m.run is None
     assert m.probe.pushed[0]["run"]["prompt_id"] == "p1" and m.probe.pushed[0]["ram"] == 100
@@ -306,38 +308,81 @@ def test_samples_carry_the_execution_threads_line(mon, tmp_path):
     assert "threading.py" in sample["top"]  # the innermost frame is the stdlib's Event.wait
 
 
-def test_snapshot_names_the_tensors_the_node_holds_first(mon, bcnodes, tmp_path, monkeypatch):
-    """What the kill test showed: a node piling frames into a list and stacking them can be killed
-    while the whole-process scan runs, so the tensors in the execution thread's locals are written
-    first, at once."""
-    monkeypatch.setattr(bcnodes["libs.tensor_census"], "_MAPS", str(tmp_path / "no-maps"))  # backing "unknown" everywhere
+def test_snapshot_keeps_no_local_of_the_execution_thread_alive(mon, bcnodes, tmp_path):
+    """Reading a running frame's locals from another thread leaves a copy of them on the frame: a
+    tensor the node then deletes would stay alive until its function returns. The snapshot reads the
+    stack from code and line numbers only, written before the census."""
     m = make_monitor(mon, tmp_path)
-    ready, done = threading.Event(), threading.Event()
+    ready, snapped, freed = threading.Event(), threading.Event(), []
 
     def node_code():
-        decoded = [torch.zeros(256, 512, 3) for _ in range(9)]  # one decoded frame each, 1.5 MiB
+        stacked = torch.zeros(16, 1024, 1024, dtype=torch.uint8)  # 16 MiB
+        ref = weakref.ref(stacked)
         ready.set()
-        done.wait(5)
-        return decoded
+        snapped.wait(5)
+        del stacked
+        freed.append(ref() is None)
 
     t = threading.Thread(target=node_code)
     t.start()
     ready.wait(5)
+    try:
+        m.probe.prompt = "p1"
+        with m._lock:
+            m._start_run("p1", {})
+        m.exec_thread = t.ident  # what the hook records at node start
+        m.update_settings({"threshold": 0.5})
+        m.ram.value = 600
+        m._tick(live=False)
+    finally:
+        snapped.set()
+        t.join()
+    assert freed == [True]
+    stack, full = [r for r in records(bcnodes, tmp_path) if r["type"] == "snapshot"]
+    assert "census" not in stack and stack["line"].endswith("node_code") and any("in node_code" in line for line in stack["stack"])
+    assert [g["count"] for g in full["census"]["groups"] if g["shape"] == [16, 1024, 1024]] == [1]
+
+
+def fill_tuples(stop, errors):
+    """tuple(genexpr) whose items release the GIL, as ComfyUI's LoRA weight prefetch does around a copy."""
+    def item(i):
+        time.sleep(0)
+        return i
+    while not stop.is_set():
+        try:
+            tuple(item(i) for i in range(20))
+        except SystemError as e:
+            errors.append(e)
+
+
+def test_threshold_snapshot_races_no_tuple_builder(mon, bcnodes, tmp_path):
+    """A sampler died of the snapshot: its pass over all objects held a reference to a tuple the
+    execution thread was still filling, and the tuple's resize failed (SystemError: bad argument to
+    internal function). The monitor's snapshot runs on a background thread, as in ComfyUI, while two
+    threads fill tuples from generators: one stands in for the execution thread, one for any other."""
+    m = make_monitor(mon, tmp_path)
     m.probe.prompt = "p1"
     with m._lock:
-        m._start_run("p1", {})
-    m.exec_thread = t.ident
-    m.update_settings({"threshold": 0.5})
-    m.ram.value = 600
-    m._tick(live=False)
-    done.set()
-    t.join()
-    recs = records(bcnodes, tmp_path)
-    quick = [r for r in recs if r["type"] == "snapshot"][0]
-    each = 256 * 512 * 3 * 4
-    assert quick["scope"] == "execution thread locals" and quick["line"].endswith("node_code")
-    assert quick["census"]["groups"] == [{"count": 9, "shape": [256, 512, 3], "dtype": "float32", "device": "cpu",
-                                          "backing": "unknown", "bytes_each": each, "bytes": 9 * each}]  # only what the thread holds
+        run = m._start_run("p1", {})
+    held = [torch.zeros(16, 1024, 257) for _ in range(3)]  # a shape of its own, 16 MiB each
+    stop, errors = threading.Event(), []
+    builders = [threading.Thread(target=fill_tuples, args=(stop, errors)) for _ in range(2)]
+    for t in builders:
+        t.start()
+    m.exec_thread = builders[0].ident
+    sample = {"ram": 900, "ram_limit": 1000, "node": "1", "class_type": "Grow", "line": None}
+    monitor = threading.Thread(target=lambda: [m._snapshot(run, sample) for _ in range(8)])
+    try:
+        monitor.start()
+        monitor.join()
+    finally:
+        stop.set()
+        for t in builders:
+            t.join()
+    assert errors == []
+    full = [r for r in records(bcnodes, tmp_path) if r["type"] == "snapshot"][-1]
+    assert [g["count"] for g in full["census"]["groups"] if g["shape"] == [16, 1024, 257]] == [3]
+    del held
 
 
 def test_crash_after_restart(mon, bcnodes, tmp_path):

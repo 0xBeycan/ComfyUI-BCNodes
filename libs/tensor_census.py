@@ -4,7 +4,7 @@
     tensors found through lists, tuples and dicts only (a model object is not walked: its weights
     are reported as loaded models, not as node outputs);
   - census: the live torch tensors of the process grouped by shape / dtype / device, found through
-    the garbage collector, plus the tensors and numpy arrays the given stack frames hold.
+    the garbage collector (or the tensors and numpy arrays of given values).
 
 Bytes are memory, counted once: a tensor's storage is a range of addresses [start, end) on its device,
 and the ranges are merged. Views, the same tensor reached twice and storages that start at different
@@ -14,6 +14,7 @@ storage) add no byte twice.
 
 import bisect
 import gc
+from itertools import chain, compress, starmap
 
 import numpy as np
 import torch
@@ -148,7 +149,7 @@ def _backing(maps, device, address):
     return "file" if files[i] else "ram"
 
 
-def census(frames=(), min_bytes=1 << 20, top=20, whole_process=True):
+def census(values=None, min_bytes=1 << 20, top=20):
     """The live tensors grouped by (shape, dtype, device, backing), largest first:
     {"groups": [{"count", "shape", "dtype", "device", "backing", "bytes_each", "bytes"}], "small_bytes",
     "total_bytes", "file_bytes"}.
@@ -160,18 +161,41 @@ def census(frames=(), min_bytes=1 << 20, top=20, whole_process=True):
     "backing" is "file" for memory mapped from a file (page cache, not the process's own RAM), "ram"
     for the rest of the cpu memory, "unknown" without /proc/self/maps (macOS), None on a GPU;
     "file_bytes" sums the file-backed bytes, None when unknown.
-    Tensors and numpy arrays are found through the locals of `frames` (a list there is looked into)
-    and, with whole_process, every tensor through the garbage collector: a pass over all of the
-    process's objects, the slow part."""
-    found = {}
-    if whole_process:
-        for obj in gc.get_objects():
-            if issubclass(type(obj), torch.Tensor):  # not isinstance: it reads __class__, which some module objects warn on
-                found[id(obj)] = obj
-    for frame in frames:
-        for value in list(frame.f_locals.values()):
-            for t in tensors_in(value, depth=2):
-                found.setdefault(id(t), t)
+    The tensors are those reachable from `values` through lists, tuples and dicts (numpy arrays too),
+    or, with None, every torch tensor of the process, found through the garbage collector: a pass over
+    all of the process's objects, the slow part. Any thread may call it."""
+    if values is not None:
+        found = {id(t): t for t in tensors_in(values)}
+    else:
+        # The pass must stay ONE C-level call, with no bytecode while the list of all objects is alive.
+        # gc.get_objects() also returns objects other threads are still building: a tuple filled from a
+        # generator (tuple(genexpr), f(*genexpr)) is tracked from its allocation, and its resize
+        # requires a reference count of 1. A Python loop over the list lets the interpreter switch
+        # threads every 5 ms while the list holds a second reference, and the builder's resize fails
+        # with "SystemError: bad argument to internal function" (a sampler died of it). Inside the
+        # list() call below the list is made, filtered and freed in C: no other thread runs while it
+        # exists, and no reference to it outlives the call (`again` is run to its end and the holder
+        # cleared, so no iterator made before the list keeps it in a cycle). The collector is paused
+        # around the call, so no finalizer runs Python code inside it. A tensor is told by its type
+        # alone (type.__subclasscheck__ in C): isinstance reads __class__, which can run Python code.
+        # Guarded by test_threshold_snapshot_races_no_tuple_builder (tests/layers/pipelines/
+        # test_pipe_process_monitor_monitor.py) and test_census_scan_keeps_no_reference.
+        holder = []
+        every, again = chain.from_iterable(holder), chain.from_iterable(holder)  # two passes over the list in holder
+        scan = chain(
+            filter(None, map(holder.append, starmap(gc.get_objects, [()]))),  # the list of all objects into holder
+            compress(every, map(torch.Tensor.__subclasscheck__, map(type, again))),  # its tensors
+            filter(None, again),  # `again` reaches its end and drops the list
+            filter(None, starmap(holder.clear, [()])),  # holder drops it: the list is freed here
+        )
+        collecting = gc.isenabled()
+        gc.disable()
+        try:
+            tensors = list(scan)
+        finally:
+            if collecting:
+                gc.enable()
+        found = {id(t): t for t in tensors}
     maps = _maps()
     rows = []
     for t in found.values():

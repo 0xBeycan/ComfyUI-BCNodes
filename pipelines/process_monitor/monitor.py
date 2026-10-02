@@ -316,16 +316,17 @@ class Monitor:
                                                  "class_type": run.class_type, "elapsed": time.time() - run.t0}}
 
     def _snapshot(self, run, sample):
-        """Once per run: the execution thread's stack and the tensors it holds in its locals (a
-        record written at once: the kill can be a fraction of a second away), then every live
-        tensor of the process (a second record, after a pass over all objects with the GIL held)."""
+        """Once per run: the execution thread's stack, read from its code and line numbers only (a
+        record written at once: the kill can be a fraction of a second away), then the same record
+        with every live tensor of the process (tensor_census.census: the list of all objects is made,
+        filtered and freed inside one C call with the collector paused, so no other thread runs while
+        it exists). No frame's locals are read: from another thread that races with the frame and
+        keeps its locals alive."""
         run.snapshot_done = True
         t0 = time.perf_counter()
         frame = self._execution_frame()
-        frames, f = [], frame
-        while f is not None:
-            frames.append(f)
-            f = f.f_back
+        stack = traceback.format_stack(frame, limit=40) if frame is not None else []
+        del frame  # a frame object held after its function returns keeps the function's locals
         stopped = False
         if self.settings.stop_at_threshold:
             try:
@@ -336,13 +337,10 @@ class Monitor:
                 pass
         record = {"type": "snapshot", "t": time.time(), "ram": sample["ram"], "ram_limit": sample["ram_limit"],
                   "threshold": self.settings.threshold, "node": sample.get("node"), "class_type": sample.get("class_type"),
-                  "line": sample.get("line"), "stack": traceback.format_stack(frame, limit=40) if frame is not None else [],
-                  "stopped": stopped}
-        for scope, whole in (("execution thread locals", False), ("whole process", True)):
-            record.update(scope=scope, census=census(frames[:8], whole_process=whole), t=time.time(),
-                          seconds=round(time.perf_counter() - t0, 3))
-            run.log.write(record)
-        del frames, frame, f
+                  "line": sample.get("line"), "stack": stack, "stopped": stopped}
+        run.log.write(record)
+        record.update(census=census(), t=time.time(), seconds=round(time.perf_counter() - t0, 3))
+        run.log.write(record)
         run.snapshot_s += time.perf_counter() - t0
 
     # -- runs ------------------------------------------------------------------------------------

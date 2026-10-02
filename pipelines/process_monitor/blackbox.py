@@ -87,9 +87,8 @@ class NodeEnd(TypedDict, total=False):
     models_unloaded: list
 
 
-class Snapshot(TypedDict):
-    type: str  # "snapshot", twice: scope "execution thread locals" at once, then "whole process"
-    scope: str
+class Snapshot(TypedDict, total=False):
+    type: str  # "snapshot", twice: the stack at once, then the same record with census and seconds
     t: float
     ram: int
     ram_limit: int
@@ -97,10 +96,11 @@ class Snapshot(TypedDict):
     node: str
     class_type: str
     line: str
-    census: dict  # tensor_census.census()
+    census: dict  # tensor_census.census(), the second record only
     stack: list
-    seconds: float
+    seconds: float  # the second record only
     stopped: bool
+    scope: str  # older run logs only: "execution thread locals" (first record) or "whole process"
 
 
 class CachedNodes(TypedDict):

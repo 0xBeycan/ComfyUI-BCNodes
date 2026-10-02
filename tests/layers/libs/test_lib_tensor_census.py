@@ -6,6 +6,7 @@ safetensors library writes.
 """
 
 import ctypes
+import gc
 import mmap
 import sys
 import warnings
@@ -54,8 +55,8 @@ MB = 1 << 20
 
 
 def census_of(tc, *held):
-    """The census of `held` alone: the locals of this call's frame, which ends with the call."""
-    return tc.census(frames=[sys._getframe()], min_bytes=1, top=100, whole_process=False)
+    """The census of `held` alone."""
+    return tc.census(held, min_bytes=1, top=100)
 
 
 def test_covered_merges_address_ranges_per_device(tc):
@@ -162,12 +163,28 @@ def test_census_groups_copies_and_views(tc):
     del copies, views
 
 
-def test_census_finds_numpy_arrays_through_frames(tc):
+def test_census_finds_numpy_arrays_in_values(tc):
     held = np.ones((31, 37), dtype=np.float64)  # numpy arrays are not tracked by the garbage collector
-    c = tc.census(frames=[sys._getframe()], min_bytes=1, top=10_000)
+    c = tc.census([{"frames": [held]}], min_bytes=1, top=10_000)
     g = [g for g in c["groups"] if g["shape"] == [31, 37]]
     assert g and g[0]["device"] == "cpu (numpy)" and g[0]["bytes"] == 31 * 37 * 8
     del held
+
+
+def test_census_scan_keeps_no_reference(tc):
+    """The pass over all objects leaves no reference behind: the list of all objects is freed inside
+    the one call that makes it (a reference that outlives it, even in a cycle the collector would free
+    later, is what fails another thread's tuple resize). The collector's state is restored."""
+    probe = [object()]  # tracked by the collector, so in the list of all objects
+    before = sys.getrefcount(probe)
+    tc.census(min_bytes=1 << 40)
+    assert sys.getrefcount(probe) == before and gc.isenabled()
+    gc.disable()
+    try:
+        tc.census(min_bytes=1 << 40)
+        assert not gc.isenabled() and sys.getrefcount(probe) == before
+    finally:
+        gc.enable()
 
 
 def test_census_puts_small_tensors_aside(tc):

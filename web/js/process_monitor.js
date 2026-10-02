@@ -142,7 +142,11 @@ function openModal() {
 	const body = el("div", { class: "bcpm-body" });
 	const close = el("button", { class: "bcpm-btn", style: "margin-left:auto" }, "Close");
 	const overlay = el("div", { class: "bcpm-overlay" }, el("div", { class: "bcpm-panel" }, tabs, body));
-	overlay.onclick = (e) => e.target === overlay && closeModal();
+	// A block body: an onclick that returns false cancels the click, which undoes a checkbox toggle
+	// anywhere in the modal.
+	overlay.onclick = (e) => {
+		if (e.target === overlay) closeModal();
+	};
 	close.onclick = closeModal;
 	for (const t of TABS) {
 		const b = el("button", { class: "bcpm-btn" }, t);
@@ -352,11 +356,13 @@ async function crashTab() {
 	if (snap) {
 		const c = snap.census;
 		parts.push(el("h4", {}, `Tensors alive at the threshold (${gb(snap.ram)}, node ${snap.node} ${snap.class_type ?? ""}; ${snap.scope ?? "whole process"})`));
+		// no census: the run died while it was taken; the stack record was written before it
+		if (!c) parts.push(el("div", { class: "bcpm-note" }, "The run ended before the tensor census finished; the stack below was written at the threshold."));
 		// file_bytes: absent in a run logged before the census told file-backed memory apart
-		if (c.file_bytes !== undefined) parts.push(el("div", { class: "bcpm-note" }, `${gb(c.total_bytes)} of memory in all, each byte once; `,
+		if (c?.file_bytes !== undefined) parts.push(el("div", { class: "bcpm-note" }, `${gb(c.total_bytes)} of memory in all, each byte once; `,
 			c.file_bytes === null ? "file-backed part unknown (no /proc/self/maps on this system)"
 				: `${gb(c.file_bytes)} of it file-backed (mapped from files: page cache, not the process's own RAM)`));
-		parts.push(table(["Count", "Shape", "dtype", "Device", "Memory", "Each", "Distinct bytes"], c.groups.map((g) => ({
+		if (c) parts.push(table(["Count", "Shape", "dtype", "Device", "Memory", "Each", "Distinct bytes"], c.groups.map((g) => ({
 			cells: [`${g.count} ×`, `(${g.shape.join(", ")})`, g.dtype, g.device, BACKING[g.backing] ?? "–", gb(g.bytes_each), gb(g.bytes)],
 		}))));
 		parts.push(el("details", {}, el("summary", {}, "Stack of the execution thread"), el("pre", {}, snap.stack.join(""))));
