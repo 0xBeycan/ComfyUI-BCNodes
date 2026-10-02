@@ -12,15 +12,13 @@ writes files and builds the report. All geometry and encoding live in
 pipelines/social_export.py (no ComfyUI or torch imports, unit-tested standalone);
 the platform table is nodes/social_specs.json, re-read on every execution.
 
-PIL and folder_paths are imported inside the methods; the torch IMAGE tensor
-is handled by duck typing (.detach().cpu().numpy()), so torch is never
-imported here.
+PIL and folder_paths are imported inside the methods; the IMAGE tensor goes
+to 8 bits through libs/image.tensor_to_u8.
 """
 
 import os
 
-import numpy as np
-
+from ..libs.image import tensor_to_u8
 from ..pipelines import social_export as core
 
 _SPECS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "social_specs.json")
@@ -60,7 +58,7 @@ def _tensor_to_pil(image):
     """ComfyUI IMAGE tensor [H,W,C] float 0..1 -> opaque RGB PIL image."""
     from PIL import Image
 
-    arr = np.clip(image.detach().cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
+    arr = tensor_to_u8(image.detach())
     if arr.ndim == 2:
         arr = arr[:, :, None]
     channels = arr.shape[2]

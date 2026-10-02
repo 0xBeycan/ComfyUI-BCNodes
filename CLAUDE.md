@@ -54,7 +54,7 @@ models/depth_anything_3/      Depth Anything 3 over core (comfy.ldm.depth_anythi
                               as v3-small, v3-base, v3-mono-large, v3-metric-large in the depth family
 models/seedvr2/               VAE adapter, tiling, frame-shape rules (no registry)
 models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 3)
-libs/image.py                 tensor_to_pil_u8, pil_to_tensor_hwc, fit_image
+libs/image.py                 tensor_to_u8, tensor_to_pil_u8, pil_to_tensor_hwc, fit_image
 libs/mask.py filters.py       mask ops; the two Gaussians (reflect / replicate), kept apart on purpose
 libs/color.py texture.py image_metrics.py
 libs/geometry.py              integer size arithmetic; short_side_size (a ControlNet preprocessor's output size)

@@ -4,11 +4,20 @@ import numpy as np
 import torch
 
 
+def tensor_to_u8(frame):
+    """float tensor in 0..1 -> uint8 numpy array of its shape (x 255, clipped, truncated). One float
+    buffer, clipped in place; it is freed when this returns, before the caller builds anything on
+    the result."""
+    buf = 255.0 * frame.cpu().numpy()
+    np.clip(buf, 0, 255, out=buf)
+    return buf.astype(np.uint8)
+
+
 def tensor_to_pil_u8(frame):
     """float (H, W) or (H, W, C) tensor in 0..1 -> 8-bit PIL image (clipped, truncated)."""
     from PIL import Image
 
-    return Image.fromarray(np.clip(255.0 * frame.cpu().numpy(), 0, 255).astype(np.uint8))
+    return Image.fromarray(tensor_to_u8(frame))
 
 
 def pil_to_tensor_hwc(pil):
