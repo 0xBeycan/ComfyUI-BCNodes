@@ -1,5 +1,9 @@
 # Image
 
+Half-precision input (float16 or bfloat16; BCVideoNodes' Load Video gives float16 by default): Image Scale By Aspect Ratio, Depth Anything and Skin Texture read it a frame at a time as the float32 8-bit levels a float32 load holds, work in float32 and give their outputs in the input's dtype; any other input gives float32 outputs, as before.
+
+The 8-bit conversions (Save Image, Save Image With Caption, Social Media Export, the lanczos resizes) requantize a half frame first, so it gives the uint8 of its float32 source: float16(1/255) x 255 is 0.99998, which a plain cast truncates to 0.
+
 ## `BC_ImageScaleByAspectRatio` — Image Scale By Aspect Ratio
 
 `image` (`IMAGE`, optional), `mask` (`MASK`, optional), widgets `aspect_ratio` (`original` / `custom` / `1:1` / `3:2` / `4:3` / `16:9` / `2:3` / `3:4` / `9:16`), `proportional_width` and `proportional_height` (the `custom` ratio), `fit` (`letterbox` / `crop` / `fill`), `method` (`lanczos` / `bicubic` / `hamming` / `bilinear` / `box` / `nearest`), `round_to_multiple` (`8` … `512` / `None`), `scale_to_side` (`None` / `longest` / `shortest` / `width` / `height` / `total_pixel(kilo pixel)`), `scale_to_length` (default `1024`), `background_color` (default `#000000`, the letterbox fill).

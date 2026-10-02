@@ -1,5 +1,7 @@
 # Mask
 
+Half-precision input (float16 or bfloat16; BCVideoNodes' Load Video gives float16 by default): Mask Fill Holes, MaskGrow, Blockify Mask, Repeat Mask Batch, Draw Mask On Image and BiRefNet Remove Background read it a frame at a time as the float32 8-bit levels a float32 load holds, work in float32 and give their outputs in the input's dtype (Draw Mask On Image and BiRefNet: the image's); any other input gives float32 outputs, as before.
+
 ## `BC_IsMaskEmpty` — Is Mask Empty
 
 `MASK` → `BOOLEAN`. `True` when the mask is missing or every pixel is `0`.

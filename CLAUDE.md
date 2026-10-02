@@ -56,7 +56,8 @@ models/depth_anything_3/      Depth Anything 3 over core (comfy.ldm.depth_anythi
                               as v3-small, v3-base, v3-mono-large, v3-metric-large in the depth family
 models/seedvr2/               VAE adapter, tiling, frame-shape rules (no registry)
 models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 3)
-libs/image.py                 tensor_to_u8, tensor_to_pil_u8, pil_to_tensor_hwc, fit_image
+libs/image.py                 is_half, requantized, output_dtype (half-precision clips), tensor_to_u8, tensor_to_pil_u8,
+                              pil_to_tensor_hwc, fit_image
 libs/mask.py filters.py       mask ops; the two Gaussians (reflect / replicate), kept apart on purpose
 libs/frequency.py             Frequency Merge: one image's Gaussian low-pass + another's high-pass
 libs/color.py texture.py image_metrics.py
@@ -212,6 +213,13 @@ where it is.
   reproduce its bugs. Take the logic only: no import of, dependency on or reference to the
   original.
 - Precision is decided per tensor, by measurement, never globally.
+- A half-precision clip (float16 or bfloat16; BCVideoNodes' Load Video gives float16 by default) is
+  read through `libs/image.requantized` a frame (or a few frames) at a time: every value back to the
+  float32 8-bit level a float32 load holds. The work runs in float32 and the IMAGE / MASK output
+  keeps the input's dtype (`libs/image.output_dtype`), written frame by frame into a preallocated
+  output. No float16 arithmetic on the CPU (comparisons and copies are not arithmetic), and the clip
+  is never widened as a whole (that holds both copies). An 8-bit conversion requantizes first
+  (`tensor_to_u8`): float16(1/255) x 255 is 0.99998, which a uint8 cast truncates to 0.
 - Unused heavy outputs are not kept. ComfyUI's cache key holds a node's inputs and ancestors only,
   so an on_prompt handler (`LinkStamp` in `nodes/common.py`, registered by the root `__init__`)
   writes the linked heavy outputs of each heavy node into its inputs as `bc_linked_heavy`; the node
