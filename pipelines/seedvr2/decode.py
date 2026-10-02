@@ -17,7 +17,7 @@ import logging
 import torch
 
 from ...models.seedvr2.tiling import tile_plan, tile_weight
-from ...models.seedvr2.vae import DECODER_BYTES_PER_PIXEL, LATENT_CHANNELS, make_room_for_vae, vae_model
+from ...models.seedvr2.vae import DECODER_BYTES_PER_PIXEL, DECODER_FIXED_BYTES, LATENT_CHANNELS, make_room_for_vae, vae_model
 from . import FRAMES_PER_CHUNK, TRIM_EVERY
 from .progress import Progress
 
@@ -39,7 +39,7 @@ def decode(samples, vae, tile_size, overlap):
     ov_lat = min(max(0, (min(overlap, max(0, tile_size - 8))) // 8), tile_lat - 1)
     single_tile = h <= tile_lat and w <= tile_lat
     tile_px_h, tile_px_w = (h * 8, w * 8) if single_tile else (min(h, tile_lat) * 8, min(w, tile_lat) * 8)
-    make_room_for_vae(vae, DECODER_BYTES_PER_PIXEL * tile_px_h * tile_px_w)
+    make_room_for_vae(vae, DECODER_FIXED_BYTES + DECODER_BYTES_PER_PIXEL * tile_px_h * tile_px_w)
     device = vae.device
     out = None
 

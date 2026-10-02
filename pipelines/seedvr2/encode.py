@@ -13,7 +13,7 @@ spatial tiles of tiled_vae and blended (models/seedvr2/tiling.py).
 import torch
 
 from ...models.seedvr2.tiling import tile_plan, tile_weight
-from ...models.seedvr2.vae import ENCODER_BYTES_PER_PIXEL, LATENT_CHANNELS, make_room_for_vae, vae_model
+from ...models.seedvr2.vae import ENCODER_BYTES_PER_PIXEL, ENCODER_FIXED_BYTES, LATENT_CHANNELS, make_room_for_vae, vae_model
 from . import TRIM_EVERY, require_image_batch
 from .progress import Progress
 
@@ -30,7 +30,8 @@ def encode(pixels, vae, tile_size, overlap):
     target_t, target_h, target_w = (n + 3) // 4, (height + 7) // 8, (width + 7) // 8  # vae.py tiled_vae encode targets
     overlap = min(overlap, max(0, tile_size - 8))  # vae.py encode_tiled
     single_tile = height <= tile_size and width <= tile_size
-    working_set = ENCODER_BYTES_PER_PIXEL * (height * width if single_tile else min(height, tile_size) * min(width, tile_size))
+    tile_pixels = height * width if single_tile else min(height, tile_size) * min(width, tile_size)
+    working_set = ENCODER_FIXED_BYTES + ENCODER_BYTES_PER_PIXEL * tile_pixels
     make_room_for_vae(vae, working_set)
     device = vae.device
 

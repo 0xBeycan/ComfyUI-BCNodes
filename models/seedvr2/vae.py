@@ -6,14 +6,28 @@ import logging
 import torch
 
 LATENT_CHANNELS = 16
-# Working set of the SeedVR2 VAE per tile pixel, in bytes, independent of the
-# frame count. Measured on a 5090 at 1088x1920 (float16, one tile): the
-# encoder's first slice needs more than 28.5 GB (13.6 KB/px; it ran out of
-# memory there in a process holding nothing else), the decoder is in the same
-# class and not measured. Biased 20% high: an under-estimate kills the run,
-# an over-estimate costs a DiT reload.
-DECODER_BYTES_PER_PIXEL = 17_000
-ENCODER_BYTES_PER_PIXEL = 16_300
+# Working set of the SeedVR2 VAE in bytes, independent of the frame count: a fixed part plus a part
+# per pixel of the largest spatial tile. It is the free VRAM, as the driver reports it, that the VAE
+# needs, which is what make_room_for_vae compares it with. Measured on an RTX PRO 4500 (32 GB) under
+# ComfyUI's own setup (cudaMallocAsync, DynamicVRAM on), 81 frames of 1088x1920, overlap 256, one
+# encode or decode per process:
+#   - the VRAM growth with nothing else loaded runs well above torch's own peak, because the async
+#     pool keeps the blocks it freed (decoder, 1024 tile: 17.9 GiB allocated, 25 to 28.4 GiB on the
+#     driver). Encoder, tile 512 / 768 / 1024 / 1280 / 1536 / 2048: 7.9 / 13.7 / 14.0 / 18.6 / 25.9 /
+#     27.7 GiB; decoder, tile 512 / 768 / 1024: 10.5 / 18.1 / 28.4 GiB (1280 and up do not fit 32 GB);
+#   - with the rest of the card held, the free VRAM at which the op ran to the end: decoder 512: fails
+#     at 11 GiB, runs at 13; 768: fails at 16, runs at 20; 1024: fails at 29, runs at 31 (the whole
+#     card); encoder 512: fails at 5, runs at 7; 1024: runs at 21 (failed once at 19).
+# The decoder's figure is the line through its 512 and 768 points that ran (13 and 20 GiB), which gives
+# 29.8 GiB at 1024, between the 29 that failed and the 31 that ran. The encoder's is the line through
+# 5% over its 768 growth and the 21 GiB that ran at 1024; it lies above every other measured point. An
+# under-estimate kills the run, an over-estimate costs a DiT reload. The old figures (17,000 and
+# 16,300 bytes per pixel, no fixed part, the decoder never measured) put the decoder's 1024 tile at
+# 16.6 GiB, and a 32 GB card with the DiT resident ran out of memory with 20.7 GiB free.
+ENCODER_FIXED_BYTES = 6_360_000_000
+ENCODER_BYTES_PER_PIXEL = 15_440
+DECODER_FIXED_BYTES = 7_950_000_000
+DECODER_BYTES_PER_PIXEL = 22_940
 
 
 def vae_model(vae):
