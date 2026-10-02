@@ -219,6 +219,10 @@ def main():
           lambda: (lambda r: r[0].shape[0] == 9 and r[1].shape[0] == 9)(sr.resize(torch.rand(9, 16, 16, 3), 2.0, 1.0, 0, False)) or _fail())
     check("SeedVR2Resize image and reference float16",
           lambda: (lambda r: r[0].dtype == torch.float16 and r[1].dtype == torch.float16)(sr.resize(torch.rand(1, 16, 16, 3), 2.0, 1.0, 0, True)) or _fail())
+    levels = torch.randint(0, 256, (6, 30, 52, 3), generator=torch.Generator().manual_seed(1)).float() / 255  # an 8-bit clip
+    check("SeedVR2Resize 8-bit clip as float16 = as float32 (requantized to k/255), with and without the lanczos downscale",
+          lambda: all(torch.equal(a, b) for down in (0.5, 0.75, 1.0) for a, b in zip(sr.resize(levels.to(torch.float16), 1.5, down, 0, True),
+                                                                                    sr.resize(levels, 1.5, down, 0, True))) or _fail())
 
     class VideoAutoencoderKLWrapper:  # stand-in for comfy's SeedVR2 VAE: 4 pixel frames <-> 1 latent frame (first slice 5 <-> 2), 8x spatial
         use_slicing = True

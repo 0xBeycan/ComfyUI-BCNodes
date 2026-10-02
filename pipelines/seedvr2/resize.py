@@ -26,6 +26,12 @@ float16: VAE Encode casts `image` to the VAE's float16 anyway (comfy/sd.py
 process_input), and `reference` only feeds the colour transfer, where a
 float16 rounding of the reference moves the result by ~0.1/255. PIL is
 imported inside lanczos_scale_by, torchvision inside models/seedvr2/frames.py.
+
+A float16 IMAGE (8-bit frames stored as float16) is requantized a chunk at a
+time to the float32 k/255 it stands for before step 1: float16(k/255) is not
+float32(k/255), and the bfloat16 cast, the lanczos `255 * x` and the reference
+resize would round it differently, so the same 8-bit clip would give other
+frames as float16 than as float32. A float32 input goes through untouched.
 """
 
 import logging
@@ -57,7 +63,9 @@ def lanczos_scale_by(image_bhwc, factor):
 
 
 def _downscaled(frames, downscale_factor):
-    """Step 1 on (B, H, W, C) frames, as (B, C, H, W)."""
+    """Step 1 on (B, H, W, C) frames, as (B, C, H, W); float16 frames requantized to k/255 first (module doc)."""
+    if frames.dtype == torch.float16:
+        frames = frames.float().mul_(255).round_().div_(255)
     if downscale_factor != 1.0:
         frames = lanczos_scale_by(frames, downscale_factor)
     return frames.permute(0, 3, 1, 2)
