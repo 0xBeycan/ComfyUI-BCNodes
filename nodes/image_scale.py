@@ -12,11 +12,10 @@ Image Resize: stretch / keep proportion / pad / crop to a width and height, fram
 one preallocated output (libs/resize.py).
 """
 
-import numpy as np
 import torch
 
 from ..libs.geometry import aspect_ratio as ratio_of, round_up_to_multiple, target_size
-from ..libs.image import fit_image, pil_to_tensor_hwc
+from ..libs.image import fit_image, output_dtype, pil_to_tensor_hwc, tensor_to_pil_u8
 from ..libs.resize import resize_image
 from .common import DEVICES, LINK_INPUTS, compute_device, drop_unwanted, heavy_wanted, wants
 
@@ -33,12 +32,10 @@ PLACEHOLDER_MASK_SHAPE = (64, 64)
 
 def _to_pil(frame):
     """float (H, W) or (H, W, C) in 0..1 -> 8-bit PIL image (truncated, as the
-    original does)."""
-    from PIL import Image
-
+    original does; a half frame requantized first)."""
     if frame.ndim == 3 and frame.shape[-1] == 1:
         frame = frame[..., 0]
-    return Image.fromarray(np.clip(255.0 * frame.float().cpu().numpy(), 0, 255).astype(np.uint8))
+    return tensor_to_pil_u8(frame)
 
 
 class ImageScaleByAspectRatio:
@@ -119,23 +116,24 @@ class ImageScaleByAspectRatio:
             "nearest": Image.Resampling.NEAREST,
         }.get(method, Image.Resampling.LANCZOS)
 
+        # each output in its input's dtype when that is half precision, float32 otherwise; fitted frame by
+        # frame (8-bit PIL) into it
         out_images = None
-        if frames and not wants(wanted, "image"):
-            out_images = torch.empty((0, target_height, target_width, 3), dtype=torch.float32)  # not fitted
-        elif frames:
-            out_images = torch.stack([
-                pil_to_tensor_hwc(fit_image(_to_pil(f).convert("RGB"), target_width, target_height, fit, sampler, background_color))
-                for f in frames
-            ])
-        if not wants(wanted, "mask"):
-            out_masks = torch.empty((0, target_height, target_width), dtype=torch.float32)  # not fitted
-        elif mask_frames:
-            out_masks = torch.stack([
-                pil_to_tensor_hwc(fit_image(_to_pil(m).convert("L"), target_width, target_height, fit, sampler, "black"))
-                for m in mask_frames
-            ])
-        else:
-            out_masks = torch.zeros((len(frames), target_height, target_width), dtype=torch.float32)
+        if frames:
+            out_images = torch.empty((len(frames) if wants(wanted, "image") else 0, target_height, target_width, 3),
+                                     dtype=output_dtype(image))  # 0 frames: not fitted
+            for i in range(out_images.shape[0]):
+                out_images[i] = pil_to_tensor_hwc(fit_image(_to_pil(frames[i]).convert("RGB"), target_width, target_height,
+                                                            fit, sampler, background_color))
+        if mask_frames:
+            out_masks = torch.empty((len(mask_frames) if wants(wanted, "mask") else 0, target_height, target_width),
+                                    dtype=output_dtype(mask))
+            for i in range(out_masks.shape[0]):
+                out_masks[i] = pil_to_tensor_hwc(fit_image(_to_pil(mask_frames[i]).convert("L"), target_width, target_height,
+                                                           fit, sampler, "black"))
+        else:  # zeros, one per frame, in the image's dtype
+            out_masks = torch.zeros((len(frames) if wants(wanted, "mask") else 0, target_height, target_width),
+                                    dtype=output_dtype(image) if frames else torch.float32)
 
         return drop_unwanted(type(self), (out_images, out_masks, [orig_width, orig_height], target_width, target_height), wanted)
 

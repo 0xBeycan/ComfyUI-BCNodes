@@ -89,8 +89,8 @@ class SaveImage:
         if delimiter:
             delimiter = delimiter[0]
         output_dir = folder_paths.get_output_directory()
-        frames = [tensor_to_pil_u8(image) for image in images]
-        resolution = f"{frames[0].width}x{frames[0].height}"
+        frames = (tensor_to_pil_u8(image) for image in images)  # each frame converted when it is written
+        resolution = f"{images.shape[2]}x{images.shape[1]}"
         timestamp = datetime.now()
 
         results = save_batch(frames, output_dir, resolution, timestamp, filename_prefix, filename_keys, foldername_prefix,
