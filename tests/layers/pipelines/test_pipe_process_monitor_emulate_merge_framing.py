@@ -38,8 +38,8 @@ def merge(base, detail, **widgets):
 
 
 def reference(frames):
-    """Five 1280x720 frames (h x w) through SeedVR2 Resize at 1x: its float16 reference."""
-    return {"1": loader(frame_count=str(frames)),
+    """Five 1280x720 float32 frames (h x w) through SeedVR2 Resize at 1x: its float16 reference."""
+    return {"1": loader(frame_count=str(frames), precision="fp32"),
             "2": N("BC_SeedVR2Resize", image=["1", 0], upscale_factor=1.0, downscale_factor=1.0, max_resolution=0, emulate_bf16=False)}
 
 
@@ -85,11 +85,11 @@ def test_seedvr2_framing_downscale(em):
     assert row["status"] == "counted" and row["outputs"] == [] and row["output_bytes"] == 0
     assert row["transient"] == sam_input * 4 + 2 * 480 * 640 * 4 and "SAM 3's working set on its device not counted" in row["note"]
     # 81 frames: four at a time
-    row = rows(em, {"1": loader(frame_count="81"), "2": N("BC_SeedVR2FramingDownscale", image=["1", 0])})["2"]
+    row = rows(em, {"1": loader(frame_count="81", precision="fp32"), "2": N("BC_SeedVR2FramingDownscale", image=["1", 0])})["2"]
     assert row["transient"] == 4 * sam_input * 4 + 2 * 4 * 1280 * 720 * 4
     # three frames: one group of three
     three = N("BCVLoadVideo", video="v.mp4", model="None", resolution="720p", orientation="auto", force_fps="", start_frame=1,
-              frame_count="3")
+              frame_count="3", precision="fp32")
     row = rows(em, {"1": three, "2": N("BC_SeedVR2FramingDownscale", image=["1", 0])})["2"]
     assert row["transient"] == 3 * sam_input * 4 + 2 * 3 * 1280 * 720 * 4
     # a float16 batch is scaled to 1008 x 1008 in float16; the masks are float32
