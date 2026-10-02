@@ -254,3 +254,25 @@ def test_decode_holds_the_clip_once(stubbed, tile):
 
     assert transient_growth(_latent, run, (9, 17)) < 96 * 160 * 3 * 2 / 4  # a quarter of one output frame
 
+
+@pytest.mark.parametrize("tile", [256, 64])
+def test_decode_moves_the_latent_a_slice_at_a_time(stubbed, tile):
+    decode = stubbed["pipelines.seedvr2.decode"].decode
+
+    def run(z):
+        out = decode({"samples": z}, VAE(), tile, 16)[0]
+        return (out,), z.shape[2]
+
+    # the stand-in's device is the CPU, so the allocator sees what goes to the device: per latent frame,
+    # in float16 latent frames, the whole latent moved at the start and kept for the decode would be 1
+    assert transient_growth(_latent, run, (9, 17)) < 0.25 * 16 * 12 * 20 * 2
+
+
+@pytest.mark.parametrize("tile", [256, 64])
+def test_decode_leaves_the_latent_untouched(stubbed, tile):
+    vae = VAE()
+    vae.vae_dtype = torch.float32  # on the CPU in float32 a slice needs no conversion, yet it is scaled in place
+    z = _latent(5)
+    given = z.clone()
+    stubbed["pipelines.seedvr2.decode"].decode({"samples": z}, vae, tile, 16)
+    assert torch.equal(z, given)

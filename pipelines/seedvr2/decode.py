@@ -4,8 +4,10 @@ whole clip in one call and keeps every decoded frame on the GPU until the end
 grows with the frame count — a 5090 tops out near 190 frames at 1080p. This
 flow runs the same slice loop with the same causal memory cache, but moves
 each decoded slice to RAM as soon as it exists, after the same
-`/scaling_factor`, even crop and `(x + 1) / 2` clamp. VRAM is then the
-decoder's fixed working set, whatever the length. The frames are stored as
+`/scaling_factor`, even crop and `(x + 1) / 2` clamp. The latent stays in
+RAM too: each slice of each tile goes to the GPU, in the VAE dtype and
+unscaled, when its turn comes. VRAM is then the decoder's fixed working set,
+whatever the length. The frames are stored as
 float16, which is what the float16 VAE produced; the native node only upcasts
 them. A latent that fits in one tile goes through the decoder at once, as the
 native node does; a larger one is split into the spatial tiles of tiled_vae
@@ -69,24 +71,28 @@ def decode(samples, vae, tile_size, overlap, keep=None):
     # slicing_decode: latent frame 0 rides with the first slice, then one slice per remaining frame.
     n_slices = t_latent - 1 if model.use_slicing and (t_latent - 1) > model.slicing_latent_min_size else 1
 
+    def on_device(latent):
+        """A slice of the latent in RAM -> the VAE device and dtype, `/ scaling + shift` (vae.py wrapper.decode)
+        in place. Always a copy: with a float32 VAE on the CPU `.to` would return the caller's latent itself."""
+        return latent.to(device, vae.vae_dtype, copy=True).div_(BYTEDANCE_VAE_SCALING_FACTOR).add_(BYTEDANCE_VAE_SHIFTING_FACTOR)
+
     def decode_tile(latent, sink, progress):
-        """The slice loop of slicing_decode over one latent tile; every decoded slice goes to `sink` at
-        once, and `sink` returns the frame the tile has reached."""
+        """The slice loop of slicing_decode over one latent tile in RAM; each slice goes to the GPU when its
+        turn comes, every decoded slice goes to `sink` at once, and `sink` returns the frame the tile has
+        reached."""
         if n_slices > 1:
             memory_cache = {}
             z_slices = latent[:, :, 1:].split(split_size=model.slicing_latent_min_size, dim=2)
-            progress.step(sink(model._decode(torch.cat((latent[:, :, :1], z_slices[0]), dim=2),
+            progress.step(sink(model._decode(on_device(torch.cat((latent[:, :, :1], z_slices[0]), dim=2)),
                                              memory_state=MemoryState.INITIALIZING, memory_cache=memory_cache)))
             for i in range(1, len(z_slices)):
                 if i % TRIM_EVERY == 0:
                     mm.soft_empty_cache()  # see TRIM_EVERY in pipelines/seedvr2/__init__.py
-                progress.step(sink(model._decode(z_slices[i], memory_state=MemoryState.ACTIVE, memory_cache=memory_cache)))
+                progress.step(sink(model._decode(on_device(z_slices[i]), memory_state=MemoryState.ACTIVE, memory_cache=memory_cache)))
         else:
-            progress.step(sink(model._decode(latent)))
+            progress.step(sink(model._decode(on_device(latent))))
 
     with mm.cuda_device_context(device):
-        latent = z.to(vae.vae_dtype).to(device)
-        latent = latent / BYTEDANCE_VAE_SCALING_FACTOR + BYTEDANCE_VAE_SHIFTING_FACTOR  # vae.py wrapper.decode
         model.device = device
         if single_tile:
             filled = [0]
@@ -98,7 +104,7 @@ def decode(samples, vae, tile_size, overlap, keep=None):
 
             progress = Progress("SeedVR2 VAE Decode", 1, n_slices, t_pixel, device)
             progress.begin_tile()
-            decode_tile(latent, sink, progress)
+            decode_tile(z, sink, progress)
             filled = filled[0]
         else:
             # tiled_vae(encode=False): tiles on the latent grid, blended on the pixel grid with
@@ -137,7 +143,7 @@ def decode(samples, vae, tile_size, overlap, keep=None):
                     offsets.append(decoded.shape[2])
                     return t0 + decoded.shape[2]
 
-                decode_tile(latent[:, :, :, y0:y1, x0:x1], sink, progress)
+                decode_tile(z[:, :, :, y0:y1, x0:x1], sink, progress)
                 filled = sum(offsets)
             logging.info("SeedVR2 VAE Decode: %d tiles decoded, normalising %d frames", len(ranges), out_t)
             count = count[:, :, :, :out_h, :out_w].clamp(min=1e-6).to(device)
