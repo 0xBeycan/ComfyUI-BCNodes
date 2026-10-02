@@ -27,7 +27,8 @@ EVENT = "bcnodes.monitor"
 
 
 class ServerProbe:
-    """What the monitor reads from ComfyUI's server: the running prompt and its outcome."""
+    """What the monitor reads from ComfyUI's server: the running prompt and its outcome; for the full
+    clear, whether the queue is empty, and ComfyUI's own free asked of its prompt worker."""
 
     def __init__(self, server):
         self.server = server
@@ -67,7 +68,7 @@ class ServerProbe:
                 return codes
         raise RuntimeError("ComfyUI's prompt worker thread was not found (a ComfyUI that does not run prompts "
                            "through main.py's prompt_worker), so its free cannot be asked for here. Use ComfyUI's "
-                           "own Unload Models and Free Memory instead.")
+                           "own POST /free (unload_models, free_memory) instead.")
 
     def request_free(self):
         """What POST /free with unload_models and free_memory does: two flags the prompt worker reads

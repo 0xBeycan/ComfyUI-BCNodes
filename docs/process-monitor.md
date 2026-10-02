@@ -34,7 +34,7 @@ Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_moni
 
 | Step | What it frees |
 | --- | --- |
-| `comfyui_free` | ComfyUI's own free, what its *Unload Models* and *Free Memory* (`POST /free`) ask for: every model unloaded, every cached node output and node object of the earlier prompts dropped. It runs on ComfyUI's prompt worker; the clear waits until it is done. |
+| `comfyui_free` | ComfyUI's own free, what `POST /free` with `unload_models` and `free_memory` asks for: every model unloaded, every cached node output and node object of the earlier prompts dropped. It runs on ComfyUI's prompt worker; the clear waits until it is done. |
 | `pack_models` | This pack's model slots (BiRefNet, Depth Anything V2 and 3, SAM 3), which keep a model between runs outside ComfyUI's caches |
 | `garbage` | Python's garbage collector: objects only reference cycles kept |
 | `torch_caches` | ComfyUI's cast buffers, the free blocks of torch's GPU allocator (CUDA or MPS) and torch's pinned host cache |

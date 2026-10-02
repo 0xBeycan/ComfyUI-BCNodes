@@ -377,7 +377,7 @@ async function crashTab() {
 	return el("div", {}, parts);
 }
 
-// [label, reading -> bytes or null]; a row shows when one of its columns has a value
+// [label, reading -> bytes or null, reading -> extra text]; a row shows when one of its columns has a value
 const CLEAR_ROWS = [
 	["RAM (the bar's reading)", (r) => r.ram],
 	["Process RSS", (r) => r.rss],
@@ -386,7 +386,7 @@ const CLEAR_ROWS = [
 	["… its own memory (USS; macOS keeps freed pages in the RSS until it needs them)", (r) => r.uss],
 	["Container: processes' own memory (anon)", (r) => r.cgroup?.anon],
 	["Container: page cache, active / inactive", (r) => r.cgroup?.file, (r) => r.cgroup && `${gb(r.cgroup.active_file)} / ${gb(r.cgroup.inactive_file)}`],
-	["glibc: free blocks its arenas keep (in the RSS until malloc_trim gives their pages back)", (r) => r.malloc_free],
+	["glibc: free blocks its arenas keep (in the RSS until malloc_trim)", (r) => r.malloc_free],
 	["Pinned host memory (ComfyUI's models)", (r) => r.comfy_pinned],
 	["Pinned host memory (torch's cache)", (r) => r.pinned_cache],
 	["VRAM allocated (torch)", (r) => r.vram],
@@ -399,11 +399,18 @@ function renderClear(r) {
 	const rows = CLEAR_ROWS.filter(([, get]) => cols.some((c) => c && get(c) != null)).map(([label, get, extra]) => ({
 		cells: [label, ...cols.map((c) => (c ? `${gb(get(c))}${extra ? ` (${extra(c)})` : ""}` : "–"))],
 	}));
+	// after malloc_trim glibc still counts the blocks as free, but their pages are back with the system
+	const trimmed = r.steps.some((s) => s.name === "malloc_trim" && s.found.includes("pages released"));
+	const glibcRow = rows.find((row) => row.cells[0].startsWith("glibc"));
+	if (trimmed && glibcRow) glibcRow.cells[3] = "pages given back (malloc_trim)";
 	const freed = (s, k) => (s.freed[k] == null ? "–" : gb(s.freed[k]));
-	const above = r.baseline ? r.after.ram - r.baseline.ram : null;
+	// the process's own memory: what a restart frees (RssAnon on Linux, USS on macOS)
+	const own = r.after.rss_anon != null ? "rss_anon" : r.after.uss != null ? "uss" : null;
+	const change = (label, k) => `${label} ${gb(r.before[k])} → ${gb(r.after[k])}` + (r.baseline?.[k] != null ? ` (baseline ${gb(r.baseline[k])})` : "");
 	return el("div", {},
-		el("div", {}, `RAM ${gb(r.before.ram)} → ${gb(r.after.ram)}`, r.baseline ? ` (baseline ${gb(r.baseline.ram)}, ${gb(above)} above it)` : " (no baseline: the server's startup was not seen)",
-			r.after.vram_reserved != null ? `; VRAM reserved ${gb(r.before.vram_reserved)} → ${gb(r.after.vram_reserved)}` : ""),
+		el("div", {}, change("RAM", "ram"), own ? `; own memory ${change("", own).trim()}` : "",
+			r.after.vram_reserved != null ? `; ${change("VRAM reserved", "vram_reserved")}` : "",
+			r.baseline ? "" : ". No baseline: the server's startup was not seen."),
 		table(["", "Baseline (ComfyUI started)", "Before", "After"], rows),
 		el("h4", {}, "Steps"),
 		table(["Step", "What it did", "Found", "RAM freed", "Own memory freed", "VRAM reserved freed", "Time"], r.steps.map((s) => ({
