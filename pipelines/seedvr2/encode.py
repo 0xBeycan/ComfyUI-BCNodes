@@ -9,15 +9,15 @@ the latent size and the `* scaling_factor` follow the native path. A frame
 that fits in one tile is encoded whole; a larger one is split into the
 spatial tiles of tiled_vae and blended (models/seedvr2/tiling.py). Either
 way every latent slice goes straight into the float32 latent the node
-returns; the blend's round trip through the VAE dtype and the scaling run
-on it in place.
+returns; the blend's round trip through the VAE dtype (a few latent frames at
+a time) and the scaling run on it in place.
 """
 
 import torch
 
 from ...models.seedvr2.tiling import tile_plan, tile_weight
 from ...models.seedvr2.vae import ENCODER_BYTES_PER_PIXEL, ENCODER_FIXED_BYTES, LATENT_CHANNELS, make_room_for_vae, vae_model
-from . import TRIM_EVERY, require_image_batch
+from . import FRAMES_PER_CHUNK, TRIM_EVERY, require_image_batch
 from .progress import Progress
 
 
@@ -121,6 +121,8 @@ def encode(pixels, vae, tile_size, overlap):
 
                 encode_tile(y0, y1, x0, x1, sink, progress)
             z = result.div_(count.clamp(min=1e-6))
-            z.copy_(z.to(vae.vae_dtype))  # tiled_vae: normalised, returned in the input dtype (rounded through it in place)
+            for t0 in range(0, z.shape[2], FRAMES_PER_CHUNK):  # tiled_vae: normalised, returned in the input dtype
+                chunk = z[:, :, t0:t0 + FRAMES_PER_CHUNK]
+                chunk.copy_(chunk.to(vae.vae_dtype))  # rounded through it in place, a chunk at a time
     z = z[:, :, :target_t, :target_h, :target_w].to(torch.float32).contiguous().mul_(BYTEDANCE_VAE_SCALING_FACTOR)  # crop, VAE output dtype, comfy_format_encoded
     return ({"samples": z},)

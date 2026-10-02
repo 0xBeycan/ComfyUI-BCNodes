@@ -381,7 +381,8 @@ def test_seedvr2_chain(em):
     assert rows["2"]["output_bytes"] == 81 * 1920 * (1088 + 1080) * 3 * 2 and rows["2"]["transient"] == 0
     elements = 16 * 21 * 240 * 136
     assert rows["3"]["outputs"][0]["shape"] == [1, 16, 21, 240, 136] and rows["3"]["output_bytes"] == elements * 4
-    assert rows["3"]["transient"] == elements * 2  # 1920 > tile 1024: the tile sum is the output, rounded through float16
+    # 1920 > tile 1024: the tile sum is the output, rounded through float16 four latent frames at a time
+    assert rows["3"]["transient"] == 16 * 4 * 240 * 136 * 2
     assert rows["4"]["outputs"][0]["shape"] == [81, 1920, 1088, 3] and rows["4"]["transient"] == 0  # tiles summed in the output
     assert rows["5"]["outputs"][0]["shape"] == [81, 1920, 1080, 3] and rows["5"]["output_bytes"] == 81 * 1920 * 1080 * 3 * 2
     p["2"]["inputs"]["downscale_factor"] = 0.5  # resolution comes from the original: the same size, downscaled four frames at a time
@@ -402,7 +403,8 @@ def test_seedvr2_compact_chain(em):
     elements = 16 * 20 * 240 * 136
     assert [o["shape"] for o in rows["2"]["outputs"]] == [[1, 16, 20, 240, 136], []]
     assert rows["2"]["output_bytes"] == elements * 4  # the plan is a few numbers
-    assert rows["2"]["transient"] == 77 * 1920 * 1088 * 3 * 2 + elements * 2  # the padded float16 clip while encoded, the tile sum's cast
+    # the padded float16 clip while encoded, the tile sum's cast of four latent frames
+    assert rows["2"]["transient"] == 77 * 1920 * 1088 * 3 * 2 + 16 * 4 * 240 * 136 * 2
     # 20 latent frames decode to 77, cut to the plan's 77 frames of 1920x1080, float16
     assert rows["3"]["outputs"][0]["shape"] == [77, 1920, 1080, 3] and rows["3"]["output_bytes"] == 77 * 1920 * 1080 * 3 * 2
     assert rows["3"]["transient"] == 0

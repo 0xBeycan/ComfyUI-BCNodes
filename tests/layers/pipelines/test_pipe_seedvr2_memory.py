@@ -189,18 +189,19 @@ def test_encode_equals_the_whole_clip_way(stubbed, tile):
     assert torch.equal(z, _encode_whole_clip(stubbed, pixels, tile, 16))
 
 
-@pytest.mark.parametrize("tile, bound", [(128, 0.25), (32, 0.75)])
-def test_encode_holds_the_latent_once(stubbed, tile, bound):
+@pytest.mark.parametrize("tile", [128, 32])
+def test_encode_holds_the_latent_once(stubbed, tile):
     encode = stubbed["pipelines.seedvr2.encode"].encode
 
     def run(pixels):
         z = encode(pixels, VAE(), tile, 16)[0]["samples"]
         return (z,), z.shape[2]
 
-    # long enough for the latent to outweigh one slice's working set; in float32 latent frames: tiles
-    # hold one float16 cast of the latent (half of one), one tile nothing (the slices listed or summed,
-    # cast, copied to float32 and scaled into a new tensor would be 2.5)
-    assert transient_growth(lambda n: _pixels(n, 48, 80), run, (513, 1025)) < bound * 16 * 6 * 10 * 4
+    # long enough for the latent to outweigh one slice's working set; in float32 latent frames: one tile
+    # and tiles hold nothing (tiles round their sum through float16 a chunk of latent frames at a time;
+    # the whole sum cast at once would be 0.5, the slices listed or summed, cast, copied to float32 and
+    # scaled into a new tensor 2.5)
+    assert transient_growth(lambda n: _pixels(n, 48, 80), run, (513, 1025)) < 0.25 * 16 * 6 * 10 * 4
 
 
 # -- SeedVR2 VAE Decode ---------------------------------------------------------------------------
@@ -252,3 +253,4 @@ def test_decode_holds_the_clip_once(stubbed, tile):
         return (out,), out.shape[0]
 
     assert transient_growth(_latent, run, (9, 17)) < 96 * 160 * 3 * 2 / 4  # a quarter of one output frame
+

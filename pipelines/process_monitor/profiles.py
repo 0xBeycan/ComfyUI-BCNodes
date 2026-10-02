@@ -18,6 +18,7 @@ F32, F16 = 4, 2
 FACE_SIZE = 512  # Face Crop's square
 SEEDVR2_LATENT_CHANNELS = 16
 SEEDVR2_PAD = 16
+SEEDVR2_CHUNK = 4  # the frames the SeedVR2 flows handle at a time (pipelines/seedvr2 FRAMES_PER_CHUNK)
 # a guard's timeline image: 1200 wide, 128 + 190 per panel high with one flag row (+24 per more flag)
 TIMELINE_W, TIMELINE_BASE, TIMELINE_PANEL = 1200, 128, 190
 MASK_GUARD_WINDOW = 5  # frames of booleans the mask guard keeps (the frame and 2 either side)
@@ -467,8 +468,8 @@ def _seedvr2_encoded(c, pixels):
     tile = int(c.widget("tile_size", 1024))
     single = h <= tile and w <= tile
     # the latent slices go straight into the float32 output; tiles: the output is the float32 sum,
-    # rounded through the VAE dtype (2 bytes) in place
-    transient = 0 if single else elements * 2
+    # rounded through the VAE dtype (2 bytes) in place, a chunk of latent frames at a time
+    transient = 0 if single else SEEDVR2_LATENT_CHANNELS * min(lt, SEEDVR2_CHUNK) * lh * lw * 2
     latent = {"type": "LATENT", "shape": [1, SEEDVR2_LATENT_CHANNELS, lt, lh, lw], "lt": lt, "lh": lh, "lw": lw,
               "bytes": elements * F32}
     return latent, transient
