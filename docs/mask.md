@@ -1,6 +1,6 @@
 # Mask
 
-Half-precision input (float16 or bfloat16, e.g. BCVideoNodes' Load Video): Mask Fill Holes, MaskGrow, Blockify Mask, Repeat Mask Batch, Draw Mask On Image and BiRefNet Remove Background read it a frame at a time as float32 (the exact half values), work in float32 and give their outputs in the input's dtype (Draw Mask On Image and BiRefNet: the image's); float32 input works as before.
+Half-precision input (float16 or bfloat16, e.g. BCVideoNodes' Load Video): Mask Fill Holes, MaskGrow, Blockify Mask, Repeat Mask Batch, Draw Mask On Image and BiRefNet Remove Background read it a frame at a time as float32, work in float32 and give their outputs in the input's dtype (Draw Mask On Image and BiRefNet: the image's); float32 input works as before. A float16 frame whose values all lie within 1/16 of an 8-bit level is 8-bit data and is read as those levels, exactly its float32 source; any other half frame as its exact values.
 
 ## `BC_IsMaskEmpty` — Is Mask Empty
 

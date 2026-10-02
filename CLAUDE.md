@@ -56,7 +56,7 @@ models/depth_anything_3/      Depth Anything 3 over core (comfy.ldm.depth_anythi
                               as v3-small, v3-base, v3-mono-large, v3-metric-large in the depth family
 models/seedvr2/               VAE adapter, tiling, frame-shape rules (no registry)
 models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 3)
-libs/image.py                 is_half, output_dtype (half-precision inputs), U8_MARGIN, tensor_to_u8, tensor_to_pil_u8,
+libs/image.py                 is_half, float_frame, output_dtype (half-precision inputs), tensor_to_u8, tensor_to_pil_u8,
                               pil_to_tensor_hwc, fit_image
 libs/mask.py filters.py       mask ops; the two Gaussians (reflect / replicate), kept apart on purpose
 libs/frequency.py             Frequency Merge: one image's Gaussian low-pass + another's high-pass
@@ -213,20 +213,24 @@ where it is.
   reproduce its bugs. Take the logic only: no import of, dependency on or reference to the
   original.
 - Precision is decided per tensor, by measurement, never globally.
-- A half-precision input (float16 or bfloat16) is read a frame (or a few frames) at a time with a
-  plain `.float()`, the exact value of each half number; the work runs in float32 and the IMAGE /
-  MASK output keeps the input's dtype (`libs/image.output_dtype`), written frame by frame into a
-  preallocated output. No float16 arithmetic on the CPU (comparisons and copies are not arithmetic),
-  and the input is never widened as a whole (that holds both copies). It is not requantized to 8-bit
-  levels on read: BCVideoNodes may do that because its half clips are always 8-bit frames (its Load
-  Video), but BCNodes' half inputs are not (SeedVR2 PostProcess gives continuous float16 that feeds
-  PostFx, Skin Texture, Save Image and Frequency Merge). Only the 8-bit boundary (`tensor_to_u8`, every
-  float -> uint8 conversion) treats half values as possible levels: it truncates 255 * x + U8_MARGIN
-  (1/16 for float16, whose error on a level is at most 0.0623; 1/2 for bfloat16, at most 0.498), so
-  an 8-bit clip given as half gives exactly its float32 source's uint8 (float16(1/255) x 255 is
-  0.99998, which a plain cast truncates to 0); a continuous float16 value within 1/16 of the next
-  level goes up one. Float32 converts as it always did. SeedVR2 Resize keeps its own requantize: its
-  input is the source video.
+- A half-precision input (float16 or bfloat16) is read a frame (or a few frames) at a time through
+  `libs/image.float_frame`; the work runs in float32 and the IMAGE / MASK output keeps the input's
+  dtype (`libs/image.output_dtype`), written frame by frame into a preallocated output. No float16
+  arithmetic on the CPU (comparisons and copies are not arithmetic), and the input is never widened as
+  a whole (that holds both copies). The read is decided per frame: a float16 frame whose values all lie
+  within 1/16 of an 8-bit level (|255x - round(255x)| <= 1/16) is 8-bit data and is read as round(255x)
+  / 255, exactly its float32 source (float16 keeps every level within 0.0623 of it); any other float16
+  frame, and every bfloat16 frame (its 0.498 error on a level leaves nothing to test), is read as its
+  exact values (`.float()`). BCVideoNodes requantizes every half clip because its half clips are always
+  8-bit frames (its Load Video); BCNodes' half inputs are not (SeedVR2 PostProcess gives continuous
+  float16 that feeds PostFx, Skin Texture, Save Image and Frequency Merge), hence the per-frame test. A
+  continuous frame taken for 8-bit data has every value within 1/16 of a level by the test itself, so
+  rounding moves each value by at most 1/16 of a level; a frame of real continuous values practically
+  never passes (each value has a 1 in 8 chance). Every float -> uint8 conversion goes through the same
+  read (`tensor_to_u8`), then the float32 conversion unchanged, so an 8-bit clip given as float16 gives
+  exactly its float32 source's uint8 (float16(1/255) x 255 is 0.99998, which a plain cast truncates to
+  0); bfloat16 adds BF16_U8_MARGIN (1/2) before truncating for the same reason. Float32 converts as it
+  always did. SeedVR2 Resize keeps its own requantize: its input is the source video.
 - Unused heavy outputs are not kept. ComfyUI's cache key holds a node's inputs and ancestors only,
   so an on_prompt handler (`LinkStamp` in `nodes/common.py`, registered by the root `__init__`)
   writes the linked heavy outputs of each heavy node into its inputs as `bc_linked_heavy`; the node

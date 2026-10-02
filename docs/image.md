@@ -1,8 +1,8 @@
 # Image
 
-Half-precision input (float16 or bfloat16, e.g. BCVideoNodes' Load Video or SeedVR2 PostProcess): Image Scale By Aspect Ratio, Image Resize, Depth Anything and Skin Texture read it a frame at a time as float32 (the exact half values), work in float32 and give their outputs in the input's dtype; float32 input works as before.
+Half-precision input (float16 or bfloat16, e.g. BCVideoNodes' Load Video or SeedVR2 PostProcess): Image Scale By Aspect Ratio, Image Resize, Depth Anything and Skin Texture read it a frame at a time as float32, work in float32 and give their outputs in the input's dtype; float32 input works as before. A float16 frame whose values all lie within 1/16 of an 8-bit level is 8-bit data (Load Video's) and is read as those levels, exactly its float32 source; any other half frame as its exact values.
 
-The 8-bit conversions (Save Image, Save Image With Caption, Social Media Export, the lanczos resizes, Image Scale By Aspect Ratio) truncate a half value after adding a margin (1/16 for float16, 1/2 for bfloat16, each above that format's error on an 8-bit level), so an 8-bit clip given as half gives exactly the uint8 of its float32 source: float16(1/255) x 255 is 0.99998, which a plain cast truncates to 0. A continuous float16 value within 1/16 of the next level goes up one level (about 6 % of continuous values); float32 converts as before.
+The 8-bit conversions (Save Image, Save Image With Caption, Social Media Export, the lanczos resizes, Image Scale By Aspect Ratio) read a half frame the same way, then convert as for float32, so an 8-bit clip given as float16 gives exactly the uint8 of its float32 source: float16(1/255) x 255 is 0.99998, which a plain cast truncates to 0. A bfloat16 value gets 1/2 added before the truncation (its error on a level is up to 0.498).
 
 ## `BC_ImageScaleByAspectRatio` — Image Scale By Aspect Ratio
 

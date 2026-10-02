@@ -1,6 +1,6 @@
 # PostFx
 
-Half-precision input (float16 or bfloat16, e.g. BCVideoNodes' Load Video or SeedVR2 PostProcess): PostFx Apply reads it a frame at a time, and PostFx Signature Sheet only its first frame, as float32 (the exact half values); postfx works in float32 and the output takes the input's dtype; float32 input works as before.
+Half-precision input (float16 or bfloat16, e.g. BCVideoNodes' Load Video or SeedVR2 PostProcess): PostFx Apply reads it a frame at a time, and PostFx Signature Sheet only its first frame, as float32; postfx works in float32 and the output takes the input's dtype; float32 input works as before. A float16 frame whose values all lie within 1/16 of an 8-bit level is 8-bit data and is read as those levels, exactly its float32 source; any other half frame as its exact values.
 
 ## `BC_PostFxApply` — PostFx Apply, and the look nodes
 
