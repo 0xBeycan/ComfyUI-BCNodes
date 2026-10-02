@@ -339,9 +339,9 @@ def _draw_mask_cloned(c):
 def _draw_mask_preallocated(c):
     img, m = c.tensor("image"), c.tensor("mask")
     channels = img["shape"][-1]
-    # in the image's dtype; per frame in float32: a half image's frame blended into a float32 frame copied
-    # into the output, a half mask's frame read as float32
-    work = image_bytes(1, img["h"], img["w"], channels=channels) if dtype_of(img) == F16 else 0
+    # in the image's dtype; per frame in float32: a half image's frame read as float32 (libs/image.float_frame)
+    # and blended into a float32 frame copied into the output, a half mask's frame read as float32
+    work = 2 * image_bytes(1, img["h"], img["w"], channels=channels) if dtype_of(img) == F16 else 0
     work += mask_bytes(1, m["h"], m["w"]) if dtype_of(m) == F16 else 0
     return ({0: image(img["n"], img["h"], img["w"], dtype_of(img), channels=channels)}, work,
             "one frame at a time into a preallocated output of the image's dtype")

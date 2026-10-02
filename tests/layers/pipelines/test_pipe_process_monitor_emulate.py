@@ -622,7 +622,7 @@ def test_bcnodes_mask_nodes_keep_the_dtype(em):
     # frame read as float32
     assert [rows[node]["transient"] for node in "345"] == [2 * MASK, 0, MASK]
     assert rows["6"]["outputs"][0]["shape"] == [609, 1280, 720, 3] and rows["6"]["output_bytes"] == 609 * FRAME // 2
-    assert rows["6"]["transient"] == FRAME + MASK  # the frame's float32 blend, the mask's frame read as float32
+    assert rows["6"]["transient"] == 2 * FRAME + MASK  # the frame read as float32, its blend, the mask's frame read
     p["1"] = loader(precision="fp32")  # float32 in, float32 out, each frame made in the output
     rows = rows_of(em, p)
     assert [rows[node]["transient"] for node in "3456"] == [0, 0, 0, 0]
