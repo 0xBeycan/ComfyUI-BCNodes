@@ -87,22 +87,21 @@ def np_list_to_image(frames):
     return torch.from_numpy(stacked)
 
 
-def mask_to_np_list(mask, count, hw):
+def mask_frames(mask, count, hw):
     """MASK (B, H, W) or (H, W) -> `count` float32 (H, W) arrays resized to
-    `hw` and clamped. A single mask broadcasts to every frame; a shorter batch
-    reuses its last mask."""
+    `hw` and clamped, made one at a time as they are read (no copy of the
+    batch). A single mask broadcasts to every frame; a shorter batch reuses its
+    last mask."""
     import cv2
-    m = mask.detach().cpu().numpy().astype(np.float32)
+    m = mask.detach().cpu().numpy().astype(np.float32, copy=False)
     if m.ndim == 2:
         m = m[None]
     h, w = hw
-    out = []
     for i in range(count):
         mm = m[i] if i < m.shape[0] else m[-1]
         if mm.shape != (h, w):
             mm = cv2.resize(mm, (w, h), interpolation=cv2.INTER_LINEAR)
-        out.append(np.clip(mm, 0.0, 1.0))
-    return out
+        yield np.clip(mm, 0.0, 1.0)
 
 
 # --- Looks and flows ------------------------------------------------------
@@ -120,14 +119,14 @@ def apply_look(image, theme, condition, strength, seed, batch_seed, look, mask):
     # alpha channel; blending against it would be a silent no-op.
     if mask is not None and not bool(mask.any()):
         mask = None
-    masks = mask_to_np_list(mask, len(frames), (h, w)) if mask is not None else None
+    masks = mask_frames(mask, len(frames), (h, w)) if mask is not None else None
 
     out_frames = []
     for i, src in enumerate(frames):
         frame_seed = seed + (i if batch_seed == "increment" else 0)
         out = postfx.process(src, look_cfg, cond_cfg, float(strength), int(frame_seed))
         if masks is not None:
-            m = masks[i][..., None]
+            m = next(masks)[..., None]
             out = src * (1.0 - m) + out * m
         out_frames.append(out)
 
