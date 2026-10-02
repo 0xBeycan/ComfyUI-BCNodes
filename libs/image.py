@@ -1,32 +1,27 @@
 """Image conversions and fitting shared by the nodes. PIL is imported inside the functions.
 
-Half-precision clips: a loader may give an IMAGE or MASK clip as float16 (8-bit frames, every level
-k / 255 kept within 2^-12 of it). The nodes read such a clip a frame (or a few frames) at a time
-through `requantized`, which gives back exactly the float32 values a float32 load holds, compute
-in float32, and write into a preallocated output of the clip's own dtype. No float16 arithmetic
-runs on the CPU, and the clip is never widened as a whole (that would hold both copies)."""
+Half-precision inputs: an IMAGE or MASK may come as float16 or bfloat16 (BCVideoNodes' Load Video
+gives float16 8-bit frames; SeedVR2 PostProcess gives float16 continuous values). The nodes read such
+an input a frame (or a few frames) at a time with a plain `.float()`, the exact value of each half
+number, work in float32, and write into a preallocated output of the input's own dtype
+(output_dtype). No float16 arithmetic runs on the CPU, and the input is never widened as a whole
+(that would hold both copies). A half value is not assumed to be an 8-bit level k / 255, except at
+the 8-bit boundary (tensor_to_u8)."""
 
 import numpy as np
 import torch
+
+# What tensor_to_u8 adds to x 255 before it truncates a half value. float16 keeps an 8-bit level
+# k / 255 within 255 * 2^-12 = 0.0623 of k once multiplied (its step below 1.0 is 2^-11), bfloat16
+# within 255 * 2^-9 = 0.498 (step 2^-8): adding a margin above that and below 1 - it brings every
+# level that fell under k back to k, and leaves the levels that lie above k at k. On values that are not
+# levels it moves the truncation by the margin (a float16 value within 1/16 of the next level goes up).
+U8_MARGIN = {torch.float16: 1 / 16, torch.bfloat16: 1 / 2}
 
 
 def is_half(x):
     """Whether the tensor `x` is float16 or bfloat16."""
     return x.dtype in (torch.float16, torch.bfloat16)
-
-
-def requantized(frames, out=None):
-    """`frames` (a frame or a few frames of an IMAGE or MASK clip) ready for float32 arithmetic: a
-    half-precision tensor as a new float32 one (or written into `out`, a float32 tensor of its
-    shape), every value rounded to the nearest 8-bit level k / 255; any other tensor itself.
-    float16 keeps every level within 2^-12 of it and bfloat16 within 2^-9, both under half a level
-    (1 / 510), so a half clip of 8-bit frames comes back as exactly the float32 values of a float32
-    load: float16(k / 255) * 255 is not k (1 / 255 gives 0.99998, which an 8-bit cast truncates to
-    0)."""
-    if not is_half(frames):
-        return frames
-    widened = frames.float() if out is None else out.copy_(frames)
-    return widened.mul_(255).round_().div_(255)
 
 
 def output_dtype(x):
@@ -35,25 +30,29 @@ def output_dtype(x):
     return x.dtype if is_half(x) else torch.float32
 
 
-def tensor_to_u8(frame):
-    """float tensor in 0..1 -> uint8 numpy array of its shape (x 255, clipped, truncated), a half
-    one requantized first (requantized). One float buffer, clipped in place; it is freed when this
-    returns, before the caller builds anything on the result."""
+def tensor_to_u8(frame, stored=None):
+    """float tensor in 0..1 -> uint8 numpy array of its shape (x 255, clipped, truncated). Values stored
+    in half precision (`stored`, the dtype they were stored in: the frame's own by default; a float32
+    frame computed from a half one, such as an inverted mask, passes the half dtype) get U8_MARGIN
+    added before the truncation, so an 8-bit level comes back as itself: float16(1/255) x 255 is
+    0.99998, which a plain cast truncates to 0. A float32 frame is converted as it always was. One
+    float buffer of its own, clipped in place; it is freed when this returns, before the caller builds
+    anything on the result."""
     frame = frame.cpu()
-    if is_half(frame):
-        buf = requantized(frame).numpy()  # a float32 frame of its own: scaled in place
-        buf *= 255.0
-    else:
-        buf = 255.0 * frame.numpy()
+    buf = 255.0 * (frame.float() if is_half(frame) else frame).numpy()
+    margin = U8_MARGIN.get(frame.dtype if stored is None else stored)
+    if margin:
+        buf += margin
     np.clip(buf, 0, 255, out=buf)
     return buf.astype(np.uint8)
 
 
-def tensor_to_pil_u8(frame):
-    """float (H, W) or (H, W, C) tensor in 0..1 -> 8-bit PIL image (clipped, truncated)."""
+def tensor_to_pil_u8(frame, stored=None):
+    """float (H, W) or (H, W, C) tensor in 0..1 -> 8-bit PIL image (clipped, truncated; `stored` as
+    tensor_to_u8 takes it)."""
     from PIL import Image
 
-    return Image.fromarray(tensor_to_u8(frame))
+    return Image.fromarray(tensor_to_u8(frame, stored))
 
 
 def pil_to_tensor_hwc(pil):

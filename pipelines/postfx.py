@@ -3,9 +3,9 @@ fill their dropdowns, the pack's luts/ folder, the look builders, the apply flow
 sheet and the IMAGE / MASK <-> postfx numpy bridge. `postfx` (and cv2, which it brings) is
 imported inside the functions that use it.
 
-postfx works on float32 numpy frames: each frame is read as float32 (a half-precision one requantized
-to its float32 levels, libs/image.requantized) when its turn comes, and each result is clipped into
-one preallocated output, in the input's dtype when that is half precision, float32 otherwise.
+postfx works on float32 numpy frames: each frame is read as float32 (a half-precision one with a plain
+.float(), libs/image.py) when its turn comes, and each result is clipped into one preallocated
+output, in the input's dtype when that is half precision, float32 otherwise.
 """
 
 import copy
@@ -16,7 +16,7 @@ import uuid
 import numpy as np
 import torch
 
-from ..libs.image import output_dtype, requantized
+from ..libs.image import output_dtype
 
 # Users drop their own .cube files here (listed by PostFx LUT). Kept out of
 # git by .gitignore; see luts/README.md.
@@ -84,9 +84,9 @@ def _base_look(look):
 # --- Tensor <-> numpy bridge ----------------------------------------------
 
 def np_frame(image, i):
-    """Frame i of an IMAGE as a float32 contiguous numpy array: a float32 frame's own memory, a half
-    one requantized to its float32 levels."""
-    return np.ascontiguousarray(requantized(image[i].detach().cpu()).numpy(), dtype=np.float32)
+    """Frame i of an IMAGE as a float32 contiguous numpy array: a float32 frame's own memory, any other
+    converted."""
+    return np.ascontiguousarray(image[i].detach().cpu().float().numpy())
 
 
 def clipped_into(out, i, frame):
@@ -101,7 +101,7 @@ def clipped_into(out, i, frame):
 def mask_frames(mask, count, hw):
     """MASK (B, H, W) or (H, W) -> `count` float32 (H, W) arrays resized to
     `hw` and clamped, made one at a time as they are read (no copy of the
-    batch; a half-precision mask requantized a frame at a time). A single mask
+    batch; a half-precision mask converted a frame at a time). A single mask
     broadcasts to every frame; a shorter batch reuses its last mask."""
     import cv2
     m = mask.detach().cpu()
@@ -109,7 +109,7 @@ def mask_frames(mask, count, hw):
         m = m[None]
     h, w = hw
     for i in range(count):
-        mm = requantized(m[min(i, m.shape[0] - 1)]).numpy().astype(np.float32, copy=False)
+        mm = m[min(i, m.shape[0] - 1)].float().numpy()
         if mm.shape != (h, w):
             mm = cv2.resize(mm, (w, h), interpolation=cv2.INTER_LINEAR)
         yield np.clip(mm, 0.0, 1.0)

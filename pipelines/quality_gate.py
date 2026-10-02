@@ -83,7 +83,7 @@ def analyze(image, shot_type, blur_mode, blur_threshold, blur_var_threshold,
     eff_block = profile["block_size"]
 
     # Tensor to numpy
-    img_np = tensor_to_u8(image[0])  # x 255, clipped, truncated; a half image requantized first
+    img_np = tensor_to_u8(image[0])  # x 255, clipped, truncated (a half image with its margin)
     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
 
     # --- Run all 5 analyses ---

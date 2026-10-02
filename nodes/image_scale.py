@@ -32,7 +32,7 @@ PLACEHOLDER_MASK_SHAPE = (64, 64)
 
 def _to_pil(frame):
     """float (H, W) or (H, W, C) in 0..1 -> 8-bit PIL image (truncated, as the
-    original does; a half frame requantized first)."""
+    original does; a half frame with tensor_to_u8's margin)."""
     if frame.ndim == 3 and frame.shape[-1] == 1:
         frame = frame[..., 0]
     return tensor_to_pil_u8(frame)
