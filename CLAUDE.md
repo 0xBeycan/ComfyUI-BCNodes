@@ -29,7 +29,7 @@ Monitor's HTTP routes and, when the monitor's saved setting is on, starts it (se
 nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, compute_device (the device widgets),
                               the unused-heavy-outputs helper (LinkStamp, register_link_stamp, stamps_last,
                               heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (24); social_specs.json is the user-editable platform table
+nodes/<domain>.py             one per domain (25); social_specs.json is the user-editable platform table
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
@@ -41,7 +41,8 @@ pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop;
 pipelines/depth_anything.py   Depth Anything: output size (short side, or cover + centre crop), per-frame
                               normalisation, one depth-family predict per frame
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
-pipelines/seedvr2/            resize, encode, decode, postprocess flows; progress; shared constants
+pipelines/seedvr2/            resize, encode, decode, postprocess, compact flows; framing (Resize's downscale factor
+                              from the SAM 3 face size); progress; shared constants
 pipelines/process_monitor/    monitor (sampler thread, runs, per-node records, snapshot), hook (the executor hook),
                               blackbox (run logs, reports), emulate + profiles (estimate, per-node-type costs), settings
 models/common/                registry.py (families matting and depth; a depth entry is a loader returning
@@ -56,6 +57,7 @@ models/seedvr2/               VAE adapter, tiling, frame-shape rules (no registr
 models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 3)
 libs/image.py                 tensor_to_u8, tensor_to_pil_u8, pil_to_tensor_hwc, fit_image
 libs/mask.py filters.py       mask ops; the two Gaussians (reflect / replicate), kept apart on purpose
+libs/frequency.py             Frequency Merge: one image's Gaussian low-pass + another's high-pass
 libs/color.py texture.py image_metrics.py
 libs/geometry.py              integer size arithmetic; short_side_size (a ControlNet preprocessor's output size)
 libs/resize.py                Image Resize: size plan, crop / resample / pad per frame

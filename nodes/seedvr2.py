@@ -8,16 +8,20 @@
     BC_SeedVR2PreprocessCompact  (SeedVR2 Preprocess (Compact))   Resize + VAE Encode, returns the latent and a plan
     BC_SeedVR2PostProcessCompact (SeedVR2 PostProcess (Compact))  VAE Decode + PostProcess into one buffer
 
+    BC_SeedVR2FramingDownscale (SeedVR2 Framing Downscale)  Resize's downscale_factor from the face size (SAM 3)
+
 Resize is the whole input stage of the SeedVR2 upscale graph in one node. The compact
 pair is the same chain with no clip between the input stage and the end (the output
 cache keeps only the result); it gives the same frames.
 
-The flows are in pipelines/seedvr2/ (resize, encode, decode, postprocess, compact), the
+The flows are in pipelines/seedvr2/ (resize, encode, decode, postprocess, compact, framing), the
 SeedVR2 VAE adapter, its tiling and the frame-shape rules in models/seedvr2/.
 """
 
+from ..models.sam3.checkpoint import DEFAULT_SAM3, choices
 from ..pipelines.seedvr2 import (
-    compact as compact_flow, decode as decode_flow, encode as encode_flow, postprocess as postprocess_flow, resize as resize_flow,
+    compact as compact_flow, decode as decode_flow, encode as encode_flow, framing as framing_flow, postprocess as postprocess_flow,
+    resize as resize_flow,
 )
 from .common import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
 
@@ -213,7 +217,62 @@ class SeedVR2PostProcessCompact:
         return compact_flow.postprocess(samples, vae, image, plan, tile_size, overlap, color_correction_method)
 
 
+UNCALIBRATED = "Uncalibrated default (an estimate, not yet measured against SeedVR2 output)."
+
+
+class SeedVR2FramingDownscale:
+    """SeedVR2 Resize's downscale_factor from the tallest face in the frame (SAM 3)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE", {"tooltip": "The original image(s), the batch SeedVR2 Resize gets. One factor for the whole "
+                                               "batch, from its tallest face (Resize takes one factor)."}),
+                "sam3_model": (choices(), {"default": DEFAULT_SAM3,
+                                          "tooltip": "SAM 3 checkpoint under models/checkpoints; the default is downloaded when missing."}),
+                "close_up_min_face": ("FLOAT", {"default": 0.3, "min": 0.01, "max": 1.0, "step": 0.01,
+                                                "tooltip": "Face height / image height from which the shot is a close-up. " + UNCALIBRATED}),
+                "close_up_factor": ("FLOAT", {"default": 0.5, "min": 0.01, "max": 1.0, "step": 0.01,
+                                              "tooltip": "downscale_factor for a close-up: a large face keeps its shape at a strong "
+                                                         "downscale and gains the most skin texture."}),
+                "medium_min_face": ("FLOAT", {"default": 0.18, "min": 0.01, "max": 1.0, "step": 0.01,
+                                              "tooltip": "Face height / image height from which the shot is medium; below it, far. "
+                                                         "Must be below close_up_min_face. " + UNCALIBRATED}),
+                "medium_factor": ("FLOAT", {"default": 0.75, "min": 0.01, "max": 1.0, "step": 0.01,
+                                            "tooltip": "downscale_factor for a medium shot."}),
+                "far_factor": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 1.0, "step": 0.01,
+                                         "tooltip": "downscale_factor for a far shot. 1 = no downscale, so SeedVR2 does not "
+                                                    "change a small face."}),
+                "no_face_factor": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 1.0, "step": 0.01,
+                                             "tooltip": "downscale_factor when no face is found (logged)."}),
+                "detection_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01,
+                                                  "tooltip": "SAM 3 detection threshold for the face."}),
+            },
+        }
+
+    RETURN_TYPES = ("FLOAT", "FLOAT")
+    RETURN_NAMES = ("downscale_factor", "face_fraction")
+    OUTPUT_TOOLTIPS = (
+        "Wire to SeedVR2 Resize (or SeedVR2 Preprocess (Compact)) downscale_factor.",
+        "Height of the tallest face box / image height, over the whole batch; 0 when no face is found.",
+    )
+    FUNCTION = "choose"
+    CATEGORY = "BCNodes/seedvr2"
+    SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "downscale", "framing", "face size", "close-up", "sam3"]
+    DESCRIPTION = ("Measures the tallest face (SAM 3) as a fraction of the image height and picks SeedVR2 Resize's "
+                   "downscale_factor: close-up, medium or far, each with its own factor. A lower factor gives more skin "
+                   "texture but changes a small face, so a far shot is not downscaled. The thresholds are uncalibrated "
+                   "estimates.")
+
+    def choose(self, image, sam3_model, close_up_min_face, close_up_factor, medium_min_face, medium_factor, far_factor,
+               no_face_factor, detection_threshold):
+        return framing_flow.downscale_factor(image, sam3_model, detection_threshold, close_up_min_face, close_up_factor,
+                                             medium_min_face, medium_factor, far_factor, no_face_factor)
+
+
 NODE_CLASS_MAPPINGS = {
+    "BC_SeedVR2FramingDownscale": SeedVR2FramingDownscale,
     "BC_SeedVR2Resize": SeedVR2Resize,
     "BC_SeedVR2VAEEncode": SeedVR2VAEEncode,
     "BC_SeedVR2VAEDecode": SeedVR2VAEDecode,
@@ -223,6 +282,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "BC_SeedVR2FramingDownscale": "SeedVR2 Framing Downscale",
     "BC_SeedVR2Resize": "SeedVR2 Resize",
     "BC_SeedVR2VAEEncode": "SeedVR2 VAE Encode",
     "BC_SeedVR2VAEDecode": "SeedVR2 VAE Decode",

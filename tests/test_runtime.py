@@ -690,6 +690,40 @@ async def main():
     check("SkinTexture: runs on a connected mask, outputs an image and a non-empty mask", out is not None and out["4"]["value"] == [96] and out["6"]["text"] == ["False"])
     check("SkinTexture: cached on the second queue", out is not None and executed == [], f"{executed}")
 
+    # Frequency Merge: a flat red base and a flat blue detail merge to red (a flat detail has no
+    # high frequencies); the output validates downstream and is cached; another size stops the run.
+    out, executed = await run_twice({
+        "1": N("EmptyImage", width=96, height=64, batch_size=2, color=0xFF0000),
+        "2": N("EmptyImage", width=96, height=64, batch_size=2, color=0x0000FF),
+        "3": N("BC_FrequencyMerge", base=["1", 0], detail=["2", 0], split_sigma=3.0, detail_strength=1.0),
+        "4": N("BC_MathExpression", expression="a.width", a=["3", 0]),
+        "5": N("ImageToMask", image=["3", 0], channel="red"),
+        "6": N("BC_IsMaskEmpty", mask=["5", 0]),
+        "7": N("PreviewAny", source=["6", 0]),
+    }, "frequency-merge")
+    check("FrequencyMerge: runs, 96 wide, base's red kept", out is not None and out["4"]["value"] == [96] and out["7"]["text"] == ["False"],
+          f"{out and (out.get('4'), out.get('7'))}")
+    check("FrequencyMerge: cached on the second queue", out is not None and executed == [], f"{executed}")
+    out, _ = await run({
+        "1": N("EmptyImage", width=96, height=64, batch_size=1, color=0),
+        "2": N("EmptyImage", width=64, height=64, batch_size=1, color=0),
+        "3": N("BC_FrequencyMerge", base=["1", 0], detail=["2", 0], split_sigma=3.0, detail_strength=1.0),
+        "4": N("PreviewImage", images=["3", 0]),
+    }, "frequency-merge-sizes")
+    check("FrequencyMerge: another size stops the run", out is None)
+
+    # SeedVR2 Framing Downscale needs SAM 3 to run; its downscale_factor validates into SeedVR2 Resize.
+    framing = nodes.NODE_CLASS_MAPPINGS["BC_SeedVR2FramingDownscale"].INPUT_TYPES()["required"]
+    framing_prompt = {
+        "1": N("EmptyImage", width=96, height=64, batch_size=1, color=0),
+        "2": N("BC_SeedVR2FramingDownscale", image=["1", 0], **{k: v[1]["default"] for k, v in framing.items() if k != "image"}),
+        "3": N("BC_SeedVR2Resize", image=["1", 0], upscale_factor=2.0, downscale_factor=["2", 0], max_resolution=0, emulate_bf16=False),
+        "4": N("PreviewImage", images=["3", 0]),
+        "5": N("PreviewAny", source=["2", 1]),
+    }
+    valid = await execution.validate_prompt(str(uuid.uuid4()), framing_prompt, None)
+    check("SeedVR2FramingDownscale: downscale_factor -> SeedVR2 Resize and face_fraction -> PreviewAny validate", valid[0], f"{valid[1]}")
+
     # Auto Model Downloader answers NaN on purpose: whether a file exists is
     # decided on disk, not by the inputs. It has no outputs, so nothing below
     # it can be dragged along.

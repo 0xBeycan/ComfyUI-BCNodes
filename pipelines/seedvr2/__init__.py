@@ -1,6 +1,6 @@
-"""SeedVR2 streaming flows, one module per node: resize, encode, decode, postprocess;
-progress is their progress bar and log. The constants and the IMAGE-batch check they
-share live here.
+"""SeedVR2 streaming flows, one module per node: resize, encode, decode, postprocess, compact,
+framing (Resize's downscale factor from the face size); progress is their progress bar and log.
+The constants and the IMAGE-batch check they share live here.
 
 The encode, decode and post-process nodes follow ComfyUI's own
 comfy/ldm/seedvr/vae.py and comfy_extras/nodes_seedvr.py (GPL-3.0) step for

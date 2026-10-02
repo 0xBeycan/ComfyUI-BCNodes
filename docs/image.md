@@ -138,3 +138,20 @@ Rendered skin comes out as a smooth gradient, and grain laid on top of it reads 
 The mask comes from SAM 3: `sam3_model` is a checkpoint under `models/checkpoints` (the default `sam3.1_multiplex_fp16.safetensors` is downloaded on first use), prompted with `skin` minus `eyes, eyebrows, lips, teeth`; a `face` detection sets the strength — full when the face spans about a third of the frame height, fading as it gets smaller, because pore-scale detail has nowhere to live on a small face. Connect `mask` to skip the detection (body masks from your own SAM 3 prompts, for instance); `exclude_mask` is subtracted either way; `feather` softens the edge. Highlights get 30% of the effect and black none. The mask that was used comes out as `skin_mask`.
 
 Order in a still pipeline: Skin Texture → upscale → PostFx grain last. Keep the clean image for I2V; texture and grain are for the published still.
+
+## `BC_FrequencyMerge` — Frequency Merge
+
+`base` (`IMAGE`), `detail` (`IMAGE`, the same size and image count), widgets `split_sigma` (px, default `3`, `0.5`–`64`), `detail_strength` (default `1`, `0`–`2`), optional `device` (`cpu` / `gpu`, default `cpu`) → `image` (`IMAGE`).
+
+The structure, shading and colour of `base` with the fine detail of `detail`:
+
+`image = G(base) + detail_strength × (detail − G(detail))`, clamped to `[0, 1]`,
+
+where `G` is a Gaussian blur with sigma `split_sigma` pixels (reflect-padded at the borders), image by image. Made for two upscales of one image, which line up pixel for pixel — SeedVR2 at `downscale_factor` 1 as `base` (the face stays right, the skin looks plastic) and at a lower factor as `detail` (more skin texture, but a face can change). Two images that do not line up give double edges.
+
+- `split_sigma` sets what counts as fine: a pattern that repeats every 5.3 × `split_sigma` pixels is split half and half, anything finer comes from `detail`, anything coarser from `base`. At `3` the split sits at about 16 px. Keep 5.3 × `split_sigma` well below the size of what must not change (eyes, mouth); raise it to take more of `detail`.
+- `detail_strength` `1` takes `detail`'s fine detail as it is; `0` takes none, which leaves the blurred `base`; above `1` it is sharper than `detail`.
+- `detail` = `base` gives `base` back (up to float rounding): low + high of one image is the image.
+- A Gaussian because it does not ring (an ideal frequency cut-off rings around every edge), it is the same in every direction, and the split is exact.
+
+The merge runs in float32, one image at a time, into one output: float16 only when both inputs are float16 (SeedVR2 PostProcess gives float16), float32 otherwise. Alpha is dropped. Inputs of another size or image count stop the run with an error that says so. A `split_sigma` whose blur (3 × sigma) does not fit inside the image is refused with the largest value that fits. On a CPU, a 3840x2160 image takes 0.3 s at `split_sigma` 3 and 2.5 s at 32, with about 0.5 GB of working memory besides the inputs and the output (Apple M-series CPU).

@@ -1,5 +1,22 @@
 # SeedVR2
 
+## `BC_SeedVR2FramingDownscale` — SeedVR2 Framing Downscale
+
+`image` (`IMAGE`, the original image or batch), `sam3_model` (a SAM 3 checkpoint under `models/checkpoints`; the default `sam3.1_multiplex_fp16.safetensors` is downloaded on first use), widgets below → `downscale_factor` (`FLOAT`, wire to *SeedVR2 Resize* or *SeedVR2 Preprocess (Compact)* `downscale_factor`), `face_fraction` (`FLOAT`, the measured face size, to see why).
+
+A lower `downscale_factor` gives SeedVR2 more to restore, so more skin texture, but it also shrinks the face SeedVR2 sees, and a face that is small in the frame comes out changed. This node picks the factor from the face size: SAM 3 finds the faces (prompt `face`, up to four per frame, boxes only), and the height of the tallest box divided by the image height is `face_fraction`.
+
+| `face_fraction` | shot | `downscale_factor` |
+| --- | --- | --- |
+| `close_up_min_face` (`0.3`) or more | close-up | `close_up_factor` (`0.5`) |
+| `medium_min_face` (`0.18`) or more | medium | `medium_factor` (`0.75`) |
+| below `medium_min_face` | far | `far_factor` (`1`: no downscale, the face is left as it is) |
+| no face found | — | `no_face_factor` (`1`), with a warning in the log |
+
+`detection_threshold` (default `0.5`) is SAM 3's. The node logs the fraction, the band and the factor on every run. A batch gets one factor, from its tallest face over every frame, because Resize takes one factor; the frames are detected four at a time.
+
+The factors follow what was seen on SeedVR2 image upscales: a close-up at `0.5` looks best (`1` looks plastic), a medium shot at `0.75`, and a far shot at `0.5` changes the face. The two bounds are uncalibrated estimates. SAM 3's face box measured `0.37` of the image height on the chest-up shot of those observations, `0.24` on the thigh-up one and `0.14` on the knee-up one, and each bound sits between two neighbours (their geometric mean, rounded). On an image 1024 px tall the bounds keep the face at 138 px or more after the downscale (`0.18 × 1024 × 0.75`; `0.3 × 1024 × 0.5` = 154), between the 70 px face that changed and the 184 px one that held. The fraction does not see the resolution: the same fraction is twice the pixels at twice the height, so a high-resolution far shot may stand a lower factor than a low-resolution one.
+
 ## `BC_SeedVR2Resize` — SeedVR2 Resize
 
 `image` (`IMAGE`, the original frames), widgets `upscale_factor` (default `2`), `downscale_factor` (default `0.5`, `1` = none), `max_resolution` (cap on the longest edge, `0` = none, default `4096`), `emulate_bf16` (default on).

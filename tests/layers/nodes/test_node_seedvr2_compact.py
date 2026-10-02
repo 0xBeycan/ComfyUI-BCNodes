@@ -38,8 +38,8 @@ def test_postprocess_takes_decode_and_postprocess_widgets(bcnodes):
 
 def test_registered_next_to_the_nodes_they_replace(bcnodes):
     mod = bcnodes["seedvr2"]
-    assert list(mod.NODE_CLASS_MAPPINGS) == ["BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode", "BC_SeedVR2PostProcess",
-                                             "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact"]
+    assert list(mod.NODE_CLASS_MAPPINGS) == ["BC_SeedVR2FramingDownscale", "BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode",
+                                             "BC_SeedVR2PostProcess", "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact"]
     assert mod.NODE_DISPLAY_NAME_MAPPINGS["BC_SeedVR2PreprocessCompact"] == "SeedVR2 Preprocess (Compact)"
     assert mod.NODE_DISPLAY_NAME_MAPPINGS["BC_SeedVR2PostProcessCompact"] == "SeedVR2 PostProcess (Compact)"
     assert all(mod.NODE_CLASS_MAPPINGS[key].CATEGORY == "BCNodes/seedvr2"

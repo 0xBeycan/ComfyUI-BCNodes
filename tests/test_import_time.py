@@ -33,7 +33,8 @@ LAYERS = ("nodes", "pipelines", "models", "libs")
 # Node modules the walk must find (the registered nodes live in them).
 NODE_MODULES = ["logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
                 "image_comparer", "power_lora_loader", "everywhere", "seedvr2",
-                "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption", "skin_texture"]
+                "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption", "skin_texture",
+                "frequency_merge"]
 HEAVY = [
     "transformers", "timm", "scipy", "cv2", "PIL", "huggingface_hub",
     "safetensors", "kornia", "einops", "torchvision", "folder_paths",
@@ -129,9 +130,10 @@ def main():
         "BC_MathExpression", "BC_PromptList", "BC_AnySwitch", "BC_SelectSwitch", "BC_Seed", "BC_ShowText",
         "BC_ImageComparer", "BC_PowerLoraLoader", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
         "BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode", "BC_SeedVR2PostProcess",
-        "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact",
+        "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact", "BC_SeedVR2FramingDownscale",
         "BC_PostFxApply", "BC_PostFxTheme", "BC_PostFxCustomLook", "BC_PostFxLut", "BC_PostFxSignatureSheet",
         "BC_CaptionAudit", "BC_SocialMediaExport", "BC_ImageQualityGate", "BC_SaveImage", "BC_SaveImageWithCaption", "BC_SkinTexture",
+        "BC_FrequencyMerge",
     }
     registered = set(pkg.NODE_CLASS_MAPPINGS)
     if registered != expected:

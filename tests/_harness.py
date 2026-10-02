@@ -121,7 +121,7 @@ def load_package():
             for name in ("logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
                          "image_comparer", "power_lora_loader", "everywhere", "seedvr2",
                          "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption",
-                         "skin_texture")})
+                         "skin_texture", "frequency_merge")})
 
 
 def bind_package(name):

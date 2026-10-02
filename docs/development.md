@@ -17,8 +17,8 @@ ComfyUI-BCNodes/
     image_comparer.py      BC_ImageComparer
     power_lora_loader.py   BC_PowerLoraLoader
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
-    seedvr2.py             BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess,
-                           BC_SeedVR2PreprocessCompact, BC_SeedVR2PostProcessCompact
+    seedvr2.py             BC_SeedVR2FramingDownscale, BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2VAEDecode,
+                           BC_SeedVR2PostProcess, BC_SeedVR2PreprocessCompact, BC_SeedVR2PostProcessCompact
     common.py              wildcard type + flexible optional inputs + slot order + the device widget + unused outputs
     birefnet.py            BC_BiRefNetRemoveBackground
     depth_anything.py      BC_DepthAnythingV2
@@ -31,6 +31,7 @@ ComfyUI-BCNodes/
     save_image.py          BC_SaveImage
     save_image_with_caption.py  BC_SaveImageWithCaption
     skin_texture.py        BC_SkinTexture
+    frequency_merge.py     BC_FrequencyMerge
     process_monitor.py     Process Monitor: its HTTP routes and live event (no nodes)
   pipelines/               flows that combine models and libs; no ComfyUI node classes
     matting.py             the BiRefNet matte, then the matte options
@@ -51,6 +52,7 @@ ComfyUI-BCNodes/
       decode.py            streaming tiled VAE decode
       postprocess.py       per-frame colour correction
       compact.py           the compact pair: Resize + Encode, Decode + PostProcess, the SEEDVR2_PLAN between them
+      framing.py           Framing Downscale: the tallest SAM 3 face box -> close-up / medium / far -> the factor
       progress.py          progress bar + timed log lines of the slice loops
     process_monitor/       the Process Monitor
       monitor.py           sampler thread, runs, per-node records, threshold snapshot
@@ -91,6 +93,7 @@ ComfyUI-BCNodes/
     image.py               IMAGE frame <-> PIL, fit into a target size
     geometry.py            integer size arithmetic for resizing; a ControlNet preprocessor's output size
     filters.py             the two separable Gaussians (reflect, replicate)
+    frequency.py           Frequency Merge: one image's Gaussian low-pass + another's high-pass
     mask.py                fill holes, grow / blur, draw a colour through a mask, blockify, offset, refine foreground, fit a mask batch
     resize.py              Image Resize: size plan, crop / resample / pad per frame
     color.py               hex colour parser, sRGB <-> linear

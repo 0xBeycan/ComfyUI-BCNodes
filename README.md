@@ -27,6 +27,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_FastGroupsBypasser` | [Fast Groups Bypasser](docs/workflow.md#bc_fastgroupsbypasser--fast-groups-bypasser) | One bypass toggle per group |
 | `BC_BiRefNetRemoveBackground` | [BiRefNet Remove Background](docs/mask.md#bc_birefnetremovebackground--birefnet-remove-background) | Background removal with BiRefNet, plain torch |
 | `BC_DepthAnythingV2` | [Depth Anything](docs/image.md#bc_depthanythingv2--depth-anything) | Depth map with Depth Anything V2 Small or Depth Anything 3 (Small, Base, Mono-Large, Metric-Large; all Apache-2.0), near = white, at a ControlNet preprocessor's size or exactly width x height |
+| `BC_SeedVR2FramingDownscale` | [SeedVR2 Framing Downscale](docs/seedvr2.md#bc_seedvr2framingdownscale--seedvr2-framing-downscale) | SeedVR2 Resize's `downscale_factor` from the face size: the tallest SAM 3 face box picks close-up, medium or far, each with its factor; the measured face fraction comes out too |
 | `BC_SeedVR2Resize` | [SeedVR2 Resize](docs/seedvr2.md#bc_seedvr2resize--seedvr2-resize) | Original image → the padded frame SeedVR2 encodes (lanczos downscale, shortest-edge antialiased bicubic, pad 16, 4n+1 frames) plus the colour reference |
 | `BC_SeedVR2VAEEncode` | [SeedVR2 VAE Encode](docs/seedvr2.md#bc_seedvr2vaeencode--seedvr2-vae-encode) | SeedVR2 VAE encode with the frames streamed from RAM slice by slice, so VRAM does not grow with the frame count |
 | `BC_SeedVR2VAEDecode` | [SeedVR2 VAE Decode](docs/seedvr2.md#bc_seedvr2vaedecode--seedvr2-vae-decode) | SeedVR2 VAE decode with every decoded slice streamed to RAM, so VRAM does not grow with the frame count |
@@ -43,6 +44,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_SaveImage` | [Save Image](docs/image.md#bc_saveimage--save-image) | Saves images with folder / file names built from prompt widget values, any Pillow format, prompt + workflow embedded; preview only in the gallery, never under the node |
 | `BC_SaveImageWithCaption` | [Save Image With Caption](docs/image.md#bc_saveimagewithcaption--save-image-with-caption) | Saves images as PNG and, with a caption connected, the caption next to each image under the same name, for training datasets |
 | `BC_SkinTexture` | [Skin Texture](docs/image.md#bc_skintexture--skin-texture) | Micro-texture on skin inside a SAM 3 mask: boosts the image's own detail and multiplies in a synthetic pore field, in linear light |
+| `BC_FrequencyMerge` | [Frequency Merge](docs/image.md#bc_frequencymerge--frequency-merge) | The low frequencies (structure, colour) of one image + the high frequencies (texture, fine detail) of another of the same size, split by a Gaussian |
 | — | [Align](docs/workflow.md#align) | Align / distribute buttons in the selection toolbox |
 | — | [Process Monitor](docs/process-monitor.md) | Not a node: live RAM / VRAM bars, an estimate before a run, per-node measurement, and the reason a killed run died (see [Process Monitor](docs/process-monitor.md)) |
 
@@ -52,12 +54,12 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | --- | --- |
 | [`BCNodes/logic`](docs/logic.md) | Logic Boolean, Math Expression, Any Switch, Select Switch, Seed |
 | [`BCNodes/mask`](docs/mask.md) | Mask Fill Holes, MaskGrow, Draw Mask On Image, Blockify Mask, Repeat Mask Batch, Is Mask Empty, BiRefNet Remove Background |
-| [`BCNodes/image`](docs/image.md) | Image Scale By Aspect Ratio, Image Resize, Join Image Lists, Depth Anything, Social Media Export, Save Image, Save Image With Caption, Skin Texture |
+| [`BCNodes/image`](docs/image.md) | Image Scale By Aspect Ratio, Image Resize, Join Image Lists, Depth Anything, Social Media Export, Save Image, Save Image With Caption, Skin Texture, Frequency Merge |
 | [`BCNodes/postfx`](docs/postfx.md) | PostFx Apply, Theme, Custom Look, LUT, Signature Sheet |
 | [`BCNodes/analysis`](docs/analysis.md) | Image Quality Gate, Caption Audit |
 | [`BCNodes/text`](docs/text.md) | Prompt List, Show Text |
 | [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Auto Model Downloader |
-| [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Resize, VAE Encode, VAE Decode, PostProcess |
+| [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, VAE Decode, PostProcess |
 | [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
 
 ## Installation
@@ -79,12 +81,12 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 
 - [Logic](docs/logic.md) — booleans, arithmetic, switches and the seed
 - [Mask](docs/mask.md) — mask checks, fill / grow / draw / blockify / repeat, BiRefNet background removal
-- [Image](docs/image.md) — scaling and resizing, image lists, depth maps, social media export, saving, skin texture
+- [Image](docs/image.md) — scaling and resizing, image lists, depth maps, social media export, saving, skin texture, frequency merge
 - [PostFx](docs/postfx.md) — film-emulation looks: themes, custom looks, LUTs, signature sheets
 - [Analysis](docs/analysis.md) — the caption set audit and the image quality gate
 - [Text](docs/text.md) — prompt lists and showing text
 - [Loaders](docs/loaders.md) — LoRA loading and the model downloader
-- [SeedVR2](docs/seedvr2.md) — the SeedVR2 input stage, streaming VAE encode / decode, post-processing
+- [SeedVR2](docs/seedvr2.md) — the downscale factor from the framing, the SeedVR2 input stage, streaming VAE encode / decode, post-processing
 - [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, Auto Bypass, the Align buttons
 - [Unused outputs](docs/unused-outputs.md) — unconnected whole-batch outputs come out empty
 - [Measurements](docs/measurements.md) — time, RAM and output size of the mask nodes and Image Resize against the nodes they replace

@@ -224,6 +224,14 @@ def main():
           lambda: all(torch.equal(a, b) for down in (0.5, 0.75, 1.0) for a, b in zip(sr.resize(levels.to(torch.float16), 1.5, down, 0, True),
                                                                                     sr.resize(levels, 1.5, down, 0, True))) or _fail())
 
+    fd = m["seedvr2"].SeedVR2FramingDownscale()
+    fd_widgets = dict(sam3_model=m["seedvr2"].DEFAULT_SAM3, close_up_min_face=0.3, close_up_factor=0.5, medium_min_face=0.18,
+                      medium_factor=0.75, far_factor=1.0, no_face_factor=1.0, detection_threshold=0.5)
+    check("SeedVR2FramingDownscale None -> ValueError", lambda: _raises(ValueError, lambda: fd.choose(None, **fd_widgets)))
+    check("SeedVR2FramingDownscale empty batch -> ValueError", lambda: _raises(ValueError, lambda: fd.choose(torch.zeros(0, 8, 8, 3), **fd_widgets)))
+    check("SeedVR2FramingDownscale: the default checkpoint is offered even with no checkpoints on disk",
+          lambda: m["seedvr2"].DEFAULT_SAM3 in fd.INPUT_TYPES()["required"]["sam3_model"][0] or _fail())
+
     class VideoAutoencoderKLWrapper:  # stand-in for comfy's SeedVR2 VAE: 4 pixel frames <-> 1 latent frame (first slice 5 <-> 2), 8x spatial
         use_slicing = True
         slicing_latent_min_size = 1
@@ -552,6 +560,16 @@ def main():
     check("SkinTexture: face gate — no face = 1, small face fades", lambda: (m["pipelines.skin_texture"].face_gate(None, 100) == 1.0 and m["pipelines.skin_texture"].face_gate(torch.zeros(100, 100), 100) == 1.0
           and 0 < m["pipelines.skin_texture"].face_gate((lambda f: (f.__setitem__((slice(40, 50), slice(0, 10)), 1.0), f)[1])(torch.zeros(100, 100)), 100) < 1.0) or _fail())
     check("SkinTexture: batch of 3 with one mask", lambda: node.run(torch.rand(3, 64, 80, 3), mask=ones, **kw)[0].shape == (3, 64, 80, 3) or _fail())
+
+    # --- Frequency Merge ----------------------------------------------------
+    fm = m["frequency_merge"].FrequencyMerge()
+    pic = torch.rand(2, 24, 32, 3)
+    check("FrequencyMerge None -> ValueError", lambda: _raises(ValueError, lambda: fm.merge(None, pic, 3.0, 1.0)))
+    check("FrequencyMerge empty batches -> an empty batch", lambda: fm.merge(torch.zeros(0, 24, 32, 3), torch.zeros(0, 24, 32, 3), 3.0, 1.0)[0].shape
+          == (0, 24, 32, 3) or _fail())
+    check("FrequencyMerge another size -> ValueError", lambda: _raises(ValueError, lambda: fm.merge(pic, torch.rand(2, 24, 30, 3), 3.0, 1.0)))
+    check("FrequencyMerge detail = base -> base", lambda: torch.allclose(fm.merge(pic, pic, 3.0, 1.0)[0], pic, atol=1e-6) or _fail())
+    check("FrequencyMerge on the gpu choice runs (ComfyUI's device)", lambda: fm.merge(pic, pic, 3.0, 1.0, device="gpu")[0].shape == pic.shape or _fail())
 
     if failures:
         print(f"\nFAIL: {len(failures)}")
