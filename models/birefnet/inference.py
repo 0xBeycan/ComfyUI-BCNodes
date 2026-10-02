@@ -20,16 +20,14 @@ def matte(model, rgb):
     mean = torch.tensor(IMAGENET_MEAN, device=device).view(1, 3, 1, 1)
     std = torch.tensor(IMAGENET_STD, device=device).view(1, 3, 1, 1)
 
-    masks = []
+    mask = torch.empty(tuple(rgb.shape[:3]), dtype=torch.float32, device="cpu")
     with torch.no_grad():
-        for img in rgb:
+        for i, img in enumerate(rgb):
             x = img.permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=torch.float32)
             h, w = x.shape[-2:]
             x = F.interpolate(x, size=(res, res), mode="bicubic", align_corners=False, antialias=True).clamp_(0, 1)
             x = ((x - mean) / std).to(dtype)
             pred = net(x).float().sigmoid()
             pred = F.interpolate(pred, size=(h, w), mode="bicubic", align_corners=False, antialias=True).clamp_(0, 1)
-            masks.append(pred[0, 0].cpu())
-
-    mask = torch.stack(masks, dim=0)
+            mask[i] = pred[0, 0]
     return mask

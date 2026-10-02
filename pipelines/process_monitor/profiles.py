@@ -520,14 +520,14 @@ def _birefnet(c):
     n, h, w = img["n"], img["h"], img["w"]
     alpha = c.widget("background", "Alpha") == "Alpha"
     one = mask_bytes(n, h, w)
-    # the per-frame mattes listed before torch.stack; the raw matte kept while an option makes a new one
+    # the mattes go into one preallocated batch; the raw matte kept while an option makes a new one
     options = (c.widget("sensitivity", 1.0) < 1.0 or c.widget("mask_blur", 0) > 0 or c.widget("mask_offset", 0) != 0
                or bool(c.widget("invert_output", False)))
-    transient = one + (one if options else 0)
+    transient = one if options else 0
     transient += image_bytes(n, h, w) if c.widget("refine_foreground", False) else 0
-    transient += 0 if alpha else 3 * image_bytes(n, h, w)  # the "over" blend's full-size temporaries
+    transient += 0 if alpha else image_bytes(n, h, w)  # the "over" blend: the background term, summed into the output
     out = {0: image(n, h, w, channels=4 if alpha else 3), 1: mask(n, h, w), 2: image(n, h, w)}
-    return out, transient, "frame list + option and blend temporaries; the network's working set not counted"
+    return out, transient, "option and blend temporaries; the network's working set not counted"
 
 
 def _depth_anything(c):

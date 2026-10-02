@@ -45,7 +45,10 @@ def finish(rgb, mask, sensitivity=1.0, mask_blur=0, mask_offset=0, invert_output
         # translucent, then the alpha is dropped.
         weight = a * (1 - alpha)
         total = alpha + weight
-        image = torch.where(total > 0, (color * alpha + bg * weight) / total.clamp(min=1e-6), torch.zeros_like(color))
+        image = color * alpha
+        image += bg * weight
+        image /= total.clamp(min=1e-6)
+        image.masked_fill_(~(total > 0), 0.0)
     mask_out = m[:, 0]
     mask_image = mask_out[slice(None) if want_mask_image else slice(0)].unsqueeze(-1).expand(-1, -1, -1, 3).contiguous()
     return image, mask_out, mask_image

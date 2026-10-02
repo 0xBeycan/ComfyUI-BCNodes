@@ -432,7 +432,7 @@ def test_bcnodes_image_nodes_and_switches(em):
     assert [o["shape"] for o in rows["1"]["outputs"]] == [[1, 576, 1024, 3], [1, 576, 1024]]
     assert rows["1"]["transient"] == 576 * 1024 * 3 * 4  # the image list; the mask is zeros, not listed
     assert [o["shape"] for o in rows["2"]["outputs"]] == [[1, 480, 640, 4], [1, 480, 640], [1, 480, 640, 3]]
-    assert rows["2"]["transient"] == one  # the frame list before torch.stack
+    assert rows["2"]["transient"] == 0  # the mattes go into one preallocated batch, the mask output
     # short side 518, 640 * 518 / 480 = 690.67 -> 691; one frame at a time into the preallocated output
     assert rows["3"]["outputs"][0]["shape"] == [1, 518, 691, 3] and rows["3"]["transient"] == 0
     assert rows["4"]["outputs"][0]["shared"] and rows["4"]["output_bytes"] == 0
@@ -443,7 +443,7 @@ def test_bcnodes_image_nodes_and_switches(em):
     p["4"]["inputs"]["theme"] = "kodak"
     rows = rows_of(em, p)
     assert rows["3"]["outputs"][0]["shape"] == [1, 480, 832, 3]
-    assert rows["2"]["transient"] == one + one + 3 * 480 * 640 * 3 * 4 and rows["2"]["outputs"][0]["shape"] == [1, 480, 640, 3]
+    assert rows["2"]["transient"] == one + 480 * 640 * 3 * 4 and rows["2"]["outputs"][0]["shape"] == [1, 480, 640, 3]
     assert rows["4"]["transient"] == 2 * 480 * 640 * 3 * 4
     p["3"]["inputs"].update(width=["9", 1], height=["9", 2])  # sizes from links: known at run time only
     row = rows_of(em, p)["3"]
