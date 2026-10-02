@@ -6,8 +6,7 @@ inside the functions that use them.
 
 from dataclasses import dataclass
 
-import numpy as np
-
+from ..libs.image import tensor_to_u8
 from ..libs.image_metrics import blur_detection, clipping_analysis, entropy_analysis, noise_estimation, sharpness_hybrid
 
 # Shot type presets apply multipliers to base thresholds.
@@ -84,7 +83,7 @@ def analyze(image, shot_type, blur_mode, blur_threshold, blur_var_threshold,
     eff_block = profile["block_size"]
 
     # Tensor to numpy
-    img_np = np.clip(image[0].cpu().numpy() * 255, 0, 255).astype(np.uint8)
+    img_np = tensor_to_u8(image[0])  # x 255, clipped, truncated; a half image requantized first
     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
 
     # --- Run all 5 analyses ---
