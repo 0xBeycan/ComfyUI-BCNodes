@@ -14,6 +14,14 @@ class _Loaded:
     dtype = None
 
 
+def unload():
+    """Drops the cached model (it loads again on its node's next run); returns its name, or None
+    when none was held."""
+    name = _Loaded.name if _Loaded.model is not None else None
+    _Loaded.name, _Loaded.model, _Loaded.device, _Loaded.dtype = None, None, None, None
+    return name
+
+
 def load(name):
     if _Loaded.name == name and _Loaded.model is not None:
         return _Loaded.model, _Loaded.device, _Loaded.dtype
@@ -23,9 +31,7 @@ def load(name):
 
     from .arch import BiRefNet
 
-    if _Loaded.model is not None:
-        _Loaded.model = None
-        _Loaded.name = None
+    if unload() is not None:
         mm.soft_empty_cache()
 
     ckpt = registry.get(MATTING, name)

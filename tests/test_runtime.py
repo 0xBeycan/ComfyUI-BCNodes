@@ -732,6 +732,7 @@ async def main():
 
     await unused_outputs()
     await process_monitor_hook()
+    await process_monitor_clear()
 
     print(f"\n{results['pass']} passed, {results['fail']} failed")
     sys.exit(1 if results["fail"] else 0)
@@ -820,6 +821,91 @@ async def process_monitor_hook():
           sorted(r["node"] for r in rows if r["state"] == "cached") == ["1", "2", "3", "4"] and len(rows) == 4, f"{rows}")
     check("ProcessMonitor: the run keeps its own time and the measurement for Emulate",
           first[-1]["type"] == "end" and first[-1]["monitor"]["hook_s"] > 0 and m.measurement("wf-test") is not None)
+
+
+def prompt_worker(queue, ex, stop, seen):
+    """main.py's prompt worker as far as the full clear meets it: a thread of this name waiting in the
+    real PromptQueue.get, and on its free flags ComfyUI's own unload and executor reset."""
+    import comfy.model_management
+
+    while not stop.is_set():
+        queue.get(timeout=0.05)
+        flags = queue.get_flags()
+        if flags:
+            seen.append(sorted(flags))
+        if flags.get("unload_models", flags.get("free_memory", False)):
+            comfy.model_management.unload_all_models()
+        if flags.get("free_memory", False):
+            ex.reset()
+
+
+async def process_monitor_clear():
+    """Process Monitor full clear: POST /bcnodes/monitor/clear on the real PromptServer and prompt
+    queue. Refused while a prompt runs (409); an error without ComfyUI's prompt worker (500); with
+    it, the report's fields, ComfyUI's own free done by the worker (the executor's caches replaced),
+    and the same prompt running again afterwards, from scratch."""
+    import threading
+
+    import server
+    from aiohttp.test_utils import make_mocked_request
+
+    instance = server.PromptServer.instance
+    handlers = {(r.method, r.path): r.handler for r in instance.routes}
+    clear = handlers[("POST", "/bcnodes/monitor/clear")]
+
+    async def post():
+        response = await clear(make_mocked_request("POST", "/bcnodes/monitor/clear"))
+        return response.status, json.loads(response.text)
+
+    queue = instance.prompt_queue
+    queue.currently_running[99] = (0, "running-prompt", {}, {}, [])
+    try:
+        status, body = await post()
+    finally:
+        del queue.currently_running[99]
+    check("ProcessMonitor clear: refused while a prompt runs, saying to wait",
+          status == 409 and "wait until the queue is empty" in body.get("error", ""), f"{status} {body}")
+
+    status, body = await post()
+    check("ProcessMonitor clear: without ComfyUI's prompt worker -> an error that says so",
+          status == 500 and "prompt worker thread was not found" in body.get("error", ""), f"{status} {body}")
+
+    prompt = {"1": N("EmptyImage", width=64, height=48, batch_size=2, color=0), "2": N("ImageInvert", image=["1", 0]),
+              "3": N("PreviewImage", images=["2", 0])}
+    ex = execution.PromptExecutor(Server(), cache_type=execution.CacheType.CLASSIC, cache_args={"lru": 0, "ram": 0, "ram_inactive": 0})
+
+    async def queue_prompt():
+        prompt_id = str(uuid.uuid4())
+        valid = await execution.validate_prompt(prompt_id, prompt, None)
+        ex.server.events.clear()
+        await ex.execute_async(copy.deepcopy(prompt), prompt_id, {"client_id": "test"}, valid[2])
+        return ex.success and executed_nodes(ex.server)
+
+    first = await queue_prompt()
+    caches = ex.caches
+    stop, seen = threading.Event(), []
+    worker = threading.Thread(target=prompt_worker, args=(queue, ex, stop, seen), daemon=True)
+    worker.start()
+    try:
+        status, report = await post()
+    finally:
+        stop.set()
+        worker.join(5)
+    steps = [s["name"] for s in report.get("steps", [])]
+    check("ProcessMonitor clear: the report has the baseline, before, after, each step and what remains",
+          status == 200 and set(report) == {"baseline", "before", "after", "steps", "remaining"}
+          and steps == ["comfyui_free", "pack_models", "garbage", "torch_caches", "malloc_trim"]
+          and all("ram" in s["freed"] and s["found"] for s in report["steps"]), f"{status} {report}")
+    check("ProcessMonitor clear: the baseline was read at the server's startup (it ran in unused_outputs)",
+          (report.get("baseline") or {}).get("ram") is not None, f"{report.get('baseline')}")
+    check("ProcessMonitor clear: ComfyUI's own free ran on its worker: both flags, the executor's caches replaced",
+          seen == [["free_memory", "unload_models"]] and ex.caches is not caches, f"{seen}")
+    again = await queue_prompt()
+    check("ProcessMonitor clear: the next prompt runs normally, every node again (nothing cached)",
+          first == ["1", "2", "3"] and again == ["1", "2", "3"], f"{first} {again}")
+    status_handler = handlers[("GET", "/bcnodes/monitor/status")]
+    body = json.loads((await status_handler(make_mocked_request("GET", "/bcnodes/monitor/status"))).text)
+    check("ProcessMonitor clear: the status route carries the baseline", body.get("baseline") == report.get("baseline"))
 
 
 if __name__ == "__main__":

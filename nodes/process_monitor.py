@@ -8,16 +8,20 @@ imported inside the functions that use them.
 
 At startup the monitor runs when its saved setting says so (user/BCNodes/process_monitor/
 settings.json, written by the ComfyUI setting "BCNodes.ProcessMonitor.Enabled"; on when there is no
-file), so a server queued through the API without a browser still gets the black box.
+file), so a server queued through the API without a browser still gets the black box. Once every
+custom node has loaded (the server's startup), the full clear's baseline is read, monitor on or off.
 """
 
 import asyncio
 import logging
 import os
+import sys
 
+from ..libs import memory_sources
 from ..libs.download import user_file
 from ..libs.safetensors_info import weights_info
-from ..pipelines.process_monitor.monitor import Monitor
+from ..pipelines.process_monitor.clear import Busy, FullClear
+from ..pipelines.process_monitor.monitor import Monitor, stack_codes
 
 EVENT = "bcnodes.monitor"
 
@@ -46,6 +50,39 @@ class ServerProbe:
 
     def push(self, payload):
         self.server.send_sync(EVENT, payload)
+
+    def busy(self):
+        """Why a full clear must wait (a prompt runs or waits in the queue), or None."""
+        running, queued = self.server.prompt_queue.get_current_queue_volatile()
+        if running or queued:
+            return (f"{len(running)} prompt(s) running and {len(queued)} queued: wait until the queue is empty, "
+                    "then clear again.")
+        return None
+
+    def _worker_stack(self):
+        """The code objects on the stack of ComfyUI's prompt worker thread (main.py's prompt_worker)."""
+        for frame in sys._current_frames().values():
+            codes = stack_codes(frame)
+            if any(c.co_name == "prompt_worker" for c in codes):
+                return codes
+        raise RuntimeError("ComfyUI's prompt worker thread was not found (a ComfyUI that does not run prompts "
+                           "through main.py's prompt_worker), so its free cannot be asked for here. Use ComfyUI's "
+                           "own Unload Models and Free Memory instead.")
+
+    def request_free(self):
+        """What POST /free with unload_models and free_memory does: two flags the prompt worker reads
+        when it wakes (setting them wakes it)."""
+        self._worker_stack()
+        queue = self.server.prompt_queue
+        queue.set_flag("unload_models", True)
+        queue.set_flag("free_memory", True)
+
+    def free_done(self):
+        """True once the prompt worker has taken the flags and waits in the queue again, so its free
+        (models unloaded, the executor's caches reset, gc.collect, empty_cache) has finished. Read from
+        the code objects on its stack, never from a frame's locals."""
+        queue = self.server.prompt_queue
+        return not queue.get_flags(reset=False) and type(queue).get.__code__ in self._worker_stack()
 
 
 class ComfyEnv:
@@ -128,21 +165,30 @@ def _register():
     env = ComfyEnv()
     routes = server.routes
 
+    def sources():
+        ram = monitor.ram or memory_sources.ram_source()
+        return ram, monitor.gpu if monitor.gpu is not None else memory_sources.gpu_source()
+
+    clear = FullClear(monitor.probe, sources)
+
     async def off_loop(fn, *args):
         return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
 
     def fail(e, status=400):
         return web.json_response({"error": str(e)}, status=status)
 
+    def status():
+        return {**monitor.status(), "baseline": clear.baseline}
+
     @routes.get("/bcnodes/monitor/status")
     async def _status(request):
-        return web.json_response(await off_loop(monitor.status))
+        return web.json_response(await off_loop(status))
 
     @routes.post("/bcnodes/monitor/enable")
     async def _enable(request):
         body = await request.json()
         await off_loop(monitor.set_enabled, bool(body.get("enabled")))
-        return web.json_response(await off_loop(monitor.status))
+        return web.json_response(await off_loop(status))
 
     @routes.post("/bcnodes/monitor/arm")
     async def _arm(request):
@@ -151,7 +197,7 @@ def _register():
             monitor.arm(bool(body.get("armed", True)))
         except RuntimeError as e:
             return fail(e, 409)
-        return web.json_response(await off_loop(monitor.status))
+        return web.json_response(await off_loop(status))
 
     @routes.post("/bcnodes/monitor/settings")
     async def _settings(request):
@@ -159,7 +205,7 @@ def _register():
             monitor.update_settings(await request.json())
         except ValueError as e:
             return fail(e)
-        return web.json_response(await off_loop(monitor.status))
+        return web.json_response(await off_loop(status))
 
     @routes.get("/bcnodes/monitor/live")
     async def _live(request):
@@ -184,6 +230,29 @@ def _register():
         except ValueError as e:
             return fail(e)
 
+    @routes.post("/bcnodes/monitor/clear")
+    async def _clear(request):
+        try:
+            return web.json_response(await off_loop(clear.run))
+        except Busy as e:
+            return fail(e, 409)
+        except RuntimeError as e:
+            return fail(e, 500)
+
+    def baseline():
+        try:
+            clear.record_baseline()
+        except Exception:  # never stop the server's startup; the clear then reports without a baseline
+            logging.exception("[BCNodes] Process Monitor: the full clear's baseline could not be read; "
+                              "its reports will have none until the next start.")
+
+    async def on_startup(app):
+        await off_loop(baseline)
+
+    if server.app.on_startup.frozen:  # the server runs already: the pack was loaded late
+        baseline()
+    else:
+        server.app.on_startup.append(on_startup)
     if monitor.settings.enabled:
         monitor.start()
     return monitor

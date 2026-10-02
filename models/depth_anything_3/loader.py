@@ -11,6 +11,14 @@ class _Loaded:
     patcher = None
 
 
+def unload():
+    """Drops the cached ModelPatcher (it loads again on its node's next run); returns its name, or
+    None when none was held."""
+    name = _Loaded.name if _Loaded.patcher is not None else None
+    _Loaded.name, _Loaded.patcher = None, None
+    return name
+
+
 def load(name):
     if _Loaded.name == name and _Loaded.patcher is not None:
         return _Loaded.patcher
@@ -18,9 +26,7 @@ def load(name):
     import comfy.model_management as mm
     import comfy.sd
 
-    if _Loaded.patcher is not None:
-        _Loaded.patcher = None
-        _Loaded.name = None
+    if unload() is not None:
         mm.soft_empty_cache()
 
     path = weights_path(name)

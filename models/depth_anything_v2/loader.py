@@ -10,6 +10,14 @@ class _Loaded:
     device = None
 
 
+def unload():
+    """Drops the cached model (it loads again on its node's next run); returns its name, or None
+    when none was held."""
+    held = "Depth Anything V2 Small" if _Loaded.model is not None else None
+    _Loaded.model, _Loaded.device = None, None
+    return held
+
+
 def load():
     if _Loaded.model is not None:
         return _Loaded.model, _Loaded.device

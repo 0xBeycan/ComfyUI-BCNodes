@@ -7,15 +7,16 @@ import { callJson } from "./bcnodes_api.js";
 // One ComfyUI setting turns it on and off, live. The top bar shows RAM against its limit, VRAM
 // and the GPU load while it is on, and a button that opens the modal (always there: Emulate and
 // the crash report work with the monitor off). The button turns red when the last run was killed.
-// Modal tabs: Live, Emulate, Last run (a row click selects and centres the node), Crash, Settings.
+// Modal tabs: Live, Emulate, Last run (a row click selects and centres the node), Crash, Full clear
+// (RAM and VRAM back to the reading taken when ComfyUI started, no restart), Settings.
 
 const SETTING = "BCNodes.ProcessMonitor.Enabled";
 const EVENT = "bcnodes.monitor";
-const TABS = ["Live", "Emulate", "Last run", "Crash", "Settings"];
+const TABS = ["Live", "Emulate", "Last run", "Crash", "Full clear", "Settings"];
 // the tensor census's "backing" of cpu memory (none on a GPU)
 const BACKING = { ram: "RAM", file: "file (page cache)", unknown: "unknown" };
 
-const state = { status: null, sample: null, tab: "Live", modal: null, bar: null };
+const state = { status: null, sample: null, tab: "Live", modal: null, bar: null, clear: { busy: false, report: null, error: null } };
 
 const call = (route, body) => callJson(`/bcnodes/monitor/${route}`, body);
 
@@ -309,6 +310,12 @@ async function lastRunTab() {
 	return el("div", {}, parts);
 }
 
+function censusTable(c) {
+	return table(["Count", "Shape", "dtype", "Device", "Memory", "Each", "Distinct bytes"], c.groups.map((g) => ({
+		cells: [`${g.count} ×`, `(${g.shape.join(", ")})`, g.dtype, g.device, BACKING[g.backing] ?? "–", gb(g.bytes_each), gb(g.bytes)],
+	})));
+}
+
 function curveSvg(curve, limit) {
 	if (!curve?.length) return null;
 	const w = 600, h = 120;
@@ -362,14 +369,73 @@ async function crashTab() {
 		if (c?.file_bytes !== undefined) parts.push(el("div", { class: "bcpm-note" }, `${gb(c.total_bytes)} of memory in all, each byte once; `,
 			c.file_bytes === null ? "file-backed part unknown (no /proc/self/maps on this system)"
 				: `${gb(c.file_bytes)} of it file-backed (mapped from files: page cache, not the process's own RAM)`));
-		if (c) parts.push(table(["Count", "Shape", "dtype", "Device", "Memory", "Each", "Distinct bytes"], c.groups.map((g) => ({
-			cells: [`${g.count} ×`, `(${g.shape.join(", ")})`, g.dtype, g.device, BACKING[g.backing] ?? "–", gb(g.bytes_each), gb(g.bytes)],
-		}))));
+		if (c) parts.push(censusTable(c));
 		parts.push(el("details", {}, el("summary", {}, "Stack of the execution thread"), el("pre", {}, snap.stack.join(""))));
 	} else {
 		parts.push(el("div", { class: "bcpm-note" }, "No snapshot: RAM never crossed the threshold before the end."));
 	}
 	return el("div", {}, parts);
+}
+
+// [label, reading -> bytes or null]; a row shows when one of its columns has a value
+const CLEAR_ROWS = [
+	["RAM (the bar's reading)", (r) => r.ram],
+	["Process RSS", (r) => r.rss],
+	["… its own memory (anon: what a restart frees)", (r) => r.rss_anon],
+	["… pages mapped from files (page cache)", (r) => r.rss_file],
+	["… its own memory (USS; macOS keeps freed pages in the RSS until it needs them)", (r) => r.uss],
+	["Container: processes' own memory (anon)", (r) => r.cgroup?.anon],
+	["Container: page cache, active / inactive", (r) => r.cgroup?.file, (r) => r.cgroup && `${gb(r.cgroup.active_file)} / ${gb(r.cgroup.inactive_file)}`],
+	["glibc: freed memory its arenas keep", (r) => r.malloc_free],
+	["Pinned host memory (ComfyUI's models)", (r) => r.comfy_pinned],
+	["Pinned host memory (torch's cache)", (r) => r.pinned_cache],
+	["VRAM allocated (torch)", (r) => r.vram],
+	["VRAM reserved (torch)", (r) => r.vram_reserved],
+	["VRAM on the device (every process)", (r) => r.vram_device],
+];
+
+function renderClear(r) {
+	const cols = [r.baseline, r.before, r.after];
+	const rows = CLEAR_ROWS.filter(([, get]) => cols.some((c) => c && get(c) != null)).map(([label, get, extra]) => ({
+		cells: [label, ...cols.map((c) => (c ? `${gb(get(c))}${extra ? ` (${extra(c)})` : ""}` : "–"))],
+	}));
+	const freed = (s, k) => (s.freed[k] == null ? "–" : gb(s.freed[k]));
+	const above = r.baseline ? r.after.ram - r.baseline.ram : null;
+	return el("div", {},
+		el("div", {}, `RAM ${gb(r.before.ram)} → ${gb(r.after.ram)}`, r.baseline ? ` (baseline ${gb(r.baseline.ram)}, ${gb(above)} above it)` : " (no baseline: the server's startup was not seen)",
+			r.after.vram_reserved != null ? `; VRAM reserved ${gb(r.before.vram_reserved)} → ${gb(r.after.vram_reserved)}` : ""),
+		table(["", "Baseline (ComfyUI started)", "Before", "After"], rows),
+		el("h4", {}, "Steps"),
+		table(["Step", "What it did", "Found", "RAM freed", "Own memory freed", "VRAM reserved freed", "Time"], r.steps.map((s) => ({
+			cells: [s.name, s.text, s.found, freed(s, "ram"), freed(s, s.freed.rss_anon != null ? "rss_anon" : s.freed.uss != null ? "uss" : "rss"), freed(s, "vram_reserved"), secs(s.seconds)],
+		}))),
+		el("h4", {}, `Tensors still referenced after the clear: ${gb(r.remaining.total_bytes)}`),
+		el("div", { class: "bcpm-note" }, "What the clear cannot free: a model or tensor another pack keeps in its own cache (listed here), and the libraries and GPU kernels loaded during the run. The page cache (files read or mapped) is reported, not dropped: the kernel takes it back when memory runs short, and a restart keeps it too."),
+		r.remaining.groups.length ? censusTable(r.remaining) : el("div", { class: "bcpm-note" }, "None of 1 MB or more."));
+}
+
+function clearTab() {
+	const c = state.clear;
+	const go = el("button", { class: "bcpm-btn" }, c.busy ? "Clearing…" : "Full clear");
+	if (c.busy) go.disabled = true;
+	go.onclick = async () => {
+		state.clear = { busy: true, report: c.report, error: null };
+		showTab("Full clear");
+		try {
+			state.clear = { busy: false, report: await call("clear", {}), error: null };
+		} catch (e) {
+			state.clear = { busy: false, report: c.report, error: String(e.message ?? e) };
+		}
+		refreshStatus();
+		if (state.tab === "Full clear") showTab("Full clear");
+	};
+	const b = state.status?.baseline;
+	return el("div", {},
+		go,
+		el("div", { class: "bcpm-note" }, "Brings RAM and VRAM back to where they were right after ComfyUI started, without a restart: every model unloaded, every cached node output dropped, the freed memory given back to the system. Refused while a prompt runs or waits. The next run loads its models again, so it starts slower."),
+		el("div", { class: "bcpm-note" }, b ? `Baseline, read when ComfyUI started: RAM ${gb(b.ram)}${b.vram_reserved != null ? `, VRAM reserved ${gb(b.vram_reserved)}` : ""}.` : "No baseline: the server's startup was not seen."),
+		c.error ? el("div", { class: "bcpm-bad" }, c.error) : null,
+		c.report ? renderClear(c.report) : null);
 }
 
 function settingsTab() {
@@ -401,7 +467,7 @@ function settingsTab() {
 		row("Run logs kept", keep), save, msg);
 }
 
-const RENDER = { "Live": liveTab, "Emulate": emulateTab, "Last run": lastRunTab, "Crash": crashTab, "Settings": settingsTab };
+const RENDER = { "Live": liveTab, "Emulate": emulateTab, "Last run": lastRunTab, "Crash": crashTab, "Full clear": clearTab, "Settings": settingsTab };
 
 // ---------------------------------------------------------------------------
 // Extension

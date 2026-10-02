@@ -54,14 +54,20 @@ def code_lines(frame):
     return _frame_text(f or frame), (_frame_text(frame) if f is not frame else None)
 
 
+def stack_codes(frame):
+    """The code objects of frame's stack, innermost first: what runs where, never a frame's locals."""
+    codes = []
+    while frame is not None:
+        codes.append(frame.f_code)
+        frame = frame.f_back
+    return codes
+
+
 def find_execution_thread(frames):
     """The id of the thread running a prompt: the one with PromptExecutor's frame on its stack."""
     for ident, frame in frames.items():
-        f = frame
-        while f is not None:
-            if f.f_code.co_name in ("execute_async", "execute") and f.f_code.co_filename.endswith("execution.py"):
-                return ident
-            f = f.f_back
+        if any(c.co_name in ("execute_async", "execute") and c.co_filename.endswith("execution.py") for c in stack_codes(frame)):
+            return ident
     return None
 
 

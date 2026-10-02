@@ -11,22 +11,34 @@ device-wide use (every process) and the GPU load when a binding (`pynvml`) is im
 Every read is a counter: a few bytes from a cgroup file or an allocator statistic, never a tensor.
 psutil and pynvml are imported inside the functions that use them. The cgroup root and
 /proc/self/cgroup are arguments, so tests run against fake trees.
+
+The full clear reads more: what the RAM is made of (the cgroup's memory.stat, the process's
+/proc/self/status), the free memory glibc's malloc keeps (`Glibc`) and torch's pinned host cache.
 """
 
+import ctypes
 import os
 
 import torch
 
 CGROUP_ROOT = "/sys/fs/cgroup"
 PROC_SELF_CGROUP = "/proc/self/cgroup"
+PROC_SELF_STATUS = "/proc/self/status"
 
 # The same counters under cgroup v2 and v1. v1's oom_kill line lives in memory.oom_control
 # (kernel 4.13+).
 _FILES = {
     2: {"usage": "memory.current", "limit": "memory.max", "peak": "memory.peak", "stat": "memory.stat",
-        "inactive": "inactive_file", "events": "memory.events"},
+        "events": "memory.events"},
     1: {"usage": "memory.usage_in_bytes", "limit": "memory.limit_in_bytes", "peak": "memory.max_usage_in_bytes",
-        "stat": "memory.stat", "inactive": "total_inactive_file", "events": "memory.oom_control"},
+        "stat": "memory.stat", "events": "memory.oom_control"},
+}
+# What the cgroup's memory is made of, by its memory.stat keys: anon (the processes' own memory),
+# file (page cache: files read or mapped), its active and inactive halves, shmem (tmpfs, shared memory).
+_STAT = {
+    2: {"anon": "anon", "file": "file", "active_file": "active_file", "inactive_file": "inactive_file", "shmem": "shmem"},
+    1: {"anon": "total_rss", "file": "total_cache", "active_file": "total_active_file",
+        "inactive_file": "total_inactive_file", "shmem": "total_shmem"},
 }
 
 
@@ -47,13 +59,14 @@ def _int(path):
         return None
 
 
-def _keyed(text, key):
-    """The value of `key value` lines (memory.stat, memory.events, memory.oom_control)."""
+def _keyed(text):
+    """{key: int} of `key value` lines (memory.stat, memory.events, memory.oom_control)."""
+    out = {}
     for line in (text or "").splitlines():
         parts = line.split()
-        if len(parts) == 2 and parts[0] == key:
-            return int(parts[1])
-    return None
+        if len(parts) == 2 and parts[1].isdigit():
+            out[parts[0]] = int(parts[1])
+    return out
 
 
 def _candidates(root, proc_self_cgroup):
@@ -85,7 +98,7 @@ class CgroupMemory:
 
     def __init__(self, directory, version, limit):
         self.directory, self.version, self.limit = directory, version, limit
-        self._files = {k: os.path.join(directory, v) if k != "inactive" else v for k, v in _FILES[version].items()}
+        self._files = {k: os.path.join(directory, v) for k, v in _FILES[version].items()}
 
     def describe(self):
         return f"cgroup v{self.version} at {self.directory}"
@@ -94,11 +107,18 @@ class CgroupMemory:
         """{"ram": working set (usage minus inactive file cache, what the kill is decided on and what
         docker stats shows), "ram_raw": usage with every cache, "ram_limit"}."""
         usage = _int(self._files["usage"])
-        inactive = _keyed(_read(self._files["stat"]), self._files["inactive"]) or 0
+        inactive = _keyed(_read(self._files["stat"])).get(_STAT[self.version]["inactive_file"]) or 0
         return {"ram": None if usage is None else max(0, usage - inactive), "ram_raw": usage, "ram_limit": self.limit}
 
+    def breakdown(self):
+        """{"anon", "file", "active_file", "inactive_file", "shmem"} in bytes from memory.stat (None for a
+        key the kernel does not write). anon is the processes' own memory; file is page cache, which the
+        kernel reclaims under pressure and which a restart of the process does not free."""
+        stat = _keyed(_read(self._files["stat"]))
+        return {name: stat.get(key) for name, key in _STAT[self.version].items()}
+
     def oom_kills(self):
-        return _keyed(_read(self._files["events"]), "oom_kill")
+        return _keyed(_read(self._files["events"])).get("oom_kill")
 
     def open_peak_window(self):
         """A PeakWindow over memory.peak reset to the current usage, or None when the kernel does not
@@ -173,6 +193,67 @@ class ProcessMemory:
         return None
 
 
+def process_memory(proc_self_status=PROC_SELF_STATUS):
+    """{"rss", "rss_anon", "rss_file", "rss_shmem", "uss"} of this process in bytes, None where this
+    system has no such counter. Linux splits the RSS in /proc/self/status: RssAnon is the process's own
+    memory (what a restart frees), RssFile pages mapped from files (model weights read through mmap:
+    page cache), RssShmem shared memory. macOS has no split: the RSS through psutil, which keeps pages
+    the process freed until the system needs them, and the USS (its own memory without them)."""
+    fields = {"VmRSS": "rss", "RssAnon": "rss_anon", "RssFile": "rss_file", "RssShmem": "rss_shmem"}
+    out = dict.fromkeys((*fields.values(), "uss"))
+    for line in (_read(proc_self_status) or "").splitlines():
+        key, _, value = line.partition(":")
+        if key in fields and value.split():
+            out[fields[key]] = int(value.split()[0]) * 1024  # kB
+    if out["rss"] is None:
+        import psutil
+
+        full = psutil.Process().memory_full_info()
+        out["rss"], out["uss"] = full.rss, getattr(full, "uss", None)
+    return out
+
+
+class Mallinfo2(ctypes.Structure):
+    """glibc's struct mallinfo2 (glibc 2.33+): the counters of every malloc arena together."""
+    _fields_ = [(name, ctypes.c_size_t) for name in
+                ("arena", "ordblks", "smblks", "hblks", "hblkhd", "usmblks", "fsmblks", "uordblks", "fordblks", "keepcost")]
+
+
+class Glibc:
+    """glibc's malloc: a freed block goes back to its arena (the main heap, or the arena of the thread
+    that allocated it: ComfyUI's prompt worker is a thread), not to the system, unless it was mapped
+    on its own (above the mmap threshold, which glibc raises up to 32 MB as blocks are freed) or sits
+    at the top of the heap. The rest stays in the process's RSS, held for reuse."""
+
+    def __init__(self, lib):
+        self.lib = lib
+        self.lib.malloc_trim.argtypes = [ctypes.c_size_t]
+        self.lib.malloc_trim.restype = ctypes.c_int
+        self._info = getattr(lib, "mallinfo2", None)
+        if self._info is not None:
+            self._info.restype = Mallinfo2
+
+    def free_bytes(self):
+        """Bytes freed by the program that the arenas still hold (mallinfo2's fordblks: free chunks,
+        top included), or None on a glibc older than 2.33."""
+        return None if self._info is None else int(self._info().fordblks)
+
+    def trim(self):
+        """malloc_trim(0): every arena gives every whole free page back to the system (madvise
+        MADV_DONTNEED), the top of each heap included. True when memory was released."""
+        return bool(self.lib.malloc_trim(0))
+
+
+def glibc():
+    """Glibc over this process's C library, or None when it is not glibc (macOS, musl)."""
+    try:
+        lib = ctypes.CDLL("libc.so.6")
+        lib.malloc_trim  # noqa: B018 (glibc's own: musl has no malloc_trim)
+    except (OSError, AttributeError):
+        return None
+    return Glibc(lib)
+
+
 def ram_source(root=CGROUP_ROOT, proc_self_cgroup=PROC_SELF_CGROUP):
     """CgroupMemory inside a memory-limited container, else ProcessMemory (macOS has no
     /proc/self/cgroup, so it always gets the process reading)."""
@@ -210,6 +291,12 @@ class CudaMemory:
         return {"vram_peak": torch.cuda.max_memory_allocated(self.device),
                 "vram_reserved_peak": torch.cuda.max_memory_reserved(self.device)}
 
+    def pinned_cache(self):
+        """Bytes of pinned host memory torch's host allocator holds (in use and cached for reuse,
+        `Tensor.pin_memory()` and friends), or None when this torch does not count it."""
+        stats = getattr(torch.cuda, "host_memory_stats", None)
+        return stats().get("allocated_bytes.current") if stats is not None else None
+
 
 class MpsMemory:
     """torch's MPS counters (Apple silicon: the GPU shares the RAM). MPS keeps no peak; the sampler's
@@ -231,6 +318,9 @@ class MpsMemory:
 
     def peak(self):
         return {}
+
+    def pinned_cache(self):
+        return None  # unified memory: no pinned host copies
 
 
 class Nvml:

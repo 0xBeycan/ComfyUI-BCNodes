@@ -209,3 +209,82 @@ def test_mps_counters(ms, monkeypatch):
     assert isinstance(gpu, ms.MpsMemory)
     assert gpu.read() == {"vram": 11, "vram_reserved": 22, "vram_total": 33}
     assert gpu.peak() == {}
+
+
+# --- what the full clear reads: the RAM's parts, glibc's free blocks, pinned host memory -------------
+
+def test_v2_breakdown(ms, tmp_path):
+    root, proc = tree(tmp_path, "0::/", dict(V2_FILES, **{"memory.stat": V2_FILES["memory.stat"] + "shmem 4096\n"}))
+    cg = ms.find_cgroup(16 * GIB, root, proc)
+    assert cg.breakdown() == {"anon": 1300000000, "file": 200000000, "active_file": 100000000,
+                              "inactive_file": 100000000, "shmem": 4096}
+
+
+def test_v1_breakdown_reads_the_total_keys(ms, tmp_path):
+    files = {
+        "memory/memory.limit_in_bytes": f"{GIB}\n",
+        "memory/memory.usage_in_bytes": "900000000\n",
+        "memory/memory.stat": "rss 1\ncache 2\ntotal_rss 700000000\ntotal_cache 200000000\ntotal_active_file 150000000\n"
+                              "total_inactive_file 50000000\n",
+    }
+    root, proc = tree(tmp_path, "4:memory:/docker/x", files)
+    cg = ms.find_cgroup(16 * GIB, root, proc)
+    assert cg.breakdown() == {"anon": 700000000, "file": 200000000, "active_file": 150000000,
+                              "inactive_file": 50000000, "shmem": None}  # a key the kernel does not write
+
+
+def test_process_memory_splits_the_rss_from_proc_status(ms, tmp_path):
+    status = tmp_path / "status"
+    status.write_text("Name:\tpython\nVmRSS:\t  3000 kB\nRssAnon:\t  2000 kB\nRssFile:\t   900 kB\nRssShmem:\t 100 kB\n")
+    assert ms.process_memory(str(status)) == {"rss": 3000 * 1024, "rss_anon": 2000 * 1024, "rss_file": 900 * 1024,
+                                              "rss_shmem": 100 * 1024, "uss": None}
+
+
+def test_process_memory_without_proc_status_runs_for_real(ms, tmp_path):
+    r = ms.process_memory(str(tmp_path / "missing"))  # macOS: psutil's RSS and USS
+    assert r["rss"] > 0 and r["uss"] is not None and 0 < r["uss"] <= r["rss"] and r["rss_anon"] is None
+
+
+class FakeLibc:
+    """glibc's malloc_trim and mallinfo2 as ctypes functions look to Glibc (attributes settable)."""
+
+    def __init__(self, mallinfo2_type, fordblks):
+        self.trims = []
+
+        def malloc_trim(pad):
+            self.trims.append(pad)
+            return 1
+
+        def mallinfo2():
+            return mallinfo2_type(arena=10 * GIB, fordblks=fordblks)
+
+        self.malloc_trim, self.mallinfo2 = malloc_trim, mallinfo2
+
+
+def test_glibc_counts_its_free_blocks_and_trims(ms):
+    lib = FakeLibc(ms.Mallinfo2, fordblks=3 * GIB)
+    g = ms.Glibc(lib)
+    assert g.free_bytes() == 3 * GIB
+    assert g.trim() is True and lib.trims == [0]
+    del lib.mallinfo2  # glibc before 2.33
+    assert ms.Glibc(lib).free_bytes() is None
+
+
+def test_no_glibc_here_or_on_musl(ms, monkeypatch):
+    def cdll(name):
+        raise OSError(f"{name}: cannot open shared object file")
+
+    monkeypatch.setattr(ms.ctypes, "CDLL", cdll)
+    assert ms.glibc() is None
+    monkeypatch.setattr(ms.ctypes, "CDLL", lambda name: types.SimpleNamespace())  # a libc without malloc_trim
+    assert ms.glibc() is None
+
+
+def test_cuda_pinned_host_cache(ms, monkeypatch):
+    fake = FakeCuda()
+    fake.host_memory_stats = lambda: {"allocated_bytes.current": 2 * GIB, "active_bytes.current": GIB}
+    monkeypatch.setattr(ms.torch, "cuda", fake)
+    assert ms.CudaMemory(None).pinned_cache() == 2 * GIB
+    del fake.host_memory_stats
+    assert ms.CudaMemory(None).pinned_cache() is None
+    assert ms.MpsMemory().pinned_cache() is None
