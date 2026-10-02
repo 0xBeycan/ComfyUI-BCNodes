@@ -34,3 +34,33 @@ Both log their progress next to the progress bar: one line at the start (`81 fra
 `images` (`IMAGE`), `original_resized_images` (`IMAGE`, the reference), widget `color_correction_method` (`lab` / `wavelet` / `adain` / `none`) → `images` (`IMAGE`, float16).
 
 *Post-Process SeedVR2 Output* builds five full-size float32 copies of the clip on the way through (the raw range conversion, the flattening reshape, the result buffer and the add / div / clamp chain), which is what runs a 30-second 1080p clip out of RAM. This node does the same operations in the same order — frame count and size cropped to the reference, `x × 2 − 1`, the colour transfer from `comfy/ldm/seedvr/color_fix.py` on the VAE device, `(x + 1) / 2` clamp, alpha taken from the reference, even crop — one frame at a time into a single preallocated float16 output. The colour maths itself stays float32 per frame, exactly as in the native node. `tests/parity_seedvr2_video.py` checks every method against the native node: equal after rounding to float16 (max difference 2.4e-4, a sixteenth of an 8-bit step).
+
+## Compact: `BC_SeedVR2PreprocessCompact`, `BC_SeedVR2PostProcessCompact`
+
+Menu `BCNodes/seedvr2/compact`. The same chain as *SeedVR2 Resize* → *SeedVR2 VAE Encode* → sampler → *SeedVR2 VAE Decode* → *SeedVR2 PostProcess*, in two nodes with no clip between them. ComfyUI keeps every node's outputs until the prompt ends, so today's chain holds Resize's `image` and `reference` and Decode's frames to the end next to the result; the compact pair holds the result only.
+
+### `BC_SeedVR2PreprocessCompact` — SeedVR2 Preprocess (Compact)
+
+`image` (`IMAGE`, the original frames), `vae` (`VAE`, the SeedVR2 VAE), the widgets of *SeedVR2 Resize* (`upscale_factor`, `downscale_factor`, `max_resolution`, `emulate_bf16`) and of *SeedVR2 VAE Encode* (`tile_size`, `overlap`; the two temporal widgets, which this VAE ignores, are left out), with the same names and defaults.
+
+| Output | Type | Value |
+| --- | --- | --- |
+| `latent` | `LATENT` | what *SeedVR2 VAE Encode* gives for *SeedVR2 Resize* `image` — wire to the sampler |
+| `plan` | `SEEDVR2_PLAN` | the resize settings and the output size, a few numbers — wire to *SeedVR2 PostProcess (Compact)* `plan` |
+
+Resize's `image` (the padded float16 clip) exists only inside the node, while it is encoded; the colour reference is not made here.
+
+### `BC_SeedVR2PostProcessCompact` — SeedVR2 PostProcess (Compact)
+
+`samples` (`LATENT`, the sampler's), `vae` (`VAE`), `image` (`IMAGE`, the same original frames), `plan` (`SEEDVR2_PLAN`), widgets `color_correction_method` (`lab` / `wavelet` / `adain` / `none`), `tile_size`, `overlap` → `images` (`IMAGE`, float16).
+
+The decode writes only the frames, rows and columns the output keeps into the output buffer (the 4n+1 frames and the pad to 16 are decoded, never stored), and each frame is colour-corrected in place there. Its reference is rebuilt from `image` four frames at a time with Resize's own code, so it is Resize's `reference`; `none` builds none. A float16 `image` is requantized to `k / 255` first, as in Resize. The node stops with an error when `image` is not the batch the plan was made from.
+
+### Same output, less RAM
+
+The pair gives the frames today's chain gives, bit for bit (`tests/layers/pipelines/test_pipe_seedvr2_compact.py`: every colour-correction method, downscale 0.5 / 0.75 / 1, upscale 1.5 / 2, padded frame counts and sizes, one tile and tiled; at 720p → 1080p with ComfyUI's own colour transfers as well).
+
+What the output cache holds at the end, per frame of 720p → 1080p (`upscale_factor` 1.5, original frames float32 as *Load Video* gives them): today 11.1 MB of original + 12.5 (Resize `image`) + 12.4 (`reference`) + 12.5 (Decode) + 12.4 (PostProcess) + 1.0 (the encoded and the sampled latent) = 62 MB; compact 11.1 + 12.4 + 1.0 = 24.5 MB. For 902 frames that is 56 GB against 22 GB. The peak inside Preprocess (Compact) is the original, the padded clip and the latent: 24.4 MB per frame.
+
+With `downscale_factor` below 1 the lanczos downscale runs twice per frame (once in each node; today Resize runs it once for both of its outputs), about 20 ms per 720p frame of CPU work. PostProcess (Compact) builds each four-frame reference chunk on a worker thread while the frames before it are decoded or colour-corrected, so that pass costs no measurable wall time: at 720p → 1080p on the CPU (stand-in VAE, ComfyUI's colour transfers) the compact chain measured within 2% of today's time or faster with `lab`, `wavelet` and `adain`, and 11–19% faster with `none`, which builds no reference.
+

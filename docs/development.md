@@ -17,7 +17,8 @@ ComfyUI-BCNodes/
     image_comparer.py      BC_ImageComparer
     power_lora_loader.py   BC_PowerLoraLoader
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
-    seedvr2.py             BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess
+    seedvr2.py             BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess,
+                           BC_SeedVR2PreprocessCompact, BC_SeedVR2PostProcessCompact
     common.py              wildcard type + flexible optional inputs + slot order + the device widget + unused outputs
     birefnet.py            BC_BiRefNetRemoveBackground
     depth_anything.py      BC_DepthAnythingV2
@@ -49,6 +50,7 @@ ComfyUI-BCNodes/
       encode.py            streaming tiled VAE encode
       decode.py            streaming tiled VAE decode
       postprocess.py       per-frame colour correction
+      compact.py           the compact pair: Resize + Encode, Decode + PostProcess, the SEEDVR2_PLAN between them
       progress.py          progress bar + timed log lines of the slice loops
     process_monitor/       the Process Monitor
       monitor.py           sampler thread, runs, per-node records, threshold snapshot
