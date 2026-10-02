@@ -3,8 +3,8 @@ fill their dropdowns, the pack's luts/ folder, the look builders, the apply flow
 sheet and the IMAGE / MASK <-> postfx numpy bridge. `postfx` (and cv2, which it brings) is
 imported inside the functions that use it.
 
-postfx works on float32 numpy frames: each frame is read as float32 (a half-precision one with a plain
-.float(), libs/image.py) when its turn comes, and each result is clipped into one preallocated
+postfx works on float32 numpy frames: each frame is read as float32 (a half-precision one through
+libs/image.float_frame) when its turn comes, and each result is clipped into one preallocated
 output, in the input's dtype when that is half precision, float32 otherwise.
 """
 
@@ -16,7 +16,7 @@ import uuid
 import numpy as np
 import torch
 
-from ..libs.image import output_dtype
+from ..libs.image import float_frame, output_dtype
 
 # Users drop their own .cube files here (listed by PostFx LUT). Kept out of
 # git by .gitignore; see luts/README.md.
@@ -84,9 +84,9 @@ def _base_look(look):
 # --- Tensor <-> numpy bridge ----------------------------------------------
 
 def np_frame(image, i):
-    """Frame i of an IMAGE as a float32 contiguous numpy array: a float32 frame's own memory, any other
-    converted."""
-    return np.ascontiguousarray(image[i].detach().cpu().float().numpy())
+    """Frame i of an IMAGE as a float32 contiguous numpy array: a float32 frame's own memory, a half one
+    read through float_frame, any other converted."""
+    return np.ascontiguousarray(float_frame(image[i].detach().cpu()).numpy(), dtype=np.float32)
 
 
 def clipped_into(out, i, frame):
@@ -109,7 +109,7 @@ def mask_frames(mask, count, hw):
         m = m[None]
     h, w = hw
     for i in range(count):
-        mm = m[min(i, m.shape[0] - 1)].float().numpy()
+        mm = float_frame(m[min(i, m.shape[0] - 1)]).numpy().astype(np.float32, copy=False)
         if mm.shape != (h, w):
             mm = cv2.resize(mm, (w, h), interpolation=cv2.INTER_LINEAR)
         yield np.clip(mm, 0.0, 1.0)

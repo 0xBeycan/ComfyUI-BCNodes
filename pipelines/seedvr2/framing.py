@@ -7,12 +7,16 @@ medium, far), each with its factor; no face gives a factor of its own. One facto
 batch, because Resize takes one.
 
 The faces are detected a few frames at a time (core's SAM3_Detect scales its whole input to
-1008x1008 first, in the dtype it gets: a half-precision chunk is read as float32 first) and without the
+1008x1008 first, in the dtype it gets: a half-precision chunk is read as float32 first, a frame at a time
+through libs/image.float_frame) and without the
 mask refinement (only the boxes are read); the prompt is encoded once.
 """
 
 import logging
 
+import torch
+
+from ...libs.image import float_frame, is_half
 from ...models.sam3.detect import detect, text_condition
 from ...models.sam3.loader import load
 from . import FRAMES_PER_CHUNK, require_image_batch
@@ -28,7 +32,12 @@ def tallest_face(image, sam3_model, threshold):
     height = image.shape[1]
     tallest = 0.0
     for start in range(0, image.shape[0], FRAMES_PER_CHUNK):
-        chunk = image[start:start + FRAMES_PER_CHUNK].float()  # no float16 arithmetic on the CPU in core's scaling
+        chunk = image[start:start + FRAMES_PER_CHUNK]
+        if is_half(chunk):  # no float16 arithmetic on the CPU in core's scaling
+            read = torch.empty(chunk.shape, dtype=torch.float32)
+            for j in range(chunk.shape[0]):
+                float_frame(chunk[j], out=read[j])
+            chunk = read
         _, boxes = detect(model, cond, chunk, threshold, refine_iterations=0)
         for frame in boxes:
             for box in frame:

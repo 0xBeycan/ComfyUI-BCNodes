@@ -18,7 +18,7 @@ folder_paths, comfy.*) is imported on the first run.
 import torch
 
 from ..libs.filters import gauss_reflect
-from ..libs.image import output_dtype
+from ..libs.image import float_frame, output_dtype
 from ..libs.mask import fit_mask_frame
 from ..libs.texture import apply_texture, pore_noise
 from ..models.sam3.detect import detect, text_condition
@@ -45,7 +45,7 @@ def face_gate(face_mask, height):
 
 def run(image, sam3_model, texture, detail, pore_scale, feather, seed, threshold, mask, exclude_mask, want_image=True):
     """(image textured inside the skin mask, the skin mask), one frame at a time into outputs of the
-    image's dtype when that is half precision (each frame read with a plain .float()), float32 otherwise.
+    image's dtype when that is half precision (each frame read through libs/image.float_frame), float32 otherwise.
     `want_image` False: neither the face gate nor the texture is worked out, the image is [0, H, W, 3]
     (the mask does not read them)."""
     b, h, w, _ = image.shape
@@ -55,13 +55,13 @@ def run(image, sam3_model, texture, detail, pore_scale, feather, seed, threshold
         skin_cond, drop_cond = text_condition(clip, SKIN_PROMPT), text_condition(clip, EXCLUDE_PROMPT)
         if want_image:  # the face only gates the texture: one gate for the batch, before any frame is textured
             face_cond = text_condition(clip, FACE_PROMPT)
-            gate = min(face_gate(detect(model, face_cond, image[i:i + 1].float(), threshold)[0][0], h) for i in range(b))
+            gate = min(face_gate(detect(model, face_cond, float_frame(image[i:i + 1]), threshold)[0][0], h) for i in range(b))
 
     skin_out = torch.empty((b, h, w), dtype=output_dtype(image))
     out = torch.empty((b if want_image else 0, h, w, 3), dtype=output_dtype(image))
     noise = pore_noise(b, h, w, seed) if want_image and texture > 0 else None
     for i in range(b):
-        frame = image[i:i + 1].float() if mask is None or want_image else None
+        frame = float_frame(image[i:i + 1]) if mask is None or want_image else None
         if mask is None:
             skin = (detect(model, skin_cond, frame, threshold)[0] - detect(model, drop_cond, frame, threshold)[0]).clamp(0, 1)
         else:

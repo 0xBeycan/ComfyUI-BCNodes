@@ -5,23 +5,19 @@ inside the functions; draw_mask_on_image paints a colour through a mask onto an 
 blockify turns each mask into the blocks of its bounding box that hold any of it;
 offset_matte and refine_foreground work on a (B, 1, H, W) matte; fit_mask_frame fits one frame of
 a MASK to an image. Frame loops write into one preallocated output, in a half-precision input's
-dtype (each frame read with a plain .float(), libs/image.py) or float32.
+dtype (each frame read through libs/image.float_frame) or float32.
 """
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .image import is_half, output_dtype, tensor_to_u8
+from .image import float_frame, is_half, output_dtype, tensor_to_u8
 
 # The 4-neighbourhood: the grow / shrink step and the connectivity of fill_holes' background.
 CROSS = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=np.uint8)
 # 8-bit level -> float32 in 0..1, the same values as `u8.astype(np.float32) / 255.0`.
 U8_TO_FLOAT = np.arange(256, dtype=np.float32) / 255.0
-# 8-bit level k -> what grow_and_blur makes of an inverted float32 k / 255: 255 * (1 - k / 255) truncated,
-# which float32 rounds to 254 - k for 159 of the levels. A half mask's levels are inverted through it, so an
-# 8-bit mask given as half gives what it gives as float32.
-INVERTED_U8 = np.clip(255.0 * (1 - U8_TO_FLOAT), 0, 255).astype(np.uint8)
 
 
 def fill_holes(frames):
@@ -54,10 +50,8 @@ def grow_and_blur(frames, invert_mask, grow, blur):
     direct = out.dtype == torch.float32  # each frame's levels written straight into the output
     levels = None if direct else np.empty(frames.shape[1:], dtype=np.float32)
     for i in range(frames.shape[0]):
-        if invert_mask and is_half(frames):
-            u8 = INVERTED_U8[tensor_to_u8(frames[i])]
-        else:
-            u8 = tensor_to_u8(1 - frames[i] if invert_mask else frames[i])
+        frame = float_frame(frames[i])
+        u8 = tensor_to_u8(1 - frame if invert_mask else frame, stored=frames.dtype)
         if grow:
             u8 = morph(u8, CROSS, iterations=abs(grow))
         blurred = np.asarray(Image.fromarray(u8).filter(ImageFilter.GaussianBlur(blur)))
@@ -95,8 +89,8 @@ def draw_mask_on_image(image, mask, color, device):
     """Each frame blended towards `color` by mask x alpha: rgb * (1 - m) + color * m; an RGBA
     frame keeps the larger of its alpha and m. `image` (B, H, W, 3 or 4), `mask` (M, h, w): a
     mask of another size is scaled to the image (nearest-exact), fewer masks than frames repeat.
-    Runs on `device` in float32 (or wider; a half frame takes part in float32 ops as it is, a half
-    mask is read with .float()); returns on the CPU, in the image's dtype when that is half precision."""
+    Runs on `device` in float32 (or wider; a half frame or mask read through float_frame); returns on the
+    CPU, in the image's dtype when that is half precision."""
     channels_rgb, alpha = parse_draw_color(color)
     batch, height, width, channels = image.shape
     if channels not in (3, 4):
@@ -107,11 +101,11 @@ def draw_mask_on_image(image, mask, color, device):
     out = torch.empty((batch, height, width, channels), dtype=image.dtype if is_half(image) else dtype)
     direct = device.type == "cpu" and out.dtype == dtype  # each frame blended straight into the output
     for i in range(batch):
-        m = mask[i % mask.shape[0]].to(device).float()
+        m = float_frame(mask[i % mask.shape[0]].to(device))
         if scale:
             m = F.interpolate(m[None, None], size=(height, width), mode="nearest-exact")[0, 0]
         blend = m.unsqueeze(-1) * alpha
-        frame = image[i].to(device)
+        frame = float_frame(image[i].to(device))
         dst = out[i] if direct else torch.empty(out.shape[1:], dtype=dtype, device=device)
         rgb = dst[..., :3] if channels == 4 else dst
         torch.mul(frame[..., :3] if channels == 4 else frame, 1 - blend, out=rgb)
@@ -180,7 +174,7 @@ def fit_mask_frame(x, i, h, w, b):
     m = x.reshape(-1, x.shape[-2], x.shape[-1])
     if 1 < m.shape[0] < b:
         raise ValueError(f"the mask has {m.shape[0]} frames for {b} images: connect one mask, or one per image")
-    m = m[min(i, m.shape[0] - 1)].float()
+    m = float_frame(m[min(i, m.shape[0] - 1)]).float()
     if m.shape != (h, w):
         m = F.interpolate(m[None, None], size=(h, w), mode="bilinear", align_corners=False)[0, 0]
     return m

@@ -6,8 +6,8 @@ grow / shrink, invert, an edge refinement of the foreground colours, and a
 solid background colour instead of alpha. All of it is plain torch on one
 (1, 1, H, W) matte at a time: each frame's matte, options and composite are
 made and written into the preallocated outputs before the next frame's, in the
-image's dtype when that is half precision (each frame read with a plain
-.float(), libs/image.py), float32 otherwise.
+image's dtype when that is half precision (each frame read through
+libs/image.float_frame), float32 otherwise.
 """
 
 import torch
@@ -15,7 +15,7 @@ import torch
 from ..libs import mask as mask_ops
 from ..libs.color import parse_hex_color
 from ..libs.filters import gauss_replicate
-from ..libs.image import output_dtype
+from ..libs.image import float_frame, output_dtype
 from ..models.birefnet.inference import matte
 
 
@@ -51,7 +51,7 @@ def finish(rgb, mattes, sensitivity=1.0, mask_blur=0, mask_offset=0, invert_outp
             mask_image[i] = m[0, 0, :, :, None]  # the matte on all three channels
         if not want_image:
             continue
-        color = rgb[i:i + 1].float()
+        color = float_frame(rgb[i:i + 1]).float()
         if refine_foreground:
             color = mask_ops.refine_foreground(color, m)
         alpha = m.permute(0, 2, 3, 1)  # (1, H, W, 1)

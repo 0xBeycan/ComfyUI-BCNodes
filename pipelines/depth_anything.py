@@ -9,13 +9,13 @@ Output size:
 The model's inverse depth is resampled once, straight to that size (the covering size when
 cropped), normalised per frame over the whole frame (min-max, nearest = 1, a flat frame 0), then
 cropped and written on all three channels into one preallocated output: in the input's dtype when
-that is half precision (each frame read with a plain .float(), libs/image.py), float32 otherwise.
+that is half precision (each frame read through libs/image.float_frame), float32 otherwise.
 """
 
 import torch
 
 from ..libs.geometry import short_side_size
-from ..libs.image import output_dtype
+from ..libs.image import float_frame, output_dtype
 from ..models.common import registry
 from ..models.common.registry import DEPTH
 
@@ -49,6 +49,6 @@ def estimate(rgb, model, resolution, size=None):
     predict = registry.get(DEPTH, model)()
     out = torch.empty((b, height, width, 3), dtype=output_dtype(rgb))
     for i in range(b):
-        depth = _normalize(predict(rgb[i].float(), resolution, (ch, cw)))
+        depth = _normalize(predict(float_frame(rgb[i]), resolution, (ch, cw)))
         out[i].copy_(depth[top:top + height, left:left + width].cpu().unsqueeze(-1))
     return out

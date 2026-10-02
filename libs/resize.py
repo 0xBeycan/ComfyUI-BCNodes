@@ -17,8 +17,8 @@ right / bottom padding up to the next multiple.
 Resampling: nearest-exact, bilinear, area and bicubic through torch; lanczos through PIL on
 8-bit frames, as ComfyUI's lanczos does; nvidia_rtx_vsr through NVIDIA RTX Video Super
 Resolution (the nvidia-vfx package, CUDA only), whose output is the size rounded to a multiple
-of 8. A half-precision frame (float16 / bfloat16) is resampled and padded in float32 (read with a
-plain .float(), its 8-bit conversion with libs/image's half margin) and stored in its own dtype.
+of 8. A half-precision frame (float16 / bfloat16) is read through libs/image.float_frame, resampled and
+padded in float32 and stored in its own dtype.
 
 Mask: resized with the image (bilinear to the image's size first when it differs), padded with
 its own edge values, or with 1 around the frame for pillarbox_blur. Without a mask, a padded
@@ -36,7 +36,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from .image import is_half, pil_to_tensor_hwc, tensor_to_pil_u8
+from .image import float_frame, is_half, pil_to_tensor_hwc, tensor_to_pil_u8
 
 VSR = "nvidia_rtx_vsr"
 PADDED = ("pad", "pad_edge", "pad_edge_pixel", "pillarbox_blur")
@@ -320,7 +320,7 @@ def resize_image(image, mask, width, height, upscale_method, keep_proportion, pa
         fill = _pad_fill(pad_color, channels, work, device) if p.pad and keep_proportion == "pad" else None
         with _super_resolution(p.size) if upscale_method == VSR and want_image else nullcontext() as sr:
             for i in range(out_image.shape[0]):
-                frame = _crop(image[i:i + 1].to(device), p.crop, True).to(work)
+                frame = float_frame(_crop(image[i:i + 1].to(device), p.crop, True))
                 if frame.shape[1:3] != p.size or upscale_method == VSR:
                     frame = _resample_image(frame, p.size, upscale_method, sr, image.dtype)
                 frame = frame[0]
@@ -347,7 +347,7 @@ def resize_image(image, mask, width, height, upscale_method, keep_proportion, pa
     out_mask = torch.empty((mask.shape[0] if want_mask else 0, out_height, out_width), dtype=mask_dtype)
     for i in range(out_mask.shape[0]):
         frame = mask[i].to(device)
-        frame = frame.float() if is_half(frame) else frame  # a half mask resampled in float32
+        frame = float_frame(frame)  # a half mask resampled in float32
         if not fitted:
             frame = F.interpolate(frame[None, None], size=(src_height, src_width), mode="bilinear")[0, 0]
         frame = _crop(frame, p.crop, False)
