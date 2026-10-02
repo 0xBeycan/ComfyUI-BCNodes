@@ -23,6 +23,8 @@ SEEDVR2_CHUNK = 4  # the frames the SeedVR2 flows handle at a time (pipelines/se
 TIMELINE_W, TIMELINE_BASE, TIMELINE_PANEL = 1200, 128, 190
 MASK_GUARD_WINDOW = 5  # frames of booleans the mask guard keeps (the frame and 2 either side)
 RENDER_CHUNK = 16  # frames the colored masks are cut at a time
+SAM3_SIDE = 1008  # core SAM3_Detect scales its input to 1008 x 1008
+FRAMING_CHUNK = 4  # frames SeedVR2 Framing Downscale hands SAM 3 at a time (pipelines/seedvr2 FRAMES_PER_CHUNK)
 # BCVLoadVideo's model rules: its frame counts are step * n + 1, and with resolution "source" each side
 # is cut down to a multiple of the grid. Its sizes come from its own node definition (bcv_sizes).
 LOAD_VIDEO_MODELS = {"Wan": {"step": 4, "grid": 16}, "SCAIL": {"step": 4, "grid": 32}, "None": {"step": 1, "grid": 1}}
@@ -513,6 +515,15 @@ def _seedvr2_postprocess(c):
     return {0: image(t, h // 2 * 2, w // 2 * 2, F16)}, 0, "one frame at a time into a float16 output"
 
 
+def _seedvr2_framing_downscale(c):
+    img = c.tensor("image")
+    k = min(img["n"], FRAMING_CHUNK)
+    # per group of k frames, in RAM: core's SAM3_Detect scales them to 1008 x 1008 in the image's dtype,
+    # and returns their union masks as a list of float32 frames stacked into one (both held at its return)
+    transient = image_bytes(k, SAM3_SIDE, SAM3_SIDE, img.get("dtype_bytes", F32)) + 2 * mask_bytes(k, img["h"], img["w"])
+    return {}, transient, "two numbers; SAM 3's working set on its device not counted"
+
+
 # -- BCNodes image nodes --------------------------------------------------------------------------
 
 def _birefnet(c):
@@ -554,6 +565,30 @@ def _skin_texture(c):
     img = c.tensor("image")
     return {0: image(img["n"], img["h"], img["w"]), 1: mask(img["n"], img["h"], img["w"])}, None, \
         "SAM 3 detections and the texture's working set not counted"
+
+
+def _frequency_merge(c):
+    base, detail = c.tensor("base"), c.tensor("detail")
+    n, h, w = base["n"], base["h"], base["w"]
+    if (detail["n"], detail["h"], detail["w"]) != (n, h, w):
+        raise NotCounted("base and detail differ in size or image count: the node stops with an error")
+    if c.linked("split_sigma"):
+        raise NotCounted("split_sigma comes from a link: the blur's padding is known at run time only")
+    r = math.ceil(3 * c.widget("split_sigma", 3.0))
+    if r >= min(h, w):
+        raise NotCounted("split_sigma blurs over more than the image holds: the node stops with an error")
+    half = base.get("dtype_bytes", F32) == F16 and detail.get("dtype_bytes", F32) == F16
+    out = {0: image(n, h, w, F16 if half else F32)}
+    if c.widget("device", "cpu") == "gpu":
+        return out, 0, ("one image at a time into a preallocated output; the float32 working buffers on ComfyUI's device "
+                         "not counted")
+    one = image_bytes(1, h, w)
+    # per image in float32 (libs/frequency.py, gauss_reflect): detail's high-pass held while base is
+    # blurred, the blur's row-padded copy, row sum and column-padded copy; an input that is not float32
+    # copied to float32 first
+    work = 2 * one + image_bytes(1, h, w + 2 * r) + image_bytes(1, h + 2 * r, w)
+    work += sum(one for t in (base, detail) if t.get("dtype_bytes", F32) != F32)
+    return out, work, "one image at a time into a preallocated output, float32 working buffers"
 
 
 def _any_switch(c):
@@ -608,8 +643,10 @@ PROFILES = {
     "BC_SeedVR2Resize": _seedvr2_resize, "BC_SeedVR2VAEEncode": _seedvr2_encode, "BC_SeedVR2VAEDecode": _seedvr2_decode,
     "BC_SeedVR2PostProcess": _seedvr2_postprocess, "BC_SeedVR2PreprocessCompact": _seedvr2_preprocess_compact,
     "BC_SeedVR2PostProcessCompact": _seedvr2_postprocess_compact,
+    "BC_SeedVR2FramingDownscale": _seedvr2_framing_downscale,
     # BCNodes image nodes and switches
     "BC_BiRefNetRemoveBackground": _birefnet, "BC_DepthAnythingV2": _depth_anything, "BC_PostFxApply": _postfx_apply,
     "BC_SkinTexture": _skin_texture, "BC_AnySwitch": _any_switch, "BC_SelectSwitch": _select_switch,
     "BC_JoinImageLists": _join_lists,
+    "BC_FrequencyMerge": _frequency_merge,
 }
