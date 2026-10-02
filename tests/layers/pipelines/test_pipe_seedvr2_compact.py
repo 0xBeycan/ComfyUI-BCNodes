@@ -6,6 +6,8 @@
     padded to /16 (rows and columns cut again at the end), one-tile and tiled encode and decode;
   - an 8-bit clip given as float16 gives the frames the same clip gives as float32, through both
     chains (a float16 IMAGE is requantized to k/255 before the resize);
+  - the pair runs inside torch.inference_mode(), as ComfyUI runs nodes, though PostProcess (Compact)'s
+    worker thread is outside it, and gives what it gives outside;
   - VAE Decode's `keep` stores exactly the frames, rows and columns of the full decode it keeps;
   - Preprocess (Compact) returns the latent and a few numbers, and nothing else stays allocated
     once it returns; while it runs it holds the padded clip once (no reference next to it);
@@ -95,6 +97,17 @@ def test_an_8_bit_clip_as_float16_gives_the_float32_frames(m):
         for chain in (old_chain, compact_chain):
             got = chain(m, as16, 1.5, down, 0, 32)
             assert all(torch.equal(got[method], old32[method]) for method in METHODS), (chain.__name__, down)
+
+
+@pytest.mark.parametrize("dtype, down", [(torch.float32, 0.5), (torch.float32, 1.0), (torch.float16, 0.5), (torch.float16, 1.0)])
+def test_the_compact_pair_runs_under_inference_mode(m, dtype, down):
+    # ComfyUI runs every node inside torch.inference_mode(), which is thread-local: PostProcess (Compact)'s
+    # worker thread builds the references outside it, so it must never update the caller's tensors in place
+    with torch.inference_mode():
+        image = _clip(6, 30, 52).to(dtype)
+        got = compact_chain(m, image, 1.5, down, 0, 32)
+    expected = compact_chain(m, _clip(6, 30, 52).to(dtype), 1.5, down, 0, 32)
+    assert all(torch.equal(got[method], expected[method]) for method in METHODS)
 
 
 @pytest.mark.parametrize("tile", [512, 32])
