@@ -72,9 +72,12 @@ class _Net:
 
 
 class _Patcher:
+    """Stands in for core's ModelPatcher: `model` is an nn.Module (core's BaseModel) holding the net."""
+
     def __init__(self, path, net):
         self.path = path
-        self.model = types.SimpleNamespace(diffusion_model=net)
+        self.model = torch.nn.Module()
+        self.model.diffusion_model = net
 
 
 @pytest.fixture
