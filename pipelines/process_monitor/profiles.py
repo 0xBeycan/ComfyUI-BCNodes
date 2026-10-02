@@ -445,17 +445,12 @@ def _seedvr2_resize(c):
     n, h, w = img["n"], img["h"], img["w"]
     resolution = int(round(min(h, w) * c.widget("upscale_factor", 2.0)))
     down = c.widget("downscale_factor", 0.5)
-    if down != 1.0:
-        h_d, w_d = round(h * down), round(w * down)
-        # lanczos per frame through PIL, listed, then torch.stack: the list and the stack together
-        listed = 2 * image_bytes(n, h_d, w_d)
-    else:
-        h_d, w_d, listed = h, w, 0
+    h_d, w_d = (round(h * down), round(w * down)) if down != 1.0 else (h, w)
     rh, rw = _shortest_edge(h_d, w_d, resolution, c.widget("max_resolution", 4096))
     extra = 0 if n == 1 else (4 - n + 1 if n <= 4 else (4 - (n - 1) % 4) % 4)
     padded = image(n + extra, round_up_to_multiple(rh, SEEDVR2_PAD), round_up_to_multiple(rw, SEEDVR2_PAD), F16)
     reference = image(n, rh // 2 * 2, rw // 2 * 2, F16)
-    return {0: padded, 1: reference}, listed, "float16 outputs; the downscale's frame list + stack"
+    return {0: padded, 1: reference}, 0, "float16 outputs; downscaled and resized four frames at a time"
 
 
 def _seedvr2_encode(c):
@@ -465,9 +460,9 @@ def _seedvr2_encode(c):
     elements = SEEDVR2_LATENT_CHANNELS * lt * lh * lw
     tile = int(c.widget("tile_size", 1024))
     single = h <= tile and w <= tile
-    # one tile: the slices listed and concatenated in the VAE dtype (2 bytes); tiles: a float32 sum
-    # and its cast to the VAE dtype
-    transient = elements * (4 if single else 6)
+    # the latent slices go straight into the float32 output; tiles: the output is the float32 sum,
+    # rounded through the VAE dtype (2 bytes) in place
+    transient = 0 if single else elements * 2
     latent = {"type": "LATENT", "shape": [1, SEEDVR2_LATENT_CHANNELS, lt, lh, lw], "lt": lt, "lh": lh, "lw": lw,
               "bytes": elements * F32}
     return {0: latent}, transient, "the encoder's working set (device) not counted"
@@ -478,11 +473,8 @@ def _seedvr2_decode(c):
     if "lt" not in latent:
         raise NotCounted("samples is not a SeedVR2 latent estimate")
     frames, h, w = max(1, latent["lt"] * 4 - 3), latent["lh"] * 8, latent["lw"] * 8
-    tile_latent = max(1, int(c.widget("tile_size", 1024)) // 8)
-    tiled = latent["lh"] > tile_latent or latent["lw"] > tile_latent
     out = image(frames, h // 2 * 2, w // 2 * 2, F16)
-    # tiles are summed into a float16 buffer of the whole decoded clip before the output
-    return {0: out}, image_bytes(frames, h, w, F16) if tiled else 0, "decoded frames streamed into a float16 output"
+    return {0: out}, 0, "decoded frames streamed into a float16 output, tiles summed in it"
 
 
 def _seedvr2_postprocess(c):

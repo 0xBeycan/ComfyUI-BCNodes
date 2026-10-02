@@ -19,8 +19,9 @@ Step 3 runs twice: on the VAE device in bfloat16 for the frame that gets
 encoded, and on the CPU in float32 for the colour-correction reference, which
 is then cropped to the even output size. `image` is the first (padded),
 `reference` the second, with the original frame count — the post-process node drops the
-repeated frames against it. Frames are processed a few at a time so a long
-video batch never has to fit on the GPU at once. Both outputs are stored as
+repeated frames against it. Steps 1 to 3 run a few frames at a time, so a long
+video batch never has to fit on the GPU at once and the downscaled clip never
+exists whole: only the two outputs are clip-sized. Both outputs are stored as
 float16: VAE Encode casts `image` to the VAE's float16 anyway (comfy/sd.py
 process_input), and `reference` only feeds the colour transfer, where a
 float16 rounding of the reference moves the result by ~0.1/255. PIL is
@@ -43,16 +44,23 @@ def _torch_device():
 
 
 def lanczos_scale_by(image_bhwc, factor):
-    """ImageScaleBy(lanczos, factor): comfy.utils.lanczos on 8-bit PIL frames."""
+    """ImageScaleBy(lanczos, factor): comfy.utils.lanczos on 8-bit PIL frames, each written into one
+    batch of the input's dtype and device."""
     from PIL import Image
 
     height, width = image_bhwc.shape[1], image_bhwc.shape[2]
     size = (round(width * factor), round(height * factor))
-    frames = []
-    for frame in image_bhwc:
-        pil = tensor_to_pil_u8(frame)
-        frames.append(pil_to_tensor_hwc(pil.resize(size, resample=Image.Resampling.LANCZOS)))
-    return torch.stack(frames).to(image_bhwc.device, image_bhwc.dtype)
+    out = torch.empty((image_bhwc.shape[0], size[1], size[0], image_bhwc.shape[3]), dtype=image_bhwc.dtype, device=image_bhwc.device)
+    for i, frame in enumerate(image_bhwc):
+        out[i] = pil_to_tensor_hwc(tensor_to_pil_u8(frame).resize(size, resample=Image.Resampling.LANCZOS))
+    return out
+
+
+def _downscaled(frames, downscale_factor):
+    """Step 1 on (B, H, W, C) frames, as (B, C, H, W)."""
+    if downscale_factor != 1.0:
+        frames = lanczos_scale_by(frames, downscale_factor)
+    return frames.permute(0, 3, 1, 2)
 
 
 def _encoded(chunk, device, dtype, resolution, max_resolution):
@@ -76,9 +84,6 @@ def resize(image, upscale_factor, downscale_factor, max_resolution, emulate_bf16
     require_image_batch(image, "BC_SeedVR2Resize: connect an image batch (B, H, W, C)")
     image = image[..., :3]
     resolution = int(round(min(image.shape[1], image.shape[2]) * upscale_factor))
-    if downscale_factor != 1.0:
-        image = lanczos_scale_by(image, downscale_factor)
-    frames = image.permute(0, 3, 1, 2)
 
     device = torch.device("cpu")
     vae_dtype = torch.float32
@@ -90,13 +95,14 @@ def resize(image, upscale_factor, downscale_factor, max_resolution, emulate_bf16
             logging.warning("BC_SeedVR2Resize: emulate_bf16 needs CUDA (device is %s), resizing in float32", device)
             device = torch.device("cpu")
 
-    t = frames.shape[0]
+    t = image.shape[0]
     extra = frames_to_4n1(t)
     # an output not wanted is its step on no frame, on the CPU: the empty batch of its size
-    out_image = None if want_image else _encoded(frames[:0], torch.device("cpu"), torch.float32, resolution, max_resolution)
-    out_reference = None if want_reference else _reference(frames[:0], resolution, max_resolution)
+    empty = _downscaled(image[:0], downscale_factor)
+    out_image = None if want_image else _encoded(empty, torch.device("cpu"), torch.float32, resolution, max_resolution)
+    out_reference = None if want_reference else _reference(empty, resolution, max_resolution)
     for start in range(0, t, FRAMES_PER_CHUNK):
-        chunk = frames[start:start + FRAMES_PER_CHUNK]
+        chunk = _downscaled(image[start:start + FRAMES_PER_CHUNK], downscale_factor)
         if want_image:
             resized = _encoded(chunk, device, vae_dtype, resolution, max_resolution)
             if out_image is None:

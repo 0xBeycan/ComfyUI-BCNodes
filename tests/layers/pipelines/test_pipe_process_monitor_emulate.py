@@ -380,12 +380,14 @@ def test_seedvr2_chain(em):
     assert rows["2"]["output_bytes"] == 81 * 1920 * (1088 + 1080) * 3 * 2 and rows["2"]["transient"] == 0
     elements = 16 * 21 * 240 * 136
     assert rows["3"]["outputs"][0]["shape"] == [1, 16, 21, 240, 136] and rows["3"]["output_bytes"] == elements * 4
-    assert rows["3"]["transient"] == elements * 6  # 1920 > tile 1024: the float32 tile sum and its cast
-    assert rows["4"]["outputs"][0]["shape"] == [81, 1920, 1088, 3] and rows["4"]["transient"] == 81 * 1920 * 1088 * 3 * 2
+    assert rows["3"]["transient"] == elements * 2  # 1920 > tile 1024: the tile sum is the output, rounded through float16
+    assert rows["4"]["outputs"][0]["shape"] == [81, 1920, 1088, 3] and rows["4"]["transient"] == 0  # tiles summed in the output
     assert rows["5"]["outputs"][0]["shape"] == [81, 1920, 1080, 3] and rows["5"]["output_bytes"] == 81 * 1920 * 1080 * 3 * 2
-    p["2"]["inputs"]["downscale_factor"] = 0.5  # resolution comes from the original: the same size, plus the listed downscale
+    p["2"]["inputs"]["downscale_factor"] = 0.5  # resolution comes from the original: the same size, downscaled four frames at a time
     resize = rows_of(em, p)["2"]
-    assert resize["outputs"][0]["shape"] == [81, 1920, 1088, 3] and resize["transient"] == 2 * 81 * 640 * 360 * 3 * 4
+    assert resize["outputs"][0]["shape"] == [81, 1920, 1088, 3] and resize["transient"] == 0
+    p["3"]["inputs"]["tile_size"] = 2048  # one tile: the latent slices go straight into the output
+    assert rows_of(em, p)["3"]["transient"] == 0
 
 
 def test_bcnodes_image_nodes_and_switches(em):

@@ -7,7 +7,10 @@ same causal memory cache and the same `x * 2 - 1`, but builds each input
 slice on the GPU only when its turn comes. The posterior mode, the crop to
 the latent size and the `* scaling_factor` follow the native path. A frame
 that fits in one tile is encoded whole; a larger one is split into the
-spatial tiles of tiled_vae and blended (models/seedvr2/tiling.py).
+spatial tiles of tiled_vae and blended (models/seedvr2/tiling.py). Either
+way every latent slice goes straight into the float32 latent the node
+returns; the blend's round trip through the VAE dtype and the scaling run
+on it in place.
 """
 
 import torch
@@ -69,16 +72,29 @@ def encode(pixels, vae, tile_size, overlap):
 
     with mm.cuda_device_context(device):
         model.device = device  # vae.py _encode_with_raw_latent
+        result = None
         if single_tile:
-            parts = []
+            # tiled_vae's one tile: the mode cropped to the target size. Each latent slice goes straight
+            # into one float32 latent, the dtype the last line casts to (the upcast is exact).
+            offsets = []
+
+            def sink(i, h):
+                nonlocal result
+                t0 = sum(offsets)
+                mean = torch.chunk(h, 2, dim=1)[0][:, :, : max(0, target_t - t0), :target_h, :target_w]
+                if result is None:
+                    result = torch.empty(tuple(mean.shape[:2]) + (target_t,) + tuple(mean.shape[3:]), dtype=torch.float32)
+                result[:, :, t0:t0 + mean.shape[2]] = mean.to("cpu", torch.float32)
+                offsets.append(mean.shape[2])
+
             progress = Progress("SeedVR2 VAE Encode", 1, len(slices), n, device)
             progress.begin_tile()
-            encode_tile(0, height, 0, width, lambda i, h: parts.append(torch.chunk(h, 2, dim=1)[0].to("cpu")), progress)
-            z = torch.cat(parts, dim=2)
+            encode_tile(0, height, 0, width, sink, progress)
+            z = result[:, :, :sum(offsets)]
         else:
             ranges, ramp = tile_plan(height, width, tile_size, overlap, device)
             edge_h = edge_w = overlap // 8  # tiled_vae encode: fades `overlap // 8` latent cells wide
-            result = count = None
+            count = None
             progress = Progress("SeedVR2 VAE Encode", len(ranges), len(slices), n, device)
             for y0, y1, x0, x1 in ranges:
                 progress.begin_tile()
@@ -104,6 +120,7 @@ def encode(pixels, vae, tile_size, overlap):
                     offsets.append(tile.shape[2])
 
                 encode_tile(y0, y1, x0, x1, sink, progress)
-            z = result.div_(count.clamp(min=1e-6)).to(vae.vae_dtype)  # tiled_vae: normalised, returned in the input dtype
-    z = z[:, :, :target_t, :target_h, :target_w].to(torch.float32).contiguous() * BYTEDANCE_VAE_SCALING_FACTOR  # crop, VAE output dtype, comfy_format_encoded
+            z = result.div_(count.clamp(min=1e-6))
+            z.copy_(z.to(vae.vae_dtype))  # tiled_vae: normalised, returned in the input dtype (rounded through it in place)
+    z = z[:, :, :target_t, :target_h, :target_w].to(torch.float32).contiguous().mul_(BYTEDANCE_VAE_SCALING_FACTOR)  # crop, VAE output dtype, comfy_format_encoded
     return ({"samples": z},)
