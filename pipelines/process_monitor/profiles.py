@@ -258,7 +258,10 @@ def _resize_listed_then_cat(c):
 
 
 def _resize_preallocated(c):
-    return _resized(c, keep_dtype=True), 0, "one frame at a time into a preallocated output of the input's dtype"
+    out, img = _resized(c, keep_dtype=True), c.tensor("image")
+    # a half frame is read as float32 and resampled / padded in a float32 frame before its output gets it
+    work = image_bytes(1, img["h"], img["w"]) + image_bytes(1, out[0]["h"], out[0]["w"]) if dtype_of(img) == F16 else 0
+    return out, work, "one frame at a time into a preallocated output of the input's dtype"
 
 
 def _image_scale(c):
@@ -290,7 +293,7 @@ def _scale_by_aspect_ratio(c):
     if multiple != "None":
         w, h = round_up_to_multiple(w, int(multiple)), round_up_to_multiple(h, int(multiple))
     # without an image the image output is None; without a mask the mask is zeros, one per frame, in the
-    # image's dtype; each output in its input's dtype (a half one's frames read as float32 levels)
+    # image's dtype; each output in its input's dtype (fitted through 8-bit PIL)
     out = {1: mask(m["n"] if m else img["n"], h, w, dtype_of(m or img))}
     if img:
         out[0] = image(img["n"], h, w, dtype_of(img))
@@ -310,7 +313,7 @@ def _same_mask(note, transient_factor=0, name="mask"):
 def _frame_mask(name="mask", half_frames=1):
     """A BCNodes mask node: a mask of its input mask's size and dtype (`name`; float32 unless half),
     frame by frame into a preallocated output; a half mask's node holds `half_frames` float32 frames
-    (its frame read as float32 levels, and what the node makes of it before the output gets it)."""
+    (its frame read as float32, and what the node makes of it before the output gets it)."""
     def profile(c):
         m = c.tensor(name)
         frames = half_frames if dtype_of(m) == F16 else 0
@@ -336,9 +339,9 @@ def _draw_mask_cloned(c):
 def _draw_mask_preallocated(c):
     img, m = c.tensor("image"), c.tensor("mask")
     channels = img["shape"][-1]
-    # in the image's dtype; per frame in float32: a half image's frame read as float32 levels and blended
-    # into a float32 frame copied into the output, a half mask's frame read as float32 levels
-    work = 2 * image_bytes(1, img["h"], img["w"], channels=channels) if dtype_of(img) == F16 else 0
+    # in the image's dtype; per frame in float32: a half image's frame blended into a float32 frame copied
+    # into the output, a half mask's frame read as float32
+    work = image_bytes(1, img["h"], img["w"], channels=channels) if dtype_of(img) == F16 else 0
     work += mask_bytes(1, m["h"], m["w"]) if dtype_of(m) == F16 else 0
     return ({0: image(img["n"], img["h"], img["w"], dtype_of(img), channels=channels)}, work,
             "one frame at a time into a preallocated output of the image's dtype")
@@ -721,7 +724,7 @@ def _seedvr2_postprocess(c):
 def _seedvr2_framing_downscale(c):
     img = c.tensor("image")
     k = min(img["n"], FRAMING_CHUNK)
-    # per group of k frames, in RAM: a half group read as its float32 levels, which core's SAM3_Detect scales
+    # per group of k frames, in RAM: a half group read as float32, which core's SAM3_Detect scales
     # to 1008 x 1008, and their union masks as a list of float32 frames stacked into one (both held at its return)
     transient = image_bytes(k, SAM3_SIDE, SAM3_SIDE) + 2 * mask_bytes(k, img["h"], img["w"])
     transient += image_bytes(k, img["h"], img["w"]) if dtype_of(img) == F16 else 0
@@ -737,7 +740,7 @@ def _birefnet(c):
     alpha = c.widget("background", "Alpha") == "Alpha"
     one, frame = mask_bytes(1, h, w), image_bytes(1, h, w)
     # one frame at a time in float32: its raw matte, a new one when an option changes it, a half frame read
-    # as float32 levels, the refined colours, the "over" blend's background term, and the blend itself when it
+    # as float32, the refined colours, the "over" blend's background term, and the blend itself when it
     # cannot be made in a float32 output
     options = (c.widget("sensitivity", 1.0) < 1.0 or c.widget("mask_blur", 0) > 0 or c.widget("mask_offset", 0) != 0
                or bool(c.widget("invert_output", False)))
@@ -756,7 +759,7 @@ def _depth_anything(c):
         height, width = short_side_size(img["h"], img["w"], c.widget("resolution", 518))
     else:
         width, height = size
-    # a half frame read as its float32 levels
+    # a half frame read as float32
     return {0: image(img["n"], height, width, dtype_of(img))}, image_bytes(1, img["h"], img["w"]) if dtype_of(img) == F16 else 0, \
         "one frame at a time into a preallocated output of the image's dtype; the network's working set not counted"
 
@@ -766,7 +769,7 @@ def _postfx_apply(c):
     if c.widget("theme") == "none" and not c.linked("look"):
         return {0: shared(img)}, 0, "no look: the input passed on"
     out = image(img["n"], img["h"], img["w"], dtype_of(img))
-    # per frame: the float32 frame (a half one read as its float32 levels) and the processed one, clipped into
+    # per frame: the float32 frame (a half one read as float32) and the processed one, clipped into
     # the output; postfx's own working set not counted
     frames = 1 + (1 if dtype_of(img) == F16 else 0)
     return {0: out}, frames * image_bytes(1, img["h"], img["w"]), \

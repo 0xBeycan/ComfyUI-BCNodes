@@ -131,6 +131,16 @@ def test_the_port_has_no_transient(em):
     assert rows["2"]["transient"] == 0 and rows["2"]["outputs"][0]["shape"] == [609, 1280, 720, 3]
 
 
+def test_image_resize_keeps_a_half_clip_half(em):
+    # Load Video's float16 clip: the output stays float16; each frame is read as float32 and resampled into a
+    # float32 frame before the output gets it
+    p = {"1": loader(), "2": N("BC_ImageResize", image=["1", 0], width=360, height=640, upscale_method="bilinear",
+                                 keep_proportion="stretch", pad_color="0, 0, 0", crop_position="center", divisible_by=0)}
+    rows = rows_of(em, p)
+    assert rows["2"]["outputs"][0]["shape"] == [609, 640, 360, 3] and rows["2"]["output_bytes"] == 609 * 640 * 360 * 3 * 2
+    assert rows["2"]["transient"] == FRAME + 640 * 360 * 3 * 4
+
+
 def test_loader_frame_and_size_widgets(em):
     p = old_chain()
     p["1"]["inputs"].update(force_rate=15, frame_load_cap=100, custom_width=540, custom_height=0)
@@ -601,17 +611,18 @@ def test_a_passed_on_input_is_counted_once(em):
 
 def test_bcnodes_mask_nodes_keep_the_dtype(em):
     # BCNodes' mask nodes give a half mask (SAM 3.1's on Load Video's half clip) a half output, one frame at a
-    # time, each frame read as its float32 levels; Draw Mask On Image's output takes the image's dtype
+    # time, each frame read as float32; Draw Mask On Image's output takes the image's dtype
     p = {"1": loader(), "2": N("BCVSAM3VideoTrack", images=["1", 0]), "3": N("BC_MaskGrow", mask=["2", 0]),
          "4": N("BC_BlockifyMask", masks=["2", 0], block_size=32), "5": N("BC_MaskFillHoles", masks=["2", 0]),
          "6": N("BC_DrawMaskOnImage", image=["1", 0], mask=["2", 0], color="0, 0, 0")}
     rows = rows_of(em, p)
     for node in "345":
         assert rows[node]["outputs"][0]["shape"] == [609, 1280, 720] and rows[node]["output_bytes"] == 609 * MASK // 2, node
-    # Grow: the frame's levels and its blurred levels; Blockify compares the half frame itself; Fill Holes: the levels
+    # Grow: the frame read as float32 and its blurred levels; Blockify compares the half frame itself; Fill Holes: the
+    # frame read as float32
     assert [rows[node]["transient"] for node in "345"] == [2 * MASK, 0, MASK]
     assert rows["6"]["outputs"][0]["shape"] == [609, 1280, 720, 3] and rows["6"]["output_bytes"] == 609 * FRAME // 2
-    assert rows["6"]["transient"] == 2 * FRAME + MASK  # the frame's levels, its float32 blend, the mask's levels
+    assert rows["6"]["transient"] == FRAME + MASK  # the frame's float32 blend, the mask's frame read as float32
     p["1"] = loader(precision="fp32")  # float32 in, float32 out, each frame made in the output
     rows = rows_of(em, p)
     assert [rows[node]["transient"] for node in "3456"] == [0, 0, 0, 0]
