@@ -2,6 +2,10 @@
 fill their dropdowns, the pack's luts/ folder, the look builders, the apply flow, the contact
 sheet and the IMAGE / MASK <-> postfx numpy bridge. `postfx` (and cv2, which it brings) is
 imported inside the functions that use it.
+
+postfx works on float32 numpy frames: each frame is read as float32 (a half-precision one requantized
+to its float32 levels, libs/image.requantized) when its turn comes, and each result is clipped into
+one preallocated output, in the input's dtype when that is half precision, float32 otherwise.
 """
 
 import copy
@@ -10,6 +14,9 @@ import tempfile
 import uuid
 
 import numpy as np
+import torch
+
+from ..libs.image import output_dtype, requantized
 
 # Users drop their own .cube files here (listed by PostFx LUT). Kept out of
 # git by .gitignore; see luts/README.md.
@@ -76,29 +83,33 @@ def _base_look(look):
 
 # --- Tensor <-> numpy bridge ----------------------------------------------
 
-def image_to_np_list(image):
-    arr = image.detach().cpu().numpy()
-    return [np.ascontiguousarray(arr[i], dtype=np.float32) for i in range(arr.shape[0])]
+def np_frame(image, i):
+    """Frame i of an IMAGE as a float32 contiguous numpy array: a float32 frame's own memory, a half
+    one requantized to its float32 levels."""
+    return np.ascontiguousarray(requantized(image[i].detach().cpu()).numpy(), dtype=np.float32)
 
 
-def np_list_to_image(frames):
-    import torch
-    stacked = np.stack([np.clip(f, 0.0, 1.0).astype(np.float32) for f in frames], axis=0)
-    return torch.from_numpy(stacked)
+def clipped_into(out, i, frame):
+    """`frame` (a float32 numpy result) clipped to 0..1 into out[i]: straight into a float32 output,
+    through itself (it is the caller's own result) into any other."""
+    if out.dtype == torch.float32:
+        np.clip(frame, 0.0, 1.0, out=out[i].numpy())
+    else:
+        out[i] = torch.from_numpy(np.clip(frame, 0.0, 1.0, out=frame))
 
 
 def mask_frames(mask, count, hw):
     """MASK (B, H, W) or (H, W) -> `count` float32 (H, W) arrays resized to
     `hw` and clamped, made one at a time as they are read (no copy of the
-    batch). A single mask broadcasts to every frame; a shorter batch reuses its
-    last mask."""
+    batch; a half-precision mask requantized a frame at a time). A single mask
+    broadcasts to every frame; a shorter batch reuses its last mask."""
     import cv2
-    m = mask.detach().cpu().numpy().astype(np.float32, copy=False)
+    m = mask.detach().cpu()
     if m.ndim == 2:
         m = m[None]
     h, w = hw
     for i in range(count):
-        mm = m[i] if i < m.shape[0] else m[-1]
+        mm = requantized(m[min(i, m.shape[0] - 1)]).numpy().astype(np.float32, copy=False)
         if mm.shape != (h, w):
             mm = cv2.resize(mm, (w, h), interpolation=cv2.INTER_LINEAR)
         yield np.clip(mm, 0.0, 1.0)
@@ -113,24 +124,25 @@ def apply_look(image, theme, condition, strength, seed, batch_seed, look, mask):
     look_cfg = look if look is not None else postfx.resolve_theme(theme_stem(theme))
     cond_cfg = postfx.get_condition(condition)
 
-    frames = image_to_np_list(image)
-    h, w = frames[0].shape[:2]
+    count, h, w = image.shape[:3]
     # LoadImage emits an all-zero placeholder mask for images without an
     # alpha channel; blending against it would be a silent no-op.
     if mask is not None and not bool(mask.any()):
         mask = None
-    masks = mask_frames(mask, len(frames), (h, w)) if mask is not None else None
+    masks = mask_frames(mask, count, (h, w)) if mask is not None else None
 
-    out_frames = []
-    for i, src in enumerate(frames):
+    dst = None
+    for i in range(count):
+        src = np_frame(image, i)
         frame_seed = seed + (i if batch_seed == "increment" else 0)
         out = postfx.process(src, look_cfg, cond_cfg, float(strength), int(frame_seed))
         if masks is not None:
             m = next(masks)[..., None]
             out = src * (1.0 - m) + out * m
-        out_frames.append(out)
-
-    return (np_list_to_image(out_frames),)
+        if dst is None:
+            dst = torch.empty((count,) + out.shape, dtype=output_dtype(image))
+        clipped_into(dst, i, out)
+    return (dst,)
 
 
 def custom_look(temp, tint, exposure, contrast, vibrance, saturation,
@@ -183,7 +195,7 @@ def signature_sheet(image, category, condition, strength, columns):
     postfx = postfx_package()
     from postfx.sheet import build_contact_sheet
 
-    src = image_to_np_list(image)[0]  # first frame is the sample
+    src = np_frame(image, 0)  # first frame is the sample
     tmp = os.path.join(tempfile.gettempdir(), f"postfx_sheet_{uuid.uuid4().hex}.jpg")
     try:
         build_contact_sheet(src, tmp, category=category, condition=condition,
@@ -193,4 +205,6 @@ def signature_sheet(image, category, condition, strength, columns):
         if os.path.exists(tmp):
             os.remove(tmp)
 
-    return (np_list_to_image([rgb]),)
+    sheet = torch.empty((1,) + rgb.shape, dtype=output_dtype(image))
+    clipped_into(sheet, 0, np.asarray(rgb, dtype=np.float32))
+    return (sheet,)

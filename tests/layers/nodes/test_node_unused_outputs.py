@@ -374,8 +374,8 @@ def test_birefnet_builds_only_linked_outputs(bcnodes, common, matted, monkeypatc
     refined = spy(monkeypatch, bcnodes["libs.mask"], "refine_foreground")
     out = cls().remove_background(image, "BiRefNet-general", **widgets, **hidden(common, cls, linked))
     check_outputs(cls, out, full, set(cls.HEAVY_OUTPUTS) - set(linked))
-    # the composite's edge refinement covers no frame when IMAGE is not linked
-    assert [len(args[0]) for args in refined] == [3 if "IMAGE" in linked else 0]
+    # the composite's edge refinement, one frame at a time, runs on no frame when IMAGE is not linked
+    assert [len(args[0]) for args in refined] == ([1, 1, 1] if "IMAGE" in linked else [])
 
 
 @pytest.mark.parametrize("linked", [(), ("image",), ("reference",)])
@@ -403,4 +403,4 @@ def test_skin_texture_applies_the_texture_only_when_linked(bcnodes, common, monk
     textured = spy(monkeypatch, flow, "apply_texture")
     out = cls().run(image, **widgets, **hidden(common, cls, linked))
     check_outputs(cls, out, full, set(cls.HEAVY_OUTPUTS) - set(linked))
-    assert len(textured) == ("image" in linked)
+    assert len(textured) == 2 * ("image" in linked)  # one frame at a time

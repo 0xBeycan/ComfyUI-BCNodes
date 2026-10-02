@@ -3,13 +3,16 @@
 fill_holes and grow_and_blur work on 8-bit quantised (B, H, W) masks and import cv2 and PIL
 inside the functions; draw_mask_on_image paints a colour through a mask onto an image;
 blockify turns each mask into the blocks of its bounding box that hold any of it;
-offset_matte and refine_foreground work on a (B, 1, H, W) matte; fit_mask_batch fits a MASK to
-an image batch. Frame loops write into one preallocated output.
+offset_matte and refine_foreground work on a (B, 1, H, W) matte; fit_mask_frame fits one frame of
+a MASK to an image. Frame loops write into one preallocated output, in a half-precision input's
+dtype (its frames read as float32 levels, libs/image.requantized) or float32.
 """
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+from .image import is_half, output_dtype, requantized
 
 # The 4-neighbourhood: the grow / shrink step and the connectivity of fill_holes' background.
 CROSS = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=np.uint8)
@@ -22,39 +25,46 @@ def _to_u8(frame):
 
 
 def fill_holes(frames):
-    """Background regions the border cannot reach (4-connected) become foreground; hard 0/1."""
+    """Background regions the border cannot reach (4-connected) become foreground; hard 0/1.
+    `frames` (B, H, W) on the CPU; the output in its dtype when half, float32 otherwise."""
     import cv2
 
-    out = np.empty(frames.shape, dtype=np.float32)
-    for i, frame in enumerate(frames.numpy()):
+    out = torch.empty(frames.shape, dtype=output_dtype(frames))
+    for i in range(frames.shape[0]):
         # Quantised to 8-bit first, so anything below 1/255 is background.
-        background = (_to_u8(frame) == 0).view(np.uint8)
+        background = (_to_u8(requantized(frames[i]).numpy()) == 0).view(np.uint8)
         count, labels = cv2.connectedComponents(background, connectivity=4)
         outside = np.zeros(count, dtype=bool)
         for edge in (labels[0], labels[-1], labels[:, 0], labels[:, -1]):
             outside[edge] = True
         outside[0] = False  # label 0 is the foreground
-        out[i] = ~outside[labels]
-    return torch.from_numpy(out)
+        out[i] = torch.from_numpy(~outside[labels])
+    return out
 
 
 def grow_and_blur(frames, invert_mask, grow, blur):
     """Invert (optional), quantise to 8-bit, dilate (grow > 0) or erode (grow < 0) |grow| times
-    with CROSS, then PIL Gaussian blur of radius `blur`."""
+    with CROSS, then PIL Gaussian blur of radius `blur`. `frames` (B, H, W) on the CPU; the output
+    (8-bit levels) in its dtype when half, float32 otherwise."""
     import cv2
     from PIL import Image, ImageFilter
 
     morph = cv2.dilate if grow > 0 else cv2.erode
-    out = np.empty(frames.shape, dtype=np.float32)
-    for i, frame in enumerate(frames.numpy()):
+    out = torch.empty(frames.shape, dtype=output_dtype(frames))
+    direct = out.dtype == torch.float32  # each frame's levels written straight into the output
+    levels = None if direct else np.empty(frames.shape[1:], dtype=np.float32)
+    for i in range(frames.shape[0]):
+        frame = requantized(frames[i]).numpy()
         if invert_mask:
             frame = 1 - frame
         u8 = _to_u8(frame)
         if grow:
             u8 = morph(u8, CROSS, iterations=abs(grow))
         blurred = np.asarray(Image.fromarray(u8).filter(ImageFilter.GaussianBlur(blur)))
-        np.take(U8_TO_FLOAT, blurred, out=out[i], mode="clip")
-    return torch.from_numpy(out)
+        np.take(U8_TO_FLOAT, blurred, out=out[i].numpy() if direct else levels, mode="clip")
+        if not direct:
+            out[i] = torch.from_numpy(levels)
+    return out
 
 
 def parse_draw_color(text):
@@ -85,29 +95,30 @@ def draw_mask_on_image(image, mask, color, device):
     """Each frame blended towards `color` by mask x alpha: rgb * (1 - m) + color * m; an RGBA
     frame keeps the larger of its alpha and m. `image` (B, H, W, 3 or 4), `mask` (M, h, w): a
     mask of another size is scaled to the image (nearest-exact), fewer masks than frames repeat.
-    Runs on `device`, returns on the CPU."""
+    Runs on `device` in float32 (or wider), a half frame or mask requantized first; returns on the
+    CPU, in the image's dtype when that is half precision."""
     channels_rgb, alpha = parse_draw_color(color)
     batch, height, width, channels = image.shape
     if channels not in (3, 4):
         raise ValueError(f"Draw Mask On Image: the image has {channels} channels; it needs 3 (RGB) or 4 (RGBA)")
     fill = torch.tensor(channels_rgb, dtype=torch.float32, device=device)
     scale = tuple(mask.shape[-2:]) != (height, width)
-    dtype = torch.promote_types(torch.promote_types(image.dtype, mask.dtype), torch.float32)
-    out = torch.empty((batch, height, width, channels), dtype=dtype)
-    on_cpu = device.type == "cpu"
+    dtype = torch.promote_types(torch.promote_types(image.dtype, mask.dtype), torch.float32)  # float32 for half
+    out = torch.empty((batch, height, width, channels), dtype=image.dtype if is_half(image) else dtype)
+    direct = device.type == "cpu" and out.dtype == dtype  # each frame blended straight into the output
     for i in range(batch):
-        m = mask[i % mask.shape[0]].to(device)
+        m = requantized(mask[i % mask.shape[0]].to(device))
         if scale:
             m = F.interpolate(m[None, None], size=(height, width), mode="nearest-exact")[0, 0]
         blend = m.unsqueeze(-1) * alpha
-        frame = image[i].to(device)
-        dst = out[i] if on_cpu else torch.empty(out.shape[1:], dtype=dtype, device=device)
+        frame = requantized(image[i].to(device))
+        dst = out[i] if direct else torch.empty(out.shape[1:], dtype=dtype, device=device)
         rgb = dst[..., :3] if channels == 4 else dst
         torch.mul(frame[..., :3] if channels == 4 else frame, 1 - blend, out=rgb)
         rgb += fill * blend
         if channels == 4:
             torch.maximum(frame[..., 3:], blend, out=dst[..., 3:])
-        if not on_cpu:
+        if not direct:
             out[i].copy_(dst)
     return out
 
@@ -162,10 +173,14 @@ def refine_foreground(rgb, mask):
     return rgb * refined.permute(0, 2, 3, 1)
 
 
-def fit_mask_batch(x, h, w, b):
-    """Any MASK shape -> float (b, h, w): bilinear resize when the size differs, then the
-    first b masks; fewer than b are expanded, which works for one mask and raises otherwise."""
-    m = x.float().reshape(-1, x.shape[-2], x.shape[-1])
-    if m.shape[-2:] != (h, w):
-        m = F.interpolate(m.unsqueeze(1), size=(h, w), mode="bilinear", align_corners=False).squeeze(1)
-    return m[:b] if m.shape[0] >= b else m.expand(b, -1, -1)
+def fit_mask_frame(x, i, h, w, b):
+    """The mask of frame i of a batch of b images from the MASK `x` (any MASK shape), float32 (h, w):
+    a single mask serves every frame, otherwise frame i of it (fewer than b raise); bilinear resize
+    when the size differs. A half mask is requantized first."""
+    m = x.reshape(-1, x.shape[-2], x.shape[-1])
+    if 1 < m.shape[0] < b:
+        raise ValueError(f"the mask has {m.shape[0]} frames for {b} images: connect one mask, or one per image")
+    m = requantized(m[min(i, m.shape[0] - 1)]).float()
+    if m.shape != (h, w):
+        m = F.interpolate(m[None, None], size=(h, w), mode="bilinear", align_corners=False)[0, 0]
+    return m

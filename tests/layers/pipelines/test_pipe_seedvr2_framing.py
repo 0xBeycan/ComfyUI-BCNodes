@@ -25,15 +25,19 @@ class Detector:
     faces[i], in pixels; records every call."""
 
     def __init__(self, faces):
-        self.faces, self.calls, self.loaded = faces, [], []
+        self.faces, self.calls, self.loaded, self.encoded = faces, [], [], []
         self.seen = 0
 
     def load(self, name):
         self.loaded.append(name)
         return "model", "clip"
 
-    def detect(self, model, clip, image, text, threshold, refine_iterations=2):
-        self.calls.append(dict(model=model, clip=clip, frames=image.shape[0], text=text, threshold=threshold,
+    def text_condition(self, clip, text):
+        self.encoded.append((clip, text))
+        return f"{clip}:{text}"
+
+    def detect(self, model, cond, image, threshold, refine_iterations=2):
+        self.calls.append(dict(model=model, cond=cond, frames=image.shape[0], threshold=threshold,
                                refine_iterations=refine_iterations))
         boxes = [[dict(x=10.0, y=float(y), width=50.0, height=float(h), score=0.9) for y, h in self.faces[self.seen + i]]
                  for i in range(image.shape[0])]
@@ -50,6 +54,7 @@ def run(framing, monkeypatch, faces, height=1000, **widgets):
     det = Detector(faces)
     monkeypatch.setattr(framing, "load", det.load)
     monkeypatch.setattr(framing, "detect", det.detect)
+    monkeypatch.setattr(framing, "text_condition", det.text_condition)
     image = torch.zeros(len(faces), height, 600, 3)
     out = framing.downscale_factor(image, "sam3.safetensors", 0.4, **dict(DEFAULTS, **widgets))
     return out, det
@@ -105,8 +110,9 @@ def test_what_the_detector_is_asked(framing, monkeypatch):
     _, det = run(framing, monkeypatch, [[(0, 100)]] * (2 * chunk + 1))
     assert det.loaded == ["sam3.safetensors"]
     assert [c["frames"] for c in det.calls] == [chunk, chunk, 1]
-    assert all(c == dict(model="model", clip="clip", frames=c["frames"], text="face:4", threshold=0.4, refine_iterations=0)
+    assert all(c == dict(model="model", cond="clip:face:4", frames=c["frames"], threshold=0.4, refine_iterations=0)
                for c in det.calls)
+    assert det.encoded == [("clip", "face:4")]  # the prompt encoded once
 
 
 @pytest.mark.parametrize("medium", [0.25, 0.3])

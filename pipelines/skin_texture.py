@@ -18,9 +18,10 @@ folder_paths, comfy.*) is imported on the first run.
 import torch
 
 from ..libs.filters import gauss_reflect
-from ..libs.mask import fit_mask_batch
-from ..libs.texture import apply_texture
-from ..models.sam3.detect import detect
+from ..libs.image import output_dtype, requantized
+from ..libs.mask import fit_mask_frame
+from ..libs.texture import apply_texture, pore_noise
+from ..models.sam3.detect import detect, text_condition
 from ..models.sam3.loader import load
 
 SKIN_PROMPT = "skin:6"
@@ -43,31 +44,35 @@ def face_gate(face_mask, height):
 
 
 def run(image, sam3_model, texture, detail, pore_scale, feather, seed, threshold, mask, exclude_mask, want_image=True):
-    """(image textured inside the skin mask, the skin mask). `want_image` False: neither the face
-    gate nor the texture is worked out, the image is [0, H, W, 3] (the mask does not read them)."""
+    """(image textured inside the skin mask, the skin mask), one frame at a time into outputs of the
+    image's dtype when that is half precision (its frames read as float32 levels), float32 otherwise.
+    `want_image` False: neither the face gate nor the texture is worked out, the image is [0, H, W, 3]
+    (the mask does not read them)."""
     b, h, w, _ = image.shape
     gate = 1.0
-
-    if mask is not None:
-        skin = fit_mask_batch(mask, h, w, b)
-    else:
+    if mask is None:
         model, clip = load(sam3_model)
-        skin, _ = detect(model, clip, image, SKIN_PROMPT, threshold)
-        drop, _ = detect(model, clip, image, EXCLUDE_PROMPT, threshold)
-        skin = (skin - drop).clamp(0, 1)
-        if want_image:  # the face only gates the texture
-            face, _ = detect(model, clip, image, FACE_PROMPT, threshold)
-            gate = min(face_gate(face[i], h) for i in range(b))
+        skin_cond, drop_cond = text_condition(clip, SKIN_PROMPT), text_condition(clip, EXCLUDE_PROMPT)
+        if want_image:  # the face only gates the texture: one gate for the batch, before any frame is textured
+            face_cond = text_condition(clip, FACE_PROMPT)
+            gate = min(face_gate(detect(model, face_cond, requantized(image[i:i + 1]), threshold)[0][0], h) for i in range(b))
 
-    if exclude_mask is not None:
-        ex = fit_mask_batch(exclude_mask, h, w, b)
-        skin = (skin - ex.to(skin.device)).clamp(0, 1)
-
-    skin = skin.to(image.device)
-    if feather > 0:
-        skin = gauss_reflect(skin.unsqueeze(1), feather * max(h, w) / 1024.0).squeeze(1).clamp(0, 1)
-
-    if not want_image:
-        return (image.new_empty((0, h, w, 3)), skin.cpu())  # apply_texture's [B, H, W, 3] in the image's dtype
-    out = apply_texture(image, skin, texture=texture, detail=detail, pore_scale=pore_scale, seed=seed, gate=gate)
-    return (out, skin.cpu())
+    skin_out = torch.empty((b, h, w), dtype=output_dtype(image))
+    out = torch.empty((b if want_image else 0, h, w, 3), dtype=output_dtype(image))
+    noise = pore_noise(b, h, w, seed) if want_image and texture > 0 else None
+    for i in range(b):
+        frame = requantized(image[i:i + 1]) if mask is None or want_image else None  # float32 levels of a half frame
+        if mask is None:
+            skin = (detect(model, skin_cond, frame, threshold)[0] - detect(model, drop_cond, frame, threshold)[0]).clamp(0, 1)
+        else:
+            skin = fit_mask_frame(mask, i, h, w, b)[None]
+        if exclude_mask is not None:
+            skin = (skin - fit_mask_frame(exclude_mask, i, h, w, b)[None].to(skin.device)).clamp(0, 1)
+        skin = skin.to(image.device)
+        if feather > 0:
+            skin = gauss_reflect(skin.unsqueeze(1), feather * max(h, w) / 1024.0).squeeze(1).clamp(0, 1)
+        skin_out[i] = skin[0]
+        if want_image:
+            out[i] = apply_texture(frame, skin, texture=texture, detail=detail, pore_scale=pore_scale,
+                                   noise=None if noise is None else next(noise), gate=gate)[0]
+    return (out, skin_out)

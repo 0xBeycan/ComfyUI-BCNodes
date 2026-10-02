@@ -8,12 +8,15 @@ Output size:
     it with its aspect kept and is centre-cropped.
 The model's inverse depth is resampled once, straight to that size (the covering size when
 cropped), normalised per frame over the whole frame (min-max, nearest = 1, a flat frame 0), then
-cropped and written on all three channels into one preallocated output.
+cropped and written on all three channels into one preallocated output: in the input's dtype when
+that is half precision (each frame read as its float32 levels, libs/image.requantized), float32
+otherwise.
 """
 
 import torch
 
 from ..libs.geometry import short_side_size
+from ..libs.image import output_dtype, requantized
 from ..models.common import registry
 from ..models.common.registry import DEPTH
 
@@ -35,7 +38,7 @@ def _normalize(depth):
 
 def estimate(rgb, model, resolution, size=None):
     """`rgb` is (B, H, W, 3) in 0..1 on any device; `size` is (height, width) or None. Returns the
-    depth IMAGE (B, height, width, 3) float32 on the CPU."""
+    depth IMAGE (B, height, width, 3) on the CPU, in rgb's dtype when half precision, else float32."""
     b, h, w = rgb.shape[:3]
     if size is None:
         height, width = short_side_size(h, w, resolution)
@@ -45,8 +48,8 @@ def estimate(rgb, model, resolution, size=None):
         ch, cw, top, left = _cover(h, w, height, width)
 
     predict = registry.get(DEPTH, model)()
-    out = torch.empty((b, height, width, 3), dtype=torch.float32)
+    out = torch.empty((b, height, width, 3), dtype=output_dtype(rgb))
     for i in range(b):
-        depth = _normalize(predict(rgb[i], resolution, (ch, cw)))
+        depth = _normalize(predict(requantized(rgb[i]), resolution, (ch, cw)))
         out[i].copy_(depth[top:top + height, left:left + width].cpu().unsqueeze(-1))
     return out

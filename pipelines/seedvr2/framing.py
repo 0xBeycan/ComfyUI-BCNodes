@@ -7,12 +7,14 @@ medium, far), each with its factor; no face gives a factor of its own. One facto
 batch, because Resize takes one.
 
 The faces are detected a few frames at a time (core's SAM3_Detect scales its whole input to
-1008x1008 first) and without the mask refinement (only the boxes are read).
+1008x1008 first; a half-precision chunk is requantized to its float32 levels first) and without the
+mask refinement (only the boxes are read); the prompt is encoded once.
 """
 
 import logging
 
-from ...models.sam3.detect import detect
+from ...libs.image import requantized
+from ...models.sam3.detect import detect, text_condition
 from ...models.sam3.loader import load
 from . import FRAMES_PER_CHUNK, require_image_batch
 
@@ -23,10 +25,12 @@ def tallest_face(image, sam3_model, threshold):
     """The tallest SAM 3 face box over every frame of `image` (B, H, W, C), cut to the frame, as a
     fraction of the frame height; 0.0 when no frame has a face."""
     model, clip = load(sam3_model)
+    cond = text_condition(clip, FACE_PROMPT)
     height = image.shape[1]
     tallest = 0.0
     for start in range(0, image.shape[0], FRAMES_PER_CHUNK):
-        _, boxes = detect(model, clip, image[start:start + FRAMES_PER_CHUNK], FACE_PROMPT, threshold, refine_iterations=0)
+        chunk = requantized(image[start:start + FRAMES_PER_CHUNK])  # a half clip's chunk as its float32 levels
+        _, boxes = detect(model, cond, chunk, threshold, refine_iterations=0)
         for frame in boxes:
             for box in frame:
                 top, bottom = max(0.0, box["y"]), min(float(height), box["y"] + box["height"])

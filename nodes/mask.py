@@ -6,14 +6,16 @@
     BC_BlockifyMask     (Blockify Mask)
     BC_RepeatMaskBatch  (Repeat Mask Batch)
 
-Fill Holes and Grow work on 8-bit quantised masks and return float32 (B, H, W). A missing or
-empty mask returns a blank (1, 64, 64) mask instead of raising (Draw Mask On Image returns the
-image unchanged). The mask operations are in libs/mask.py, which imports cv2 and PIL inside the
-functions that use them.
+Fill Holes and Grow work on 8-bit quantised masks and return (B, H, W). Every output keeps a half-
+precision input's dtype (float16 / bfloat16, read a frame at a time as float32 levels: libs/image.py)
+and is float32 otherwise. A missing or empty mask returns a blank (1, 64, 64) mask instead of raising
+(Draw Mask On Image returns the image unchanged). The mask operations are in libs/mask.py, which
+imports cv2 and PIL inside the functions that use them.
 """
 
 import torch
 
+from ..libs.image import is_half
 from ..libs.mask import blockify, draw_mask_on_image, fill_holes, grow_and_blur
 from .common import DEVICES, compute_device
 
@@ -25,11 +27,13 @@ def _empty_mask():
 
 
 def _frames(mask):
-    """Any of (H, W) / (B, H, W) / (B, 1, H, W) -> float32 (B, H, W) on the CPU,
-    or None when there is nothing to process."""
+    """Any of (H, W) / (B, H, W) / (B, 1, H, W) -> (B, H, W) on the CPU, half precision kept and any
+    other dtype as float32, or None when there is nothing to process."""
     if not isinstance(mask, torch.Tensor) or mask.ndim < 2 or mask.numel() == 0:
         return None
-    mask = mask.detach().cpu().float()
+    mask = mask.detach().cpu()
+    if not is_half(mask):
+        mask = mask.float()
     return mask.reshape(-1, mask.shape[-2], mask.shape[-1])
 
 

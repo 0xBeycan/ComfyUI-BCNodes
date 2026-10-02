@@ -43,12 +43,13 @@ def test_widgets_reach_the_flow_by_name(bcnodes, node, monkeypatch):
         seen["model"] = name
         return None, None
 
-    def detect(model, clip, image, text, threshold, refine_iterations=2):
+    def detect(model, cond, image, threshold, refine_iterations=2):
         seen["threshold"] = threshold
         return None, [[dict(x=0.0, y=0.0, width=10.0, height=30.0, score=0.9)]] * image.shape[0]  # 0.3 of 100 rows
 
     monkeypatch.setattr(framing, "load", load)
     monkeypatch.setattr(framing, "detect", detect)
+    monkeypatch.setattr(framing, "text_condition", lambda clip, text: None)
     widgets = dict(sam3_model="a.safetensors", close_up_min_face=0.35, close_up_factor=0.4, medium_min_face=0.2, medium_factor=0.7,
                    far_factor=0.95, no_face_factor=0.85, detection_threshold=0.3)
     assert node().choose(torch.zeros(1, 100, 80, 3), **widgets) == (0.7, pytest.approx(0.3))
