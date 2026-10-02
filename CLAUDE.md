@@ -44,7 +44,8 @@ pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card
 pipelines/seedvr2/            resize, encode, decode, postprocess, compact flows; framing (Resize's downscale factor
                               from the SAM 3 face size); progress; shared constants
 pipelines/process_monitor/    monitor (sampler thread, runs, per-node records, snapshot), hook (the executor hook),
-                              blackbox (run logs, reports), emulate + profiles (estimate, per-node-type costs), settings
+                              blackbox (run logs, reports), emulate + profiles (estimate, per-node-type costs), settings,
+                              clear (the full clear: its steps, each measured against the startup baseline)
 models/common/                registry.py (families matting and depth; a depth entry is a loader returning
                               `predict`), download.py (fetch_with_progress)
 models/birefnet/              checkpoints (registered under MATTING), weights, loader, inference, arch/ (vendored, MIT)
@@ -64,7 +65,8 @@ libs/resize.py                Image Resize: size plan, crop / resample / pad per
 libs/math_expression.py       whitelisted AST evaluator with injected resolvers
 libs/download.py              HTTP download with resume, host list, token store
 libs/files.py image_write.py  output counters; image formats, metadata, write_image
-libs/memory_sources.py        RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers
+libs/memory_sources.py        RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers; what the RAM is made
+                              of (cgroup anon / file, RssAnon / RssFile), glibc's free blocks and malloc_trim
 libs/tensor_census.py         tensor bytes, each byte counted once by address range, file-backed memory told apart; the live tensor census
 libs/safetensors_info.py      weights from a safetensors header, no load
 ```
@@ -74,13 +76,16 @@ libs/safetensors_info.py      weights from a safetensors header, no load
 Not a node. Its placement follows the layers:
 - `nodes/process_monitor.py` is the ComfyUI surface, like the downloader's routes: the
   `/bcnodes/monitor/*` routes, the `bcnodes.monitor` live event, and the adapters that hand the
-  pipeline ComfyUI's prompt queue (`ServerProbe`), folders and node classes (`ComfyEnv`; the node
-  classes through `execution.nodes`, since an absolute `import nodes` is banned here). It registers
-  only when `PromptServer.instance` exists; `server`, `aiohttp`, `folder_paths`, PIL and PyAV are
-  imported inside functions.
+  pipeline ComfyUI's prompt queue and prompt worker (`ServerProbe`: what runs, ComfyUI's own free
+  asked for and waited for), folders and node classes (`ComfyEnv`; the node classes through
+  `execution.nodes`, since an absolute `import nodes` is banned here). It registers only when
+  `PromptServer.instance` exists; `server`, `aiohttp`, `folder_paths`, PIL and PyAV are imported
+  inside functions. At the server's startup (aiohttp `on_startup`, every custom node loaded) it reads
+  the full clear's baseline, monitor on or off.
 - `pipelines/process_monitor/` holds the flows: the sampler thread and runs (`monitor.py`), the
   hook (`hook.py`), the run logs and reports (`blackbox.py`), the estimate (`emulate.py`) and its
-  per-node-type cost profiles (`profiles.py`). Nothing there imports ComfyUI at module level.
+  per-node-type cost profiles (`profiles.py`), the full clear (`clear.py`). Nothing there imports
+  ComfyUI at module level.
 - `libs/` holds what any flow could use: the RAM / VRAM readers, the tensor census and the
   safetensors header reader.
 
@@ -89,11 +94,16 @@ Rules that keep it cheap and safe:
   (every ComfyUI version); the per-node layers need the hook on `execution.execute`, detected by
   feature (ComfyUI 0.17.0+). The wrapper always awaits the original and returns its result
   untouched; an error in the monitor turns the measurement off with a message.
-- Counters only, never tensor copies: cgroup files, allocator statistics, shape x dtype. The one
-  scan over all objects is the threshold snapshot, once per run, after the stack record is
-  written. That pass is one C-level call with the collector paused (`libs/tensor_census.census`)
-  and must stay one: a Python loop over `gc.get_objects()` breaks other threads' tuple builds.
-  No frame's locals are read from the monitor thread.
+- Counters only, never tensor copies: cgroup files, allocator statistics, shape x dtype. The scans
+  over all objects are the threshold snapshot, once per run, after the stack record is written, and
+  the full clear's report, once per click. That pass is one C-level call with the collector paused
+  (`libs/tensor_census.census`) and must stay one: a Python loop over `gc.get_objects()` breaks other
+  threads' tuple builds. No frame's locals are read from another thread: a thread's stack is read
+  as its code objects (`stack_codes`).
+- The full clear frees each part with the call that owns it, each step measured on its own:
+  ComfyUI's own free (the `/free` flags, run by its prompt worker and waited for), this pack's model
+  slots, `gc.collect`, ComfyUI's cast buffers and torch's allocator caches, glibc's `malloc_trim`.
+  It runs only with the prompt queue empty. Page cache is reported, never dropped.
 - Emulate profiles are derived from the node's code. A part that cannot be derived is
   "not counted" with a note, never guessed. A profile keyed by another pack's class name is data;
   its comments describe what the node does to memory, not the other pack's code.
@@ -160,7 +170,8 @@ where it is.
   `models/common/registry.py`.
 - A `models/<name>/` package: architecture, weights (download through
   `models.common.download.fetch_with_progress`), a single-slot cache as in
-  `models/birefnet/loader.py`, model-specific pre/post-processing.
+  `models/birefnet/loader.py` with its `unload()`, which the full clear calls (add it to
+  `_pack_models` in `pipelines/process_monitor/clear.py`), model-specific pre/post-processing.
 - Register each member with `register(FAMILY, name, entry)` in the package, and add one import
   line to `models/__init__.py` so the registry is filled before any lookup. A node combo is
   `registry.names(FAMILY)`, a lookup `registry.get(FAMILY, name)`.

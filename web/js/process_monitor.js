@@ -386,7 +386,7 @@ const CLEAR_ROWS = [
 	["… its own memory (USS; macOS keeps freed pages in the RSS until it needs them)", (r) => r.uss],
 	["Container: processes' own memory (anon)", (r) => r.cgroup?.anon],
 	["Container: page cache, active / inactive", (r) => r.cgroup?.file, (r) => r.cgroup && `${gb(r.cgroup.active_file)} / ${gb(r.cgroup.inactive_file)}`],
-	["glibc: freed memory its arenas keep", (r) => r.malloc_free],
+	["glibc: free blocks its arenas keep (in the RSS until malloc_trim gives their pages back)", (r) => r.malloc_free],
 	["Pinned host memory (ComfyUI's models)", (r) => r.comfy_pinned],
 	["Pinned host memory (torch's cache)", (r) => r.pinned_cache],
 	["VRAM allocated (torch)", (r) => r.vram],

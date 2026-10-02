@@ -32,7 +32,7 @@ ComfyUI-BCNodes/
     save_image_with_caption.py  BC_SaveImageWithCaption
     skin_texture.py        BC_SkinTexture
     frequency_merge.py     BC_FrequencyMerge
-    process_monitor.py     Process Monitor: its HTTP routes and live event (no nodes)
+    process_monitor.py     Process Monitor: its HTTP routes and live event, the full clear's baseline (no nodes)
   pipelines/               flows that combine models and libs; no ComfyUI node classes
     matting.py             the BiRefNet matte, then the matte options
     model_download.py      downloader lines resolved to files under ComfyUI/models, token gate
@@ -59,6 +59,7 @@ ComfyUI-BCNodes/
       hook.py              the hook into ComfyUI's executor: detection, install, the per-node wrapper
       blackbox.py          run logs, rotation, the Last run and Crash reports
       emulate.py           the estimate before a run: graph, weights, fit check, calibration
+      clear.py             the full clear: its steps, each measured against the startup baseline
       profiles.py          per-node-type cost profiles for Emulate
       settings.py          the monitor's settings file
   models/                  one package per model; __init__.py imports those that register
@@ -68,18 +69,18 @@ ComfyUI-BCNodes/
     birefnet/
       checkpoints.py       the 11 checkpoints, registered as matting models
       weights.py           weights folder (ComfyUI/models/background_removal) and download
-      loader.py            one model loaded at a time
+      loader.py            one model loaded at a time; unload() for the full clear
       inference.py         resize, normalise, run, matte back to size
       arch/                BiRefNet + Swin v1 architecture (see LICENSE in the folder)
     depth_anything_v2/     Depth Anything V2 Small, registered as v2-small in the depth family
       weights.py           weights folder (ComfyUI/models/depthanything) and download
-      loader.py            the model, loaded once
+      loader.py            the model, loaded once; unload() for the full clear
       inference.py         resize as the authors, run, resample to the size asked for
       arch/                DPT head + DINOv2 ViT-S architecture (see LICENSE in the folder)
     depth_anything_3/      Depth Anything 3 over ComfyUI core, registered as v3-small, v3-base, v3-mono-large,
                            v3-metric-large in the depth family (no code vendored)
       weights.py           Comfy-Org/Depth-Anything-3 files into ComfyUI/models/geometry_estimation
-      loader.py            one model at a time, core's loader
+      loader.py            one model at a time, core's loader; unload() for the full clear
       inference.py         core's preprocess and forward, sky, inverse depth, percentile clip
     seedvr2/               adapters over ComfyUI's SeedVR2 VAE
       vae.py               VAE check + VRAM room
@@ -87,7 +88,7 @@ ComfyUI-BCNodes/
       frames.py            shortest-edge resize, pad, 4n+1 frame count
     sam3/                  adapter over ComfyUI's SAM 3
       checkpoint.py        default checkpoint, combo list, path (downloads the default)
-      loader.py            one checkpoint held at a time
+      loader.py            one checkpoint held at a time; unload() for the full clear
       detect.py            text detection through ComfyUI's SAM3_Detect
   libs/                    model-independent helpers
     image.py               IMAGE frame <-> PIL, fit into a target size
@@ -103,7 +104,8 @@ ComfyUI-BCNodes/
     download.py            HTTP download with resume, allowed hosts, token store
     files.py               the next image counter from the files in a folder
     image_write.py         Save Image formats, metadata, writer
-    memory_sources.py      RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers
+    memory_sources.py      RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers; what the RAM is
+                           made of (anon / file, RssAnon / RssFile), glibc's free blocks and malloc_trim
     tensor_census.py       tensor bytes, each byte counted once by address range, file-backed memory told apart; the live tensor census
     safetensors_info.py    weights from a safetensors header
   docs/                    the node documentation, one page per menu category; README.md links them

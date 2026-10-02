@@ -46,7 +46,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_SkinTexture` | [Skin Texture](docs/image.md#bc_skintexture--skin-texture) | Micro-texture on skin inside a SAM 3 mask: boosts the image's own detail and multiplies in a synthetic pore field, in linear light |
 | `BC_FrequencyMerge` | [Frequency Merge](docs/image.md#bc_frequencymerge--frequency-merge) | The low frequencies (structure, colour) of one image + the high frequencies (texture, fine detail) of another of the same size, split by a Gaussian |
 | — | [Align](docs/workflow.md#align) | Align / distribute buttons in the selection toolbox |
-| — | [Process Monitor](docs/process-monitor.md) | Not a node: live RAM / VRAM bars, an estimate before a run, per-node measurement, and the reason a killed run died (see [Process Monitor](docs/process-monitor.md)) |
+| — | [Process Monitor](docs/process-monitor.md) | Not a node: live RAM / VRAM bars, an estimate before a run, per-node measurement, the reason a killed run died, and a full clear back to the startup memory without a restart (see [Process Monitor](docs/process-monitor.md)) |
 
 Registration keys are BCNodes' own, so the packages above can be installed side by side without a clash. Type `BCNodes` in the node library to see them all; in the menu they sit in these groups:
 
@@ -90,7 +90,7 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, Auto Bypass, the Align buttons
 - [Unused outputs](docs/unused-outputs.md) — unconnected whole-batch outputs come out empty
 - [Measurements](docs/measurements.md) — time, RAM and output size of the mask nodes and Image Resize against the nodes they replace
-- [Process Monitor](docs/process-monitor.md) — RAM / VRAM live, an estimate before a run, per-node measurement, the report of a killed run
+- [Process Monitor](docs/process-monitor.md) — RAM / VRAM live, an estimate before a run, per-node measurement, the report of a killed run, the full clear
 - [Development](docs/development.md) — the repository layout, the tests and the import rule
 
 ## Third-party code

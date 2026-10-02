@@ -234,8 +234,9 @@ class Glibc:
             self._info.restype = Mallinfo2
 
     def free_bytes(self):
-        """Bytes freed by the program that the arenas still hold (mallinfo2's fordblks: free chunks,
-        top included), or None on a glibc older than 2.33."""
+        """Bytes freed by the program that the arenas still hold as free chunks (mallinfo2's fordblks,
+        top included), or None on a glibc older than 2.33. Before a trim their pages are in the RSS;
+        malloc_trim gives the pages back but the chunks stay free chunks, still counted here."""
         return None if self._info is None else int(self._info().fordblks)
 
     def trim(self):
