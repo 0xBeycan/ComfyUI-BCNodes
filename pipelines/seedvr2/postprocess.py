@@ -17,13 +17,30 @@ from . import require_image_batch
 METHODS = ["lab", "wavelet", "adain", "none"]
 
 
-def process(images, original_resized_images, color_correction_method):
-    import comfy.model_management as mm
+def color_transfer(method, node):
+    """The colour transfer of `method` from comfy/ldm/seedvr/color_fix.py, None for "none"; `node`
+    names the node in the error for an unknown method."""
     from comfy.ldm.seedvr.color_fix import adain_color_transfer, lab_color_transfer, wavelet_color_transfer
 
-    if color_correction_method not in METHODS:
-        raise ValueError(f"BC_SeedVR2PostProcess: unknown color_correction_method {color_correction_method!r}")
-    transfer = {"lab": lab_color_transfer, "wavelet": wavelet_color_transfer, "adain": adain_color_transfer}.get(color_correction_method)
+    if method not in METHODS:
+        raise ValueError(f"{node}: unknown color_correction_method {method!r}")
+    return {"lab": lab_color_transfer, "wavelet": wavelet_color_transfer, "adain": adain_color_transfer}.get(method)
+
+
+def corrected(decoded, ref, transfer, device):
+    """One frame of Post-Process SeedVR2 Output: `decoded` (h, w, 3) colour-transferred from its
+    reference frame `ref` (resized to h x w when its size differs) on `device`, float32 in [0, 1]."""
+    if ref.shape[0] != decoded.shape[0] or ref.shape[1] != decoded.shape[1]:
+        ref = resize_reference(ref, decoded.shape[0], decoded.shape[1])
+    decoded_raw = decoded.to(device=device, dtype=torch.float32).permute(2, 0, 1)[None].mul(2.0).sub(1.0)
+    reference_raw = ref.to(device=device, dtype=torch.float32).permute(2, 0, 1)[None].mul(2.0).sub(1.0)
+    return transfer(decoded_raw, reference_raw)[0].permute(1, 2, 0).add(1.0).div(2.0).clamp(0.0, 1.0)
+
+
+def process(images, original_resized_images, color_correction_method):
+    import comfy.model_management as mm
+
+    transfer = color_transfer(color_correction_method, "BC_SeedVR2PostProcess")
     for name, x in (("images", images), ("original_resized_images", original_resized_images)):
         require_image_batch(x, f"BC_SeedVR2PostProcess: {name} must be an image batch (B, H, W, C)")
 
@@ -42,15 +59,7 @@ def process(images, original_resized_images, color_correction_method):
     progress = ProgressBar(t)
     for i in range(t):
         decoded = images[i, :target_h, :target_w, :3]
-        if transfer is None:
-            frame = decoded
-        else:
-            ref = reference[i]
-            if ref.shape[0] != target_h or ref.shape[1] != target_w:
-                ref = resize_reference(ref, target_h, target_w)
-            decoded_raw = decoded.to(device=device, dtype=torch.float32).permute(2, 0, 1)[None].mul(2.0).sub(1.0)
-            reference_raw = ref.to(device=device, dtype=torch.float32).permute(2, 0, 1)[None].mul(2.0).sub(1.0)
-            frame = transfer(decoded_raw, reference_raw)[0].permute(1, 2, 0).add(1.0).div(2.0).clamp(0.0, 1.0)
+        frame = decoded if transfer is None else corrected(decoded, reference[i], transfer, device)
         out[i, :, :, :3] = frame[:out_h, :out_w].to(device="cpu", dtype=torch.float16)
         if alpha is not None:
             out[i, :, :, 3] = alpha[i, :out_h, :out_w, 0].to(torch.float16)

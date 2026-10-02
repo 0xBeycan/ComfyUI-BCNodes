@@ -35,6 +35,8 @@ Nodes:
     BC_SeedVR2VAEEncode          SeedVR2 VAE encode, frames streamed from RAM
     BC_SeedVR2VAEDecode          SeedVR2 VAE decode, frames streamed to RAM
     BC_SeedVR2PostProcess        SeedVR2 post-process, one frame at a time
+    BC_SeedVR2PreprocessCompact  SeedVR2 resize + VAE encode, no clip-sized output
+    BC_SeedVR2PostProcessCompact SeedVR2 VAE decode + post-process into one buffer
     BC_PostFxApply               apply a postfx film-emulation look (+ condition, strength, mask)
     BC_PostFxTheme               built-in postfx theme -> POSTFX_LOOK
     BC_PostFxCustomLook          build / override a look from common controls

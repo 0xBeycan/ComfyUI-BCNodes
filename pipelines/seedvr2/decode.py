@@ -10,6 +10,13 @@ float16, which is what the float16 VAE produced; the native node only upcasts
 them. A latent that fits in one tile goes through the decoder at once, as the
 native node does; a larger one is split into the spatial tiles of tiled_vae
 and blended (models/seedvr2/tiling.py).
+
+`keep` (frames, height, width) caps what the output holds of each latent's
+frames: the first frames, the top rows and the left columns. The rest is
+decoded (the causal decoder needs it) but never stored, so SeedVR2 PostProcess
+(Compact) gets its output size without a padded copy. The kept pixels are the
+ones the full decode gives: every step after the decoder is per pixel, and the
+tile sum adds the same terms in the same order.
 """
 
 import logging
@@ -22,7 +29,7 @@ from . import FRAMES_PER_CHUNK, TRIM_EVERY
 from .progress import Progress
 
 
-def decode(samples, vae, tile_size, overlap):
+def decode(samples, vae, tile_size, overlap, keep=None):
     import comfy.model_management as mm
     from comfy.ldm.seedvr.constants import BYTEDANCE_VAE_SCALING_FACTOR, BYTEDANCE_VAE_SHIFTING_FACTOR
     from comfy.ldm.seedvr.vae import MemoryState
@@ -33,6 +40,7 @@ def decode(samples, vae, tile_size, overlap):
         raise ValueError(f"BC_SeedVR2VAEDecode: expected a SeedVR2 latent (B, {LATENT_CHANNELS}, T, H, W), got {tuple(z.shape)}")
     b, _, t_latent, h, w = z.shape
     t_pixel = max(1, t_latent * 4 - 3)  # comfy/sd.py upscale_ratio for this VAE
+    out_t = t_pixel if keep is None else min(t_pixel, keep[0])
     if tile_size < overlap * 4:  # nodes.py VAEDecodeTiled
         overlap = tile_size // 4
     tile_lat = max(1, tile_size // 8)  # vae.py decode_tiled -> tiled_vae(encode=False): latent tile and overlap
@@ -46,14 +54,16 @@ def decode(samples, vae, tile_size, overlap):
     def finish(frames, t0):
         """A run of decoded frames (B, 3, t, H, W) in [-1, 1] on the GPU -> rows [t0, t0 + t) of `out` on the CPU."""
         nonlocal out
-        frames = vae.process_output(frames.float())  # (x + 1) / 2, clamp, as VAE.decode does
+        if t0 + frames.shape[2] > t_pixel:
+            raise RuntimeError(f"BC_SeedVR2VAEDecode: decoder produced more than {t_pixel} frames")
+        frames = vae.process_output(frames[:, :, :max(0, out_t - t0)].float())  # (x + 1) / 2, clamp, as VAE.decode does
         height, width = frames.shape[-2:]
         height, width = height - height % 2, width - width % 2  # vae.py wrapper.decode even crop
+        if keep is not None:
+            height, width = min(height, keep[1]), min(width, keep[2])
         frames = frames[:, :, :, :height, :width].to(torch.float16).movedim(1, -1)
         if out is None:
-            out = torch.empty((b, t_pixel, height, width, frames.shape[-1]), dtype=torch.float16)
-        if t0 + frames.shape[1] > t_pixel:
-            raise RuntimeError(f"BC_SeedVR2VAEDecode: decoder produced more than {t_pixel} frames")
+            out = torch.empty((b, out_t, height, width, frames.shape[-1]), dtype=torch.float16)
         out[:, t0:t0 + frames.shape[1]] = frames.to("cpu")
 
     # slicing_decode: latent frame 0 rides with the first slice, then one slice per remaining frame.
@@ -101,7 +111,8 @@ def decode(samples, vae, tile_size, overlap):
             # terms is within ~1.5e-3, a fifth of an 8-bit step after (x + 1) / 2.
             ranges, ramp = tile_plan(h, w, tile_lat, ov_lat, device)
             edge_h = edge_w = ov_lat * 8  # tiled_vae decode: fades `ov_lat * 8` pixels wide
-            out = torch.zeros((b, t_pixel, h * 8, w * 8, 3), dtype=torch.float16)
+            out_h, out_w = (h * 8, w * 8) if keep is None else (min(h * 8, keep[1]), min(w * 8, keep[2]))
+            out = torch.zeros((b, out_t, out_h, out_w, 3), dtype=torch.float16)
             count = torch.zeros((1, 1, 1, h * 8, w * 8), dtype=torch.float32)
             filled = 0
             progress = Progress("SeedVR2 VAE Decode", len(ranges), n_slices, t_pixel, device)
@@ -119,7 +130,8 @@ def decode(samples, vae, tile_size, overlap):
                     t0 = sum(offsets)
                     decoded = decoded[:, :, : max(0, t_pixel - t0)]
                     decoded.mul_(weight)  # tiled_vae: the fade is applied in the tile's own dtype
-                    out[:, t0:t0 + decoded.shape[2], ys:ys + th, xs:xs + tw] += decoded.movedim(1, -1).contiguous().to("cpu")
+                    kept = out[:, t0:t0 + decoded.shape[2], ys:ys + th, xs:xs + tw]  # the whole tile unless `keep` cuts it
+                    kept += decoded[:, :, :kept.shape[1], :kept.shape[2], :kept.shape[3]].movedim(1, -1).contiguous().to("cpu")
                     if t0 == 0:
                         count[:, :, :, ys:ys + th, xs:xs + tw] += weight.to("cpu")
                     offsets.append(decoded.shape[2])
@@ -127,11 +139,11 @@ def decode(samples, vae, tile_size, overlap):
 
                 decode_tile(latent[:, :, :, y0:y1, x0:x1], sink, progress)
                 filled = sum(offsets)
-            logging.info("SeedVR2 VAE Decode: %d tiles decoded, normalising %d frames", len(ranges), t_pixel)
-            count = count.clamp(min=1e-6).to(device)
+            logging.info("SeedVR2 VAE Decode: %d tiles decoded, normalising %d frames", len(ranges), out_t)
+            count = count[:, :, :, :out_h, :out_w].clamp(min=1e-6).to(device)
             # Normalised in float32, then through the VAE dtype (tiled_vae returns `result.to(x.dtype)`) before the output
             # range op; `finish` writes each chunk back over the rows it was read from.
-            for t0 in range(0, t_pixel, FRAMES_PER_CHUNK):
+            for t0 in range(0, out_t, FRAMES_PER_CHUNK):
                 chunk = out[:, t0:t0 + FRAMES_PER_CHUNK].to(device, torch.float32).movedim(-1, 1).div_(count)
                 finish(chunk.to(vae.vae_dtype), t0)
     if filled != t_pixel:

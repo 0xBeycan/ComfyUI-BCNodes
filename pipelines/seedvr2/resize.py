@@ -62,6 +62,11 @@ def lanczos_scale_by(image_bhwc, factor):
     return out
 
 
+def target_resolution(image, upscale_factor):
+    """Step 2: the shortest edge of the original (B, H, W, C) frames x upscale_factor, rounded."""
+    return int(round(min(image.shape[1], image.shape[2]) * upscale_factor))
+
+
 def _downscaled(frames, downscale_factor):
     """Step 1 on (B, H, W, C) frames, as (B, C, H, W); float16 frames requantized to k/255 first (module doc)."""
     if frames.dtype == torch.float16:
@@ -91,7 +96,7 @@ def resize(image, upscale_factor, downscale_factor, max_resolution, emulate_bf16
     output's step runs on no frame, its batch has 0 frames (the other output does not read it)."""
     require_image_batch(image, "BC_SeedVR2Resize: connect an image batch (B, H, W, C)")
     image = image[..., :3]
-    resolution = int(round(min(image.shape[1], image.shape[2]) * upscale_factor))
+    resolution = target_resolution(image, upscale_factor)
 
     device = torch.device("cpu")
     vae_dtype = torch.float32

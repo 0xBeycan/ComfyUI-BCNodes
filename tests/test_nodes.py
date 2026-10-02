@@ -310,6 +310,27 @@ def main():
     check("SeedVR2PostProcess None -> ValueError", lambda: _raises(ValueError, lambda: pp.process(None, ref, "lab")))
     check("SeedVR2PostProcess bad method -> ValueError", lambda: _raises(ValueError, lambda: pp.process(dec, ref, "hsv")))
 
+    pc, ppc = m["seedvr2"].SeedVR2PreprocessCompact(), m["seedvr2"].SeedVR2PostProcessCompact()
+    clip = torch.rand(3, 20, 31, 3)
+    # 20x31, no downscale, x3.2 -> resolution 64 -> 64x99: padded 64x112 and 5 frames for the encode, the output 64x98 and 3 frames
+    latent, plan = pc.preprocess(clip, FakeVAE(), 3.2, 1.0, 0, False, 4096, 256)
+    check("SeedVR2PreprocessCompact = VAE Encode of Resize's image, plus the plan",
+          lambda: torch.equal(latent["samples"], se.encode(sr.resize(clip, 3.2, 1.0, 0, False)[0], FakeVAE(), 4096, 256)[0]["samples"])
+          and plan == {"frames": 3, "height": 20, "width": 31, "downscale_factor": 1.0, "resolution": 64, "max_resolution": 0,
+                       "out_height": 64, "out_width": 98} or _fail())
+    check("SeedVR2PreprocessCompact None -> ValueError", lambda: _raises(ValueError, lambda: pc.preprocess(None, FakeVAE(), 2.0, 0.5, 0, False, 4096, 256)))
+    check("SeedVR2PreprocessCompact wrong VAE -> ValueError", lambda: _raises(ValueError, lambda: pc.preprocess(clip, object(), 2.0, 0.5, 0, False, 4096, 256)))
+    check("SeedVR2PostProcessCompact = VAE Decode then PostProcess (adain stub: the reference), 3 frames of 64x98 float16",
+          lambda: (lambda r, e: r.shape == (3, 64, 98, 3) and r.dtype == torch.float16 and torch.equal(r, e))(
+              ppc.process(latent, FakeVAE(), clip, plan, "adain", 4096, 256)[0],
+              pp.process(sd.decode(latent, FakeVAE(), 4096, 256)[0], sr.resize(clip, 3.2, 1.0, 0, False)[1], "adain")[0]) or _fail())
+    check("SeedVR2PostProcessCompact none = the decode cut to the plan",
+          lambda: torch.equal(ppc.process(latent, FakeVAE(), clip, plan, "none", 4096, 256)[0], sd.decode(latent, FakeVAE(), 4096, 256)[0][:3, :64, :98]) or _fail())
+    check("SeedVR2PostProcessCompact frames other than the plan's -> ValueError",
+          lambda: _raises(ValueError, lambda: ppc.process(latent, FakeVAE(), clip[:2], plan, "lab", 4096, 256)))
+    check("SeedVR2PostProcessCompact None image -> ValueError", lambda: _raises(ValueError, lambda: ppc.process(latent, FakeVAE(), None, plan, "lab", 4096, 256)))
+    check("SeedVR2PostProcessCompact bad method -> ValueError", lambda: _raises(ValueError, lambda: ppc.process(latent, FakeVAE(), clip, plan, "hsv", 4096, 256)))
+
     # --- PostFx -------------------------------------------------------------
     pfa = m["postfx"].PostFxApply()
     themes = pfa.INPUT_TYPES()["required"]["theme"][0]

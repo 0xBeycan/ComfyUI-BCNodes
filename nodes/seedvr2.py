@@ -5,16 +5,34 @@
     BC_SeedVR2VAEDecode   (SeedVR2 VAE Decode)   VAE Decode (Tiled) with the decoded frames streamed to RAM
     BC_SeedVR2PostProcess (SeedVR2 PostProcess)  Post-Process SeedVR2 Output, one frame at a time
 
-Resize is the whole input stage of the SeedVR2 upscale graph in one node.
+    BC_SeedVR2PreprocessCompact  (SeedVR2 Preprocess (Compact))   Resize + VAE Encode, returns the latent and a plan
+    BC_SeedVR2PostProcessCompact (SeedVR2 PostProcess (Compact))  VAE Decode + PostProcess into one buffer
 
-The flows are in pipelines/seedvr2/ (resize, encode, decode, postprocess), the
+Resize is the whole input stage of the SeedVR2 upscale graph in one node. The compact
+pair is the same chain with no clip between the input stage and the end (the output
+cache keeps only the result); it gives the same frames.
+
+The flows are in pipelines/seedvr2/ (resize, encode, decode, postprocess, compact), the
 SeedVR2 VAE adapter, its tiling and the frame-shape rules in models/seedvr2/.
 """
 
 from ..pipelines.seedvr2 import (
-    decode as decode_flow, encode as encode_flow, postprocess as postprocess_flow, resize as resize_flow,
+    compact as compact_flow, decode as decode_flow, encode as encode_flow, postprocess as postprocess_flow, resize as resize_flow,
 )
 from .common import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
+
+RESIZE_INPUTS = {
+    "upscale_factor": ("FLOAT", {"default": 2.0, "min": 0.01, "max": 16.0, "step": 0.01,
+                                 "tooltip": "Shortest edge of the output = shortest edge of the input × this "
+                                            "(the resize resolution, computed from the original image)."}),
+    "downscale_factor": ("FLOAT", {"default": 0.5, "min": 0.01, "max": 1.0, "step": 0.01,
+                                   "tooltip": "Lanczos downscale applied first, like ImageScaleBy(lanczos). 1 = none."}),
+    "max_resolution": ("INT", {"default": 4096, "min": 0, "max": 16384, "step": 2,
+                               "tooltip": "Cap on the longest edge, 0 = none."}),
+    "emulate_bf16": ("BOOLEAN", {"default": True,
+                                 "tooltip": "Resize `image` in bfloat16 on the GPU when CUDA is available. "
+                                            "Without CUDA the resize runs in float32."}),
+}
 
 
 class SeedVR2Resize:
@@ -25,16 +43,7 @@ class SeedVR2Resize:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "upscale_factor": ("FLOAT", {"default": 2.0, "min": 0.01, "max": 16.0, "step": 0.01,
-                                             "tooltip": "Shortest edge of the output = shortest edge of the input × this "
-                                                        "(the resize resolution, computed from the original image)."}),
-                "downscale_factor": ("FLOAT", {"default": 0.5, "min": 0.01, "max": 1.0, "step": 0.01,
-                                               "tooltip": "Lanczos downscale applied first, like ImageScaleBy(lanczos). 1 = none."}),
-                "max_resolution": ("INT", {"default": 4096, "min": 0, "max": 16384, "step": 2,
-                                           "tooltip": "Cap on the longest edge, 0 = none."}),
-                "emulate_bf16": ("BOOLEAN", {"default": True,
-                                             "tooltip": "Resize `image` in bfloat16 on the GPU when CUDA is available. "
-                                                        "Without CUDA the resize runs in float32."}),
+                **RESIZE_INPUTS,
             },
             "hidden": dict(LINK_INPUTS),
         }
@@ -58,10 +67,13 @@ class SeedVR2Resize:
             want_reference=wants(wanted, "reference")), wanted)
 
 
-TILED_INPUTS = {
+TILE_INPUTS = {
     "tile_size": ("INT", {"default": 1024, "min": 64, "max": 4096, "step": 32, "advanced": True,
                           "tooltip": "Spatial tile in pixels, as VAE Encode/Decode (Tiled). A tile that covers the frame means no tiling."}),
     "overlap": ("INT", {"default": 256, "min": 0, "max": 4096, "step": 32, "advanced": True}),
+}
+TILED_INPUTS = {
+    **TILE_INPUTS,
     "temporal_size": ("INT", {"default": 64, "min": 8, "max": 4096, "step": 4, "advanced": True,
                               "tooltip": "Ignored, as it is by the SeedVR2 VAE in VAE Encode/Decode (Tiled): the causal VAE slices time itself."}),
     "temporal_overlap": ("INT", {"default": 8, "min": 4, "max": 4096, "step": 4, "advanced": True,
@@ -140,11 +152,74 @@ class SeedVR2PostProcess:
         return postprocess_flow.process(images, original_resized_images, color_correction_method)
 
 
+COMPACT_CATEGORY = "BCNodes/seedvr2/compact"
+
+
+class SeedVR2PreprocessCompact:
+    """SeedVR2 Resize + SeedVR2 VAE Encode: the latent and the plan, no clip-sized output."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE", {"tooltip": "The original frames. Connect the same batch to SeedVR2 PostProcess (Compact) `image`."}),
+                "vae": ("VAE",),
+                **RESIZE_INPUTS,
+                **TILE_INPUTS,
+            },
+        }
+
+    RETURN_TYPES = ("LATENT", "SEEDVR2_PLAN")
+    RETURN_NAMES = ("latent", "plan")
+    OUTPUT_TOOLTIPS = (
+        "The latent SeedVR2 VAE Encode gives for SeedVR2 Resize `image`, float32. Wire to the sampler.",
+        "The resize settings and the output size (a few numbers). Wire to SeedVR2 PostProcess (Compact) `plan`.",
+    )
+    FUNCTION = "preprocess"
+    CATEGORY = COMPACT_CATEGORY
+    SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "compact", "resize", "vae encode", "upscale", "low ram"]
+
+    def preprocess(self, image, vae, upscale_factor, downscale_factor, max_resolution, emulate_bf16, tile_size, overlap):
+        return compact_flow.preprocess(image, vae, upscale_factor, downscale_factor, max_resolution, emulate_bf16, tile_size, overlap)
+
+
+class SeedVR2PostProcessCompact:
+    """SeedVR2 VAE Decode + SeedVR2 PostProcess: decoded and colour-corrected in one float16 buffer."""
+
+    METHODS = postprocess_flow.METHODS
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "samples": ("LATENT", {"tooltip": "The sampler's latent."}),
+                "vae": ("VAE",),
+                "image": ("IMAGE", {"tooltip": "The original frames: the batch SeedVR2 Preprocess (Compact) got. "
+                                               "The colour reference is rebuilt from them, a few frames at a time."}),
+                "plan": ("SEEDVR2_PLAN", {"tooltip": "SeedVR2 Preprocess (Compact) `plan`."}),
+                "color_correction_method": (cls.METHODS, {"default": "lab"}),
+                **TILE_INPUTS,
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("images",)
+    OUTPUT_TOOLTIPS = ("Decoded, colour-corrected frames, float16, cut to the original frame count and the resized size.",)
+    FUNCTION = "process"
+    CATEGORY = COMPACT_CATEGORY
+    SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "compact", "vae decode", "color correction", "postprocess", "low ram"]
+
+    def process(self, samples, vae, image, plan, color_correction_method, tile_size, overlap):
+        return compact_flow.postprocess(samples, vae, image, plan, tile_size, overlap, color_correction_method)
+
+
 NODE_CLASS_MAPPINGS = {
     "BC_SeedVR2Resize": SeedVR2Resize,
     "BC_SeedVR2VAEEncode": SeedVR2VAEEncode,
     "BC_SeedVR2VAEDecode": SeedVR2VAEDecode,
     "BC_SeedVR2PostProcess": SeedVR2PostProcess,
+    "BC_SeedVR2PreprocessCompact": SeedVR2PreprocessCompact,
+    "BC_SeedVR2PostProcessCompact": SeedVR2PostProcessCompact,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -152,4 +227,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BC_SeedVR2VAEEncode": "SeedVR2 VAE Encode",
     "BC_SeedVR2VAEDecode": "SeedVR2 VAE Decode",
     "BC_SeedVR2PostProcess": "SeedVR2 PostProcess",
+    "BC_SeedVR2PreprocessCompact": "SeedVR2 Preprocess (Compact)",
+    "BC_SeedVR2PostProcessCompact": "SeedVR2 PostProcess (Compact)",
 }

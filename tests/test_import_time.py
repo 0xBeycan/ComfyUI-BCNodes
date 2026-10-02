@@ -129,6 +129,7 @@ def main():
         "BC_MathExpression", "BC_PromptList", "BC_AnySwitch", "BC_SelectSwitch", "BC_Seed", "BC_ShowText",
         "BC_ImageComparer", "BC_PowerLoraLoader", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
         "BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode", "BC_SeedVR2PostProcess",
+        "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact",
         "BC_PostFxApply", "BC_PostFxTheme", "BC_PostFxCustomLook", "BC_PostFxLut", "BC_PostFxSignatureSheet",
         "BC_CaptionAudit", "BC_SocialMediaExport", "BC_ImageQualityGate", "BC_SaveImage", "BC_SaveImageWithCaption", "BC_SkinTexture",
     }

@@ -41,7 +41,8 @@ class Env:
         "BCVSCAIL2PreprocessGuard": ["IMAGE", "IMAGE", "STRING", "STRING", "IMAGE"], "BCVPoseGuard": ["POSEDATA", "STRING", "STRING", "IMAGE"],
         "BCVGetVideoInfo": ["STRING", "STRING", "STRING", "FLOAT", "INT"], "BCVSaveVideo": [], "PreviewImage": ["IMAGE"],
         "BC_SeedVR2Resize": ["IMAGE", "IMAGE"], "BC_SeedVR2VAEEncode": ["LATENT"], "BC_SeedVR2VAEDecode": ["IMAGE"],
-        "BC_SeedVR2PostProcess": ["IMAGE"], "BC_ImageScaleByAspectRatio": ["IMAGE", "MASK", "BOX", "INT", "INT"],
+        "BC_SeedVR2PostProcess": ["IMAGE"], "BC_SeedVR2PreprocessCompact": ["LATENT", "SEEDVR2_PLAN"],
+        "BC_SeedVR2PostProcessCompact": ["IMAGE"], "BC_ImageScaleByAspectRatio": ["IMAGE", "MASK", "BOX", "INT", "INT"],
         "BC_BiRefNetRemoveBackground": ["IMAGE", "MASK", "IMAGE"], "BC_DepthAnythingV2": ["IMAGE"], "BC_PostFxApply": ["IMAGE"],
         "BC_AnySwitch": ["*"], "BC_SelectSwitch": ["*"],
         "BC_BlockifyMask": ["MASK"], "BC_MaskFillHoles": ["MASK"], "BlockifyMask": ["MASK"],
@@ -388,6 +389,31 @@ def test_seedvr2_chain(em):
     assert resize["outputs"][0]["shape"] == [81, 1920, 1088, 3] and resize["transient"] == 0
     p["3"]["inputs"]["tile_size"] = 2048  # one tile: the latent slices go straight into the output
     assert rows_of(em, p)["3"]["transient"] == 0
+
+
+def test_seedvr2_compact_chain(em):
+    p = {"1": loader(frame_count="77"),
+         "2": N("BC_SeedVR2PreprocessCompact", image=["1", 0], upscale_factor=1.5, downscale_factor=0.5, max_resolution=4096,
+                emulate_bf16=True, tile_size=1024, overlap=256),
+         "3": N("BC_SeedVR2PostProcessCompact", samples=["2", 0], plan=["2", 1], image=["1", 0], color_correction_method="lab",
+                tile_size=1024, overlap=256)}
+    rows = rows_of(em, p)
+    # 77 frames of 1280x720: resized 1920x1080, padded 1920x1088; the latent of the padded clip
+    elements = 16 * 20 * 240 * 136
+    assert [o["shape"] for o in rows["2"]["outputs"]] == [[1, 16, 20, 240, 136], []]
+    assert rows["2"]["output_bytes"] == elements * 4  # the plan is a few numbers
+    assert rows["2"]["transient"] == 77 * 1920 * 1088 * 3 * 2 + elements * 2  # the padded float16 clip while encoded, the tile sum's cast
+    # 20 latent frames decode to 77, cut to the plan's 77 frames of 1920x1080, float16
+    assert rows["3"]["outputs"][0]["shape"] == [77, 1920, 1080, 3] and rows["3"]["output_bytes"] == 77 * 1920 * 1080 * 3 * 2
+    assert rows["3"]["transient"] == 0
+    today = {"1": p["1"],
+             "2": N("BC_SeedVR2Resize", image=["1", 0], upscale_factor=1.5, downscale_factor=0.5, max_resolution=4096, emulate_bf16=True),
+             "3": N("BC_SeedVR2VAEEncode", pixels=["2", 0], tile_size=1024, overlap=256),
+             "4": N("BC_SeedVR2VAEDecode", samples=["3", 0], tile_size=1024, overlap=256),
+             "5": N("BC_SeedVR2PostProcess", images=["4", 0], original_resized_images=["2", 1], color_correction_method="lab")}
+    old, new = em.estimate(today, Env(videos={"v.mp4": PORTRAIT})), em.estimate(p, Env(videos={"v.mp4": PORTRAIT}))
+    # what the output cache keeps less: Resize's two clips and Decode's
+    assert old["cache_total"] - new["cache_total"] == 77 * 1920 * (1088 + 1080 + 1088) * 3 * 2
 
 
 def test_bcnodes_image_nodes_and_switches(em):

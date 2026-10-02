@@ -440,7 +440,8 @@ def _shortest_edge(h, w, resolution, max_resolution):
     return h, w
 
 
-def _seedvr2_resize(c):
+def _seedvr2_resized(c):
+    """SeedVR2 Resize's two outputs for the node's `image` and resize widgets: (padded, reference)."""
     img = c.tensor("image")
     n, h, w = img["n"], img["h"], img["w"]
     resolution = int(round(min(h, w) * c.widget("upscale_factor", 2.0)))
@@ -450,11 +451,16 @@ def _seedvr2_resize(c):
     extra = 0 if n == 1 else (4 - n + 1 if n <= 4 else (4 - (n - 1) % 4) % 4)
     padded = image(n + extra, round_up_to_multiple(rh, SEEDVR2_PAD), round_up_to_multiple(rw, SEEDVR2_PAD), F16)
     reference = image(n, rh // 2 * 2, rw // 2 * 2, F16)
+    return padded, reference
+
+
+def _seedvr2_resize(c):
+    padded, reference = _seedvr2_resized(c)
     return {0: padded, 1: reference}, 0, "float16 outputs; downscaled and resized four frames at a time"
 
 
-def _seedvr2_encode(c):
-    pixels = c.tensor("pixels")
+def _seedvr2_encoded(c, pixels):
+    """SeedVR2 VAE Encode's latent of the `pixels` estimate under the node's tile_size, and its transient."""
     n, h, w = pixels["n"], pixels["h"], pixels["w"]
     lt, lh, lw = (n + 3) // 4, (h + 7) // 8, (w + 7) // 8
     elements = SEEDVR2_LATENT_CHANNELS * lt * lh * lw
@@ -465,16 +471,39 @@ def _seedvr2_encode(c):
     transient = 0 if single else elements * 2
     latent = {"type": "LATENT", "shape": [1, SEEDVR2_LATENT_CHANNELS, lt, lh, lw], "lt": lt, "lh": lh, "lw": lw,
               "bytes": elements * F32}
+    return latent, transient
+
+
+def _seedvr2_encode(c):
+    latent, transient = _seedvr2_encoded(c, c.tensor("pixels"))
     return {0: latent}, transient, "the encoder's working set (device) not counted"
 
 
-def _seedvr2_decode(c):
+def _seedvr2_decoded(c):
+    """SeedVR2 VAE Decode's output (frames, height, width) for the node's `samples`."""
     latent = c.tensor("samples")
     if "lt" not in latent:
         raise NotCounted("samples is not a SeedVR2 latent estimate")
-    frames, h, w = max(1, latent["lt"] * 4 - 3), latent["lh"] * 8, latent["lw"] * 8
-    out = image(frames, h // 2 * 2, w // 2 * 2, F16)
-    return {0: out}, 0, "decoded frames streamed into a float16 output, tiles summed in it"
+    return max(1, latent["lt"] * 4 - 3), latent["lh"] * 8 // 2 * 2, latent["lw"] * 8 // 2 * 2
+
+
+def _seedvr2_decode(c):
+    return {0: image(*_seedvr2_decoded(c), F16)}, 0, "decoded frames streamed into a float16 output, tiles summed in it"
+
+
+def _seedvr2_preprocess_compact(c):
+    padded, reference = _seedvr2_resized(c)
+    latent, transient = _seedvr2_encoded(c, padded)
+    plan = {"type": "SEEDVR2_PLAN", "shape": [], "bytes": 0, "n": reference["n"], "h": reference["h"], "w": reference["w"]}
+    return ({0: latent, 1: plan}, padded["bytes"] + transient,
+            "the padded float16 clip lives while it is encoded; the encoder's working set (device) not counted")
+
+
+def _seedvr2_postprocess_compact(c):
+    frames, h, w = _seedvr2_decoded(c)
+    plan = c.tensor("plan")
+    out = image(min(frames, plan["n"]), min(h, plan["h"]), min(w, plan["w"]), F16)
+    return {0: out}, 0, "decoded into its float16 output cut to the plan, colour-corrected there; references four frames at a time"
 
 
 def _seedvr2_postprocess(c):
@@ -576,7 +605,8 @@ PROFILES = {
     "SaveImage": _per_frame_output, "PreviewImage": _per_frame_output,
     # SeedVR2
     "BC_SeedVR2Resize": _seedvr2_resize, "BC_SeedVR2VAEEncode": _seedvr2_encode, "BC_SeedVR2VAEDecode": _seedvr2_decode,
-    "BC_SeedVR2PostProcess": _seedvr2_postprocess,
+    "BC_SeedVR2PostProcess": _seedvr2_postprocess, "BC_SeedVR2PreprocessCompact": _seedvr2_preprocess_compact,
+    "BC_SeedVR2PostProcessCompact": _seedvr2_postprocess_compact,
     # BCNodes image nodes and switches
     "BC_BiRefNetRemoveBackground": _birefnet, "BC_DepthAnythingV2": _depth_anything, "BC_PostFxApply": _postfx_apply,
     "BC_SkinTexture": _skin_texture, "BC_AnySwitch": _any_switch, "BC_SelectSwitch": _select_switch,
