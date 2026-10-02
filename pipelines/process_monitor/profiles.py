@@ -28,6 +28,10 @@ FRAMING_CHUNK = 4  # frames SeedVR2 Framing Downscale hands SAM 3 at a time (pip
 # BCVLoadVideo's model rules: its frame counts are step * n + 1, and with resolution "source" each side
 # is cut down to a multiple of the grid. Its sizes come from its own node definition (bcv_sizes).
 LOAD_VIDEO_MODELS = {"Wan": {"step": 4, "grid": 16}, "SCAIL": {"step": 4, "grid": 32}, "None": {"step": 1, "grid": 1}}
+# BCVLoadVideo's precision widget: the dtype its frames are stored in. A workflow saved before the
+# widget gets its default, fp16. The clips BCVideoNodes makes from a half clip keep its dtype.
+LOAD_VIDEO_PRECISIONS = {"fp32": F32, "fp16": F16}
+MIN_CHUNK, MIN_LAST_CHUNK = 5, 29  # the long-video samplers' shortest chunk, and last_chunk min29's last one
 
 
 class NotCounted(Exception):
@@ -116,6 +120,16 @@ def shared(est):
     return dict(est, shared=True)
 
 
+def dtype_of(est):
+    """The bytes per value of an IMAGE or MASK estimate (float32 unless it says otherwise)."""
+    return est.get("dtype_bytes", F32)
+
+
+def widened(est):
+    """A half-precision IMAGE or MASK estimate's float32 copy, in bytes; 0 for a float32 one."""
+    return est["bytes"] * F32 // F16 if dtype_of(est) == F16 else 0
+
+
 def given_size(c, what):
     """(width, height) from a node's optional width and height inputs, None when neither is given.
     Raises NotCounted when they come from links (`what`'s size is known at run time only) or only
@@ -173,6 +187,7 @@ def _source_size(meta, portrait, grid):
 
 
 def _bcv_load_video(c):
+    dtype = LOAD_VIDEO_PRECISIONS[c.widget("precision", "fp16")]
     if c.scenario:
         n, w, h = c.scenario["frames"], c.scenario["w"], c.scenario["h"]
     else:
@@ -192,9 +207,18 @@ def _bcv_load_video(c):
         count = str(c.widget("frame_count") or "").strip()
         n = int(count) if count else int(meta["frames"] * fps / meta["fps"]) - int(c.widget("start_frame", 1)) + 1
         n = (n - 1) // model["step"] * model["step"] + 1
-    img = image(n, h, w)
-    info = {"type": "BCV_VIDEO_INFO", "shape": [], "n": n, "h": h, "w": w, "bytes": 0}
-    return {c.slot("IMAGE"): img, c.slot("BCV_VIDEO_INFO"): info}, 0, "one frame at a time into a preallocated output"
+    img = image(n, h, w, dtype)
+    out = {c.slot("BCV_VIDEO_INFO"): {"type": "BCV_VIDEO_INFO", "shape": [], "n": n, "h": h, "w": w, "bytes": 0}}
+    note = "one frame at a time into a preallocated output; the audio waveform not counted"
+    if not c.output_linked(c.slot("IMAGE")):
+        # video_info counts the decoded frames: the clip is loaded all the same and dropped at return
+        return out, img["bytes"], "images not linked: loaded, then dropped at return; " + note
+    out[c.slot("IMAGE")] = img
+    return out, 0, note
+
+
+def _bcv_get_video_info(c):
+    return {}, 0, "numbers, and Load Video's audio output itself (the same object: no new bytes)"
 
 
 def _load_image(c):
@@ -281,6 +305,16 @@ def _same_mask(note, transient_factor=0, name="mask"):
     return profile
 
 
+def _float_mask(name="mask"):
+    """A BCNodes mask node: a float32 mask of its input mask's size (`name`), frame by frame into a
+    preallocated output; the input is read as float32, a half mask copied whole first."""
+    def profile(c):
+        m = c.tensor(name)
+        return ({0: mask(m["n"], m["h"], m["w"])}, widened(m),
+                "preallocated float32 output" + ("; the half mask copied to float32 whole" if widened(m) else ""))
+    return profile
+
+
 def _repeat_mask(widget):
     def profile(c):
         m = c.tensor("mask")
@@ -296,7 +330,11 @@ def _draw_mask_cloned(c):
 
 
 def _draw_mask_preallocated(c):
-    return {0: c.tensor("image")}, 0, "one frame at a time into a preallocated output"
+    img, m = c.tensor("image"), c.tensor("mask")
+    # float32 whatever the image's dtype; the mask read as float32, a half mask copied whole first
+    return ({0: image(img["n"], img["h"], img["w"], channels=img["shape"][-1])}, widened(m),
+            "one frame at a time into a preallocated float32 output" + ("; the half mask copied to float32 whole"
+                                                                         if widened(m) else ""))
 
 
 # -- Wan and core sampling ------------------------------------------------------------------------
@@ -316,89 +354,247 @@ def _vae_decode(c):
     return {0: image(latent["n"], latent["h"], latent["w"])}, None, "decode working set not counted"
 
 
-def _long_video(held):
-    """The long-video samplers' chunk loop: the output preallocated at total_frames, each chunk's
-    decoded frames until they are copied in, and, when a chunk reads past a driving video's end,
-    that video's window gathered for the chunk (counted for every held video: an upper bound). The
-    anchor the next chunk is seeded with is a view of the output."""
+def snap_up(frames):
+    """The smallest 4k+1 >= frames, never below MIN_CHUNK (a Wan chunk length)."""
+    return MIN_CHUNK if frames < MIN_CHUNK else -(-(frames - 1) // 4) * 4 + 1
+
+
+def snap_down(frames):
+    """The largest 4k+1 <= frames, never below MIN_CHUNK."""
+    return MIN_CHUNK if frames < MIN_CHUNK else (frames - 1) // 4 * 4 + 1
+
+
+def kept_frames(motion):
+    """The frames a chained chunk keeps of the one before and trims back off (the overlap), for a
+    continuation of `motion` frames: the latent frames they fill, back in pixel frames."""
+    return 0 if motion <= 0 else ((motion - 1) // 4 + 1) * 4 - 3
+
+
+def chunk_lengths(total, chunk, overlap, last_chunk):
+    """The long-video samplers' chunk plan: the chunk lengths that cover `total` frames, every
+    chained chunk adding its length less `overlap`. last_chunk "fit": the last chunk fitted to the
+    frames still needed (snapped up to 4k+1); "full": every chunk `chunk` long; "min29": "fit", the
+    last chunk never under 29 frames."""
+    if last_chunk not in ("fit", "full", "min29"):
+        raise ValueError(f"last_chunk {last_chunk!r}")
+    if overlap >= chunk:
+        raise ValueError(f"frames_per_chunk ({chunk} on the 4k+1 grid) must exceed the overlap ({overlap})")
+    lengths, produced = [], 0
+    while produced < total:
+        length = chunk if last_chunk == "full" else min(chunk, snap_up(total - produced + (overlap if lengths else 0)))
+        if last_chunk == "min29":
+            length = min(chunk, max(length, MIN_LAST_CHUNK))
+        lengths.append(length)
+        produced += length - (overlap if len(lengths) > 1 else 0)
+    return lengths
+
+
+def chunk_windows(lengths, overlap, total, seeked=()):
+    """Per chunk of the plan `lengths`: (its length, the frames produced before it, the frames it
+    decodes, start, stop), start..stop the window of the driving videos it reads when it reads one.
+    The first chunk reads from frame 0; the second from the frame its seed (the whole first chunk)
+    starts at, through its own frames: the loop does not know yet how far core moves the offset
+    back; later chunks from `overlap` frames before their own. A start is moved back while a
+    seeked video (`seeked`: their frame counts) would keep one frame of the window. The last chunk
+    decodes only the frames total_frames needs (snapped up to 4k+1)."""
+    produced = 0
+    for k, length in enumerate(lengths):
+        trim = overlap if k else 0
+        decoded = min(length, snap_up(trim + total - produced))
+        start = max(0, produced - overlap) if k > 1 else 0
+        stop = start + length if k > 1 else produced + length
+        while any(frames - start == 1 for frames in seeked):
+            start -= 1
+        yield length, produced, decoded, start, stop
+        produced += decoded - trim
+
+
+def _long_video(held, seeked=(), painted=None, overlap=None, last_chunk="fit", whole=()):
+    """A long-video sampler's chunk loop. `held`: the driving videos it extends past their end
+    (a gather of the frames past it); `seeked`: the other videos it cuts to a chunk's window;
+    `painted`: the (video, mask) it paints black in replacement mode, both connected; `overlap`: the
+    widget of the frames a chained chunk keeps of the one before (None: one, WanAnimate2ToVideo's);
+    `whole`: the other IMAGE / MASK inputs the core node gets whole.
+
+    The output: total_frames at the generation size, in the pose video's dtype when that is half,
+    else float32. Per chunk, besides it: its decoded frames (float32); and on a chunk that reads
+    past a held video's end, or on every chunk when a video is half precision or one is painted,
+    each video's window (chunk_windows): a held one gathered past its end, the painted one painted
+    into a new window (its mask gathered past its end while it is), a half one requantized into a
+    float32 window; the last held video's half window stays referenced through the chunk and into
+    the next. With a half output the seed is kept apart as decoded: chunk 1's decoded frames
+    through chunk 2, then a new chunk of them, made while the one before still lives. A half
+    input the core node gets whole is requantized once for the run."""
     def profile(c):
         pose = c.tensor("pose_video")
         total = int(c.widget("total_frames", 0)) or pose["n"]
-        chunk = max(5, (int(c.widget("frames_per_chunk", 81)) - 1) // 4 * 4 + 1)
+        chunk = snap_down(int(c.widget("frames_per_chunk", 81)))
+        keep = kept_frames(int(c.widget(overlap, 5))) if overlap else 1
+        lengths = chunk_lengths(total, chunk, keep, c.widget("last_chunk", last_chunk))
         h, w = int(c.widget("height")) // 8 * 8, int(c.widget("width")) // 8 * 8
-        out = image(total, h, w)
-        # one chunk: the output is a view of its decoded frames, so only the frames past total add
-        decoded = image_bytes(chunk - total if total <= chunk else chunk, h, w)
-        windows = sum(v["bytes"] // max(v["n"], 1) * chunk for v in (c.tensor(name, required=False) for name in held) if v)
-        return ({0: out}, decoded + windows,
-                "decoded chunk + driving-video windows (upper bound); the core node's conditioning and the VAE / "
-                "sampler working sets not counted")
+        frame = image_bytes(1, h, w)
+        videos = {name: pose if name == "pose_video" else c.tensor(name) for name in held
+                  if name == "pose_video" or c.linked(name)}
+        seeks = {name: c.tensor(name) for name in seeked if c.linked(name)}
+        cut = {name: v for name, v in seeks.items() if v["n"] > 1}  # a single frame is handed over whole
+        once = sum(widened(v) for name, v in seeks.items() if name not in cut)
+        unknown = []
+        for name in ("reference_image", *whole):
+            v = c.tensor(name, required=False)
+            once += widened(v) if v else 0
+            unknown += [name] if c.linked(name) and v is None else []
+        paint = painted if painted and all(c.linked(name) for name in painted) else None
+        half = any(dtype_of(v) == F16 for v in (*videos.values(), *cut.values()))
+        half_out = dtype_of(pose) == F16
+        reach = max(total, lengths[0] + sum(length - keep for length in lengths[1:]))
+        short = [v["n"] for v in videos.values() if v["n"] < reach]
+        peak = local = 0  # local: the last held video's half window, referenced until the next is cut
+        decoded_before = 0
+        for k, (length, produced, decoded, start, stop) in enumerate(
+                chunk_windows(lengths, keep, total, [v["n"] for v in cut.values()])):
+            seed = 0 if not half_out or k == 0 else (decoded_before if k == 1 else chunk) * frame
+            moments, inputs = [], 0
+            if half or paint or any(produced + length > frames for frames in short):
+                for name, v in videos.items():
+                    per = v["bytes"] // v["n"]
+                    reached = min(stop, max(reach, v["n"]))
+                    window = (reached - start) * per if reached > v["n"] else 0  # a view inside the video
+                    moments.append(inputs + local + window)
+                    if paint and name == paint[0]:
+                        m = seeks[paint[1]]
+                        # a single frame (already requantized whole) is repeated over the video
+                        source, per_mask = (m["n"], m["bytes"] // m["n"]) if m["n"] > 1 else (v["n"], widened(m) or m["bytes"])
+                        gathered = (reached - start) * per_mask if reached > source else 0
+                        moments.append(inputs + window + gathered + (reached - start) * per)
+                        window = (reached - start) * per
+                    wide = (reached - start) * per * F32 // F16 if dtype_of(v) == F16 else 0
+                    moments.append(inputs + window + wide)
+                    inputs += wide or window
+                    local = window if wide else 0
+                for v in cut.values():
+                    if dtype_of(v) == F16:
+                        inputs += max(0, min(stop, v["n"]) - start) * (v["bytes"] // v["n"]) * F32 // F16
+            # one chunk at float32: the output is a view of its decoded frames, so only those past total add
+            own = decoded * frame if half_out or len(lengths) > 1 else (decoded - total) * frame
+            steady = inputs + local + own + seed
+            # a half output's next seed, made while the decoded chunk and the seed before it live
+            reseed = decoded * frame + seed + chunk * frame + local if half_out and k > 0 else 0
+            peak = max(peak, steady, reseed, *(moment + seed for moment in moments))
+            decoded_before = decoded
+        out = image(total, h, w, F16 if half_out else F32)
+        note = (f"chunk plan {' + '.join(map(str, lengths))}: decoded chunk, driving-video windows and seed; the core "
+                "node's conditioning and the VAE / sampler working sets not counted")
+        if float(c.widget("color_anchor_strength", 0.0)) > 0:
+            note += ", nor the colour anchor's"
+        if unknown:
+            note += f"; {', '.join(unknown)} has no estimate: its float32 copy, when half, not counted"
+        if not c.output_linked(0):
+            # the frames are generated all the same (frame_count counts them) and dropped at return
+            return {}, peak + once + out["bytes"], "images not linked: dropped at return; " + note
+        return {0: out}, peak + once, note
     return profile
 
 
 # -- the preprocess (pose, SAM 3.1 Multiplex, face, SCAIL-2) --------------------------------------
 
+def half_frames(img):
+    """What Pose Detection's frame loops hold besides their outputs on a half-precision clip: the
+    next frame is requantized on a worker thread into one of two reused float32 frames. 0 for a
+    float32 clip, read as a view."""
+    return 2 * image_bytes(1, img["h"], img["w"]) if dtype_of(img) == F16 else 0
+
+
 def _pose(c):
-    """Pose Detection: the pose images at the frame size, or at width x height when both are given."""
+    """Pose Detection: the pose images in the frames' dtype at the frame size, or at width x height
+    when both are given; not drawn when nothing links them."""
     img = c.tensor("images")
-    size = given_size(c, "the pose images'")
-    w, h = (img["w"], img["h"]) if size is None else size
-    return ({0: image(img["n"], h, w)}, 0, "drawn frame by frame into a preallocated output; the pose models' "
-            f"({c.widget('pose_model', 'ViTPose-H')}) weights and working set not counted")
+    out = {}
+    if c.output_linked(0):
+        size = given_size(c, "the pose images'")
+        w, h = (img["w"], img["h"]) if size is None else size
+        out[0] = image(img["n"], h, w, dtype_of(img))
+    return (out, half_frames(img), "drawn frame by frame into a preallocated output (not drawn when not linked); "
+            f"the pose models' ({c.widget('pose_model', 'ViTPose-H')}) weights and working set not counted")
 
 
 def _sam_track(c):
     img = c.tensor("images")
-    return {0: mask(img["n"], img["h"], img["w"])}, 0, "frames read as a view; SAM 3.1's own working set not counted"
+    return ({0: mask(img["n"], img["h"], img["w"], dtype_of(img))}, 0,
+            "a mask of the frames' dtype; frames read as a view; SAM 3.1's own working set not counted")
 
 
 def _face_crop(c):
     img = c.tensor("images")
-    return ({0: image(img["n"], FACE_SIZE, FACE_SIZE, img.get("dtype_bytes", F32))}, 0,
-            "512 x 512 crops into a preallocated output")
+    if not c.output_linked(0):
+        return {}, 0, "face_images not linked: the face boxes only, nothing cut"
+    return {0: image(img["n"], FACE_SIZE, FACE_SIZE)}, 0, "512 x 512 float32 crops (of a half clip too) into a preallocated output"
 
 
 def _wan_animate_preprocess(c):
+    """WanAnimate Preprocess: Pose Detection, SAM 3.1 and Face Crop chained, each heavy output made
+    only when linked, in the frames' dtype but the float32 face crops; the raw mask is made for the
+    final mask too, and the final mask for bg_images. An unlinked raw mask is freed once the final
+    mask is made of it; an unlinked final mask lives until bg_images is painted with it."""
     img = c.tensor("images")
-    n, h, w = img["n"], img["h"], img["w"]
-    out = {0: image(n, h, w), 1: image(n, FACE_SIZE, FACE_SIZE, img.get("dtype_bytes", F32)), 2: mask(n, h, w)}
-    # final_mask (a float32 mask) and bg_images (float32 frames) are made only when linked; bg_images is
-    # cut by the final mask, which it makes and drops when final_mask itself is not linked
-    final, background = c.output_linked(7), c.output_linked(8)
-    if final:
-        out[7] = mask(n, h, w)
-    if background:
-        out[8] = image(n, h, w)
-    transient = mask_bytes(n, h, w) if background and not final else 0
-    return (out, transient, "pose, mask, face crops, final mask and background frames (each only when linked) into "
-            "preallocated outputs; SAM 3.1's own working set not counted")
+    n, h, w, dtype = img["n"], img["h"], img["w"], dtype_of(img)
+    made = {0: image(n, h, w, dtype), 1: image(n, FACE_SIZE, FACE_SIZE), 2: mask(n, h, w, dtype), 7: mask(n, h, w, dtype),
+            8: image(n, h, w, dtype)}
+    out = {slot: est for slot, est in made.items() if c.output_linked(slot)}
+    one = mask_bytes(n, h, w, dtype)  # the raw mask, and the final mask
+    finals = 7 in out or 8 in out
+    unlinked = one * (finals and 2 not in out) + one * (8 in out and 7 not in out)
+    return (out, max(half_frames(img), unlinked), "pose, face crops, mask, final mask and background frames (each only "
+            "when linked) into preallocated outputs; SAM 3.1's own working set not counted")
 
 
-def _reference_size(c):
-    """(n, h, w) of the reference mask SCAIL-2 renders: the connected reference_mask's, else the
-    reference image's (SAM 3.1 tracks it at its size)."""
-    ref = c.tensor("reference_mask", required=False) or c.tensor("reference_image")
-    return ref["n"], ref["h"], ref["w"]
+def render_cut(m):
+    """The colored masks' cut of RENDER_CHUNK frames of the MASK estimate `m`: booleans, a half mask's
+    frames copied to float32 first."""
+    return min(RENDER_CHUNK, m["n"]) * m["h"] * m["w"] * (1 + (F32 if dtype_of(m) == F16 else 0))
 
 
 def _scail2_preprocess(c):
+    """SCAIL-2 Preprocess: Pose Detection in the pose modes (its pose images not drawn), SAM 3.1 on
+    the driving video and, without a connected reference_mask, on the reference image, then
+    SCAIL-2 Colored Mask; the masks and colored masks in their frames' dtype. pose_video_mask, the
+    driving video on black and the mask only when linked; an unlinked mask lives until the end."""
     img = c.tensor("images")
-    n, h, w = img["n"], img["h"], img["w"]
-    rn, rh, rw = _reference_size(c)
-    black = bool(c.widget("black_background", False))
-    out = {0: image(n, h, w, img.get("dtype_bytes", F32)) if black else shared(img), 1: image(n, h, w),
-           2: image(rn, rh, rw), 3: mask(n, h, w),
-           4: shared(c.tensor("reference_mask")) if c.linked("reference_mask") else mask(rn, rh, rw)}
-    # the pose modes read only Pose Detection's pose_data: its pose images are not drawn
-    return out, 0, "SAM 3.1's own working set not counted"
+    n, h, w, dtype = img["n"], img["h"], img["w"], dtype_of(img)
+    if c.linked("reference_mask"):
+        ref = c.tensor("reference_mask")
+        out = {4: shared(ref)}
+    else:
+        reference = c.tensor("reference_image")
+        ref = mask(reference["n"], reference["h"], reference["w"], dtype_of(reference))
+        out = {4: ref}
+    driving = mask(n, h, w, dtype)
+    out[2] = image(ref["n"], ref["h"], ref["w"], dtype_of(ref))
+    cuts = [render_cut(ref)]
+    if c.output_linked(1):
+        out[1] = image(n, h, w, dtype)
+        cuts.append(render_cut(driving))
+    if c.output_linked(0):
+        black = bool(c.widget("black_background", False))
+        out[0] = image(n, h, w, dtype) if black else shared(img)
+        cuts.append(mask_bytes(min(RENDER_CHUNK, n), h, w, 1) if black else 0)  # the boolean cut, 16 frames
+    if c.output_linked(3):
+        out[3] = driving
+    pose = half_frames(img) if c.widget("mode") != "prompt" else 0
+    dropped = 0 if 3 in out else driving["bytes"]
+    return out, max(pose, dropped + max(cuts)), "cut 16 frames at a time; SAM 3.1's own working set not counted"
 
 
 def _scail2_colored_mask(c):
     driving = c.tensor("driving_mask")
-    ref = c.tensor("reference_mask", required=False)
-    n, h, w = (ref["n"], ref["h"], ref["w"]) if ref else (1, driving["h"], driving["w"])
-    chunk = mask_bytes(min(RENDER_CHUNK, driving["n"]), driving["h"], driving["w"], 1)  # the boolean cut
-    return {0: image(driving["n"], driving["h"], driving["w"]), 1: image(n, h, w)}, chunk, "16 frames at a time"
+    ref = c.tensor("reference_mask") if c.linked("reference_mask") else None
+    # without a reference mask the reference is one float32 frame of zeros at the driving mask's size
+    reference = ref or mask(1, driving["h"], driving["w"])
+    out = {1: image(reference["n"], reference["h"], reference["w"], dtype_of(reference))}
+    cuts = [render_cut(reference) + (0 if ref else reference["bytes"])]
+    if c.output_linked(0):
+        out[0] = image(driving["n"], driving["h"], driving["w"], dtype_of(driving))
+        cuts.append(render_cut(driving))
+    return out, max(cuts), "in the masks' dtype, cut 16 frames at a time; pose_video_mask not rendered when not linked"
 
 
 def _pose_guard(c):
@@ -615,21 +811,23 @@ def _join_lists(c):
 PROFILES = {
     # loaders and resizers
     "VHS_LoadVideo": _whole_clip_loader, "VHS_LoadVideoPath": _whole_clip_loader, "BCVLoadVideo": _bcv_load_video,
+    "BCVGetVideoInfo": _bcv_get_video_info,
     "LoadImage": _load_image, "BCVLoadReferenceImage": _bcv_load_reference,
     "ImageResizeKJv2": _resize_listed_then_cat, "BC_ImageResize": _resize_preallocated, "ImageScale": _image_scale,
     "BCVConformVideo": _conform_video, "BC_ImageScaleByAspectRatio": _scale_by_aspect_ratio,
     # masks
-    "BC_MaskGrow": _same_mask("preallocated output"), "BC_MaskFillHoles": _same_mask("preallocated output", name="masks"),
-    "BC_BlockifyMask": _same_mask("preallocated output", name="masks"),
+    "BC_MaskGrow": _float_mask(), "BC_MaskFillHoles": _float_mask("masks"), "BC_BlockifyMask": _float_mask("masks"),
     "BlockifyMask": _same_mask("zeros_like work buffer + clamp copy: 1 x mask", 1, name="masks"),
     "BC_RepeatMaskBatch": _repeat_mask("amount"), "VHS_DuplicateMasks": _repeat_mask("multiply_by"),
     "DrawMaskOnImage": _draw_mask_cloned, "BC_DrawMaskOnImage": _draw_mask_preallocated,
     # Wan and core sampling
     "WanAnimateToVideo": _wan_to_video, "WanImageToVideo": _wan_to_video,
     "KSampler": _sampler, "KSamplerAdvanced": _sampler, "VAEDecode": _vae_decode, "VAEDecodeTiled": _vae_decode,
-    "BCVWanAnimateLongVideoSampler": _long_video(("pose_video", "face_video", "background_video")),
-    "BCVWanAnimate2LongVideoSampler": _long_video(("pose_video", "face_video", "background_video")),
-    "BCVSCAIL2LongVideoSampler": _long_video(("pose_video", "pose_video_mask")),
+    "BCVWanAnimateLongVideoSampler": _long_video(("pose_video", "face_video", "background_video"), ("character_mask",),
+                                                 ("background_video", "character_mask"), "continue_motion_max_frames"),
+    "BCVWanAnimate2LongVideoSampler": _long_video(("pose_video",)),  # its node takes no face or background video
+    "BCVSCAIL2LongVideoSampler": _long_video(("pose_video", "pose_video_mask"), overlap="previous_frame_count", last_chunk="full",
+                                             whole=("reference_image_mask",)),
     # the preprocess
     "BCVPoseDetection": _pose, "BCVSAM3VideoTrack": _sam_track, "BCVFaceCrop": _face_crop,
     "BCVWanAnimatePreprocess": _wan_animate_preprocess, "BCVSCAIL2Preprocess": _scail2_preprocess,

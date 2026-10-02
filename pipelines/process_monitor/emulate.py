@@ -185,7 +185,9 @@ def emulate(prompt, workflow, env, ram_limit, ram_now, measured=None, node_cost_
     current = estimate(prompt, env, None, measured, weight_cache)
     table = None
     if any(node["class_type"] in VIDEO_LOADERS for node in prompt.values()):
-        own = [r["outputs"][0]["shape"][0] for r in current["rows"] if r["class_type"] in VIDEO_LOADERS and r["outputs"]]
+        # a loader's frames, when it outputs them (an unlinked heavy output is dropped)
+        own = [r["outputs"][0]["shape"][0] for r in current["rows"]
+               if r["class_type"] in VIDEO_LOADERS and r["outputs"] and r["outputs"][0]["type"] == "IMAGE"]
         frames = sorted(set(FRAME_COUNTS) | set(own))
         table = {"frames": frames, "rows": []}
         for label, w, h in RESOLUTIONS:

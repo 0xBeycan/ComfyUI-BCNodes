@@ -34,12 +34,14 @@ class Env:
         "LoadImage": ["IMAGE", "MASK"], "BCVConformVideo": ["IMAGE"],
         "BCVWanAnimateLongVideoSampler": ["IMAGE", "INT", "STRING"], "BCVSCAIL2LongVideoSampler": ["IMAGE", "INT", "STRING"],
         "BCVWanAnimatePreprocess": ["IMAGE", "IMAGE", "MASK", "POSEDATA", "BBOX", "STRING", "BBOX", "MASK", "IMAGE"],
-        "BCVSCAIL2Preprocess": ["IMAGE", "IMAGE", "IMAGE", "MASK", "MASK"], "BCVSCAIL2ColoredMask": ["IMAGE", "IMAGE"],
+        "BCVSCAIL2Preprocess": ["IMAGE", "IMAGE", "IMAGE", "MASK", "MASK", "BOOLEAN"], "BCVSCAIL2ColoredMask": ["IMAGE", "IMAGE"],
         "BCVPoseDetection": ["IMAGE", "POSEDATA", "BBOX", "STRING"], "BCVSAM3VideoTrack": ["MASK"],
         "BCVFaceCrop": ["IMAGE", "BBOX"], "BCVMaskGuard": ["MASK", "STRING", "STRING", "IMAGE"],
         "BCVWanAnimatePreprocessGuard": ["MASK", "POSEDATA", "STRING", "STRING", "IMAGE"],
         "BCVSCAIL2PreprocessGuard": ["IMAGE", "IMAGE", "STRING", "STRING", "IMAGE"], "BCVPoseGuard": ["POSEDATA", "STRING", "STRING", "IMAGE"],
-        "BCVGetVideoInfo": ["STRING", "STRING", "STRING", "FLOAT", "INT"], "BCVSaveVideo": [], "PreviewImage": ["IMAGE"],
+        "BCVGetVideoInfo": ["STRING", "STRING", "STRING", "FLOAT", "INT", "FLOAT", "INT", "INT", "FLOAT", "INT", "FLOAT", "INT", "INT",
+                            "AUDIO"],
+        "BCVSaveVideo": [], "PreviewImage": ["IMAGE"], "BCVWanAnimate2LongVideoSampler": ["IMAGE", "INT", "STRING"],
         "BC_SeedVR2Resize": ["IMAGE", "IMAGE"], "BC_SeedVR2VAEEncode": ["LATENT"], "BC_SeedVR2VAEDecode": ["IMAGE"],
         "BC_SeedVR2PostProcess": ["IMAGE"], "BC_SeedVR2PreprocessCompact": ["LATENT", "SEEDVR2_PLAN"],
         "BC_SeedVR2PostProcessCompact": ["IMAGE"], "BC_ImageScaleByAspectRatio": ["IMAGE", "MASK", "BOX", "INT", "INT"],
@@ -229,8 +231,15 @@ def test_bcv_loader_reference_and_conform(em):
          "3": N("BCVConformVideo", images=["1", 0], fit="crop", method="lanczos")}
     rows = {row["id"]: row for row in em.estimate(p, env)["rows"]}
     assert rows["1"]["outputs"][0]["shape"] == [297, 720, 1280, 3]  # landscape source; 300 frames -> 4n+1
+    # precision left out (a workflow saved before the widget): its default, fp16
+    assert rows["1"]["output_bytes"] == 297 * 720 * 1280 * 3 * 2 and rows["1"]["transient"] == 0
     assert rows["2"]["outputs"][0]["shape"] == [1, 720, 1280, 3]
+    assert rows["2"]["output_bytes"] == 720 * 1280 * 3 * 4 + 720 * 1280 * 4  # the reference is float32
     assert rows["3"]["outputs"][0]["shape"] == [297, 720, 1280, 3]
+    assert rows["3"]["outputs"][0]["shared"] and rows["3"]["output_bytes"] == 0  # already 720p: passed on untouched
+    p["1"]["inputs"]["precision"] = "fp32"
+    assert em.estimate(p, env)["rows"][0]["output_bytes"] == 297 * 720 * 1280 * 3 * 4
+    del p["1"]["inputs"]["precision"]
     # model None: every frame; resolution source: the video's size, in the other orientation its centred crop
     # to that aspect with the short side kept (1920x1080 -> 608x1080), each side cut to the model's grid
     for model, resolution, orientation, shape in [
@@ -240,6 +249,22 @@ def test_bcv_loader_reference_and_conform(em):
             ("None", "source", "landscape", [300, 1080, 1920, 3])]:
         p["1"]["inputs"].update(model=model, resolution=resolution, orientation=orientation)
         assert em.estimate(p, env)["rows"][0]["outputs"][0]["shape"] == shape, (model, resolution, orientation)
+
+
+def test_bcv_load_video_images_not_linked_and_get_video_info(em):
+    # only video_info linked: the clip is loaded all the same (video_info counts its frames) and dropped at return
+    env = Env(videos={"v.mp4": {"width": 1920, "height": 1080, "frames": 300, "fps": 30.0}})
+    p = {"1": N("BCVLoadVideo", video="v.mp4", model="Wan", resolution="720p", orientation="auto", force_fps="", start_frame=1,
+                frame_count="", precision="fp16"),
+         "2": N("BCVGetVideoInfo", video_info=["1", 2])}
+    rows = {row["id"]: row for row in em.estimate(p, env)["rows"]}
+    assert [o["type"] for o in rows["1"]["outputs"]] == ["BCV_VIDEO_INFO"] and rows["1"]["output_bytes"] == 0
+    assert rows["1"]["transient"] == 297 * 720 * 1280 * 3 * 2 and rows["1"]["note"].startswith("images not linked")
+    # Get Video Info: numbers, and Load Video's audio output itself
+    assert rows["2"]["status"] == "counted" and rows["2"]["outputs"] == [] and rows["2"]["output_bytes"] == 0
+    # the scenario table takes no frame count from a loader without its frames
+    out = em.emulate(p, {}, env, ram_limit=None, ram_now=0)
+    assert out["table"]["frames"] == list(em.FRAME_COUNTS)
 
 
 def test_video_table_and_calibration(em):
@@ -274,41 +299,102 @@ def rows_of(em, prompt, env=None):
     return {row["id"]: row for row in em.estimate(prompt, env or Env(videos={"v.mp4": PORTRAIT}))["rows"]}
 
 
-def loader(frame_count=""):
-    return N("BCVLoadVideo", video="v.mp4", model="Wan", resolution="720p", orientation="auto", force_fps="",
+def loader(frame_count="", precision=None):
+    """Load Video at 720p: 609 portrait frames of 720x1280; precision left out is its default, fp16."""
+    node = N("BCVLoadVideo", video="v.mp4", model="Wan", resolution="720p", orientation="auto", force_fps="",
              start_frame=1, frame_count=frame_count)
+    if precision:
+        node["inputs"]["precision"] = precision
+    return node
 
 
-def test_long_video_samplers(em, pf):
-    frame = 1280 * 720 * 3 * 4
+FRAME, MASK = 1280 * 720 * 3 * 4, 1280 * 720 * 4  # a 720x1280 frame and mask in float32
+FACE = 512 * 512 * 3 * 4
+
+
+def test_long_video_samplers(em):
+    # Wan Animate on Load Video's half clip: pose images half, face crops float32; output linked
     p = {"1": loader(), "2": N("BCVPoseDetection", images=["1", 0]), "3": N("BCVFaceCrop", images=["1", 0]),
          "4": N("BCVWanAnimateLongVideoSampler", pose_video=["2", 0], face_video=["3", 0], width=720, height=1280,
-                frames_per_chunk=81, total_frames=0)}
+                frames_per_chunk=81, total_frames=0),
+         "5": N("PreviewImage", images=["4", 0])}
     rows = rows_of(em, p)
-    assert rows["2"]["outputs"][0]["shape"] == [609, 1280, 720, 3] and rows["2"]["transient"] == 0
-    assert rows["3"]["outputs"][0]["shape"] == [609, 512, 512, 3]
+    assert rows["2"]["outputs"][0]["shape"] == [609, 1280, 720, 3] and rows["2"]["output_bytes"] == 609 * FRAME // 2
+    assert rows["3"]["outputs"][0]["shape"] == [609, 512, 512, 3] and rows["3"]["output_bytes"] == 609 * FACE
     sampler = rows["4"]
-    assert sampler["outputs"][0]["shape"] == [609, 1280, 720, 3]
-    # the decoded chunk + the pose and face windows of one chunk (81 frames each)
-    assert sampler["transient"] == 81 * frame + 81 * frame + 81 * 512 * 512 * 3 * 4
-    # a run shorter than one chunk: the output is a view of the decoded frames, the 31 past total add
+    # 81 + 7 x 76 = 613 >= 609: the last chunk fitted to the 72 frames left plus the 5 it keeps
+    assert "chunk plan 81 + 81 + 81 + 81 + 81 + 81 + 81 + 77" in sampler["note"]
+    assert sampler["outputs"][0]["shape"] == [609, 1280, 720, 3] and sampler["output_bytes"] == 609 * FRAME // 2
+    # the peak is chunk 2: its pose window spans chunks 1 and 2 (162 frames, requantized to float32; the
+    # face crops are float32 and inside their video: a view), its 81 decoded frames, and chunk 1's 81
+    # decoded frames kept as its seed (a half output keeps the seed apart, as decoded)
+    assert sampler["transient"] == 162 * FRAME + 81 * FRAME + 81 * FRAME
+    # one chunk (fit to 53 frames): its pose window requantized, its decoded frames, apart from the half output
     p["4"]["inputs"].update(total_frames=50)
-    assert rows_of(em, p)["4"]["transient"] == 31 * frame + 81 * frame + 81 * 512 * 512 * 3 * 4
-    # SCAIL-2: holds pose_video and pose_video_mask; the size is cropped to the VAE's /8
+    assert rows_of(em, p)["4"]["transient"] == 53 * FRAME + 53 * FRAME
+    # float32: no chunk reads past the videos, so no window; the seed is a view of the output
+    p["1"] = loader(precision="fp32")
+    p["4"]["inputs"].update(total_frames=0)
+    sampler = rows_of(em, p)["4"]
+    assert sampler["transient"] == 81 * FRAME and sampler["output_bytes"] == 609 * FRAME
+    # one chunk at float32: the output is a view of its 53 decoded frames, the 3 past total add
+    p["4"]["inputs"].update(total_frames=50)
+    assert rows_of(em, p)["4"]["transient"] == 3 * FRAME
+    del p["5"]  # images not linked: generated all the same and dropped at return
+    sampler = rows_of(em, p)["4"]
+    assert sampler["outputs"] == [] and sampler["transient"] == 53 * FRAME
+    # Wan Animate 2 keeps one frame of the chunk before: 81 + 6 x 80 = 561, then 48 + 1 -> 49
+    p = {"1": loader(), "4": N("BCVWanAnimate2LongVideoSampler", pose_video=["1", 0], width=720, height=1280,
+                               frames_per_chunk=81, total_frames=0), "5": N("PreviewImage", images=["4", 0])}
+    assert "chunk plan 81 + 81 + 81 + 81 + 81 + 81 + 81 + 49:" in rows_of(em, p)["4"]["note"]
+
+
+def test_scail2_sampler(em):
+    # SCAIL-2 holds pose_video and pose_video_mask, both half here; every chunk full length (its default);
+    # the size is cropped to the VAE's /8
     p = {"1": loader(), "2": N("BCVSCAIL2ColoredMask", driving_mask=["3", 0], replacement_mode=False),
          "3": N("BCVSAM3VideoTrack", images=["1", 0]),
          "4": N("BCVSCAIL2LongVideoSampler", pose_video=["1", 0], pose_video_mask=["2", 0], width=706, height=1284,
-                frames_per_chunk=83, total_frames=0)}
+                frames_per_chunk=83, total_frames=0),
+         "5": N("PreviewImage", images=["4", 0])}
     rows = rows_of(em, p)
-    assert rows["3"]["outputs"][0]["shape"] == [609, 1280, 720]
+    assert rows["3"]["outputs"][0]["shape"] == [609, 1280, 720] and rows["3"]["output_bytes"] == 609 * MASK // 2
     assert rows["2"]["outputs"][0]["shape"] == [609, 1280, 720, 3] and rows["2"]["outputs"][1]["shape"] == [1, 1280, 720, 3]
-    assert rows["2"]["transient"] == 16 * 1280 * 720  # the boolean cut of 16 frames
-    assert rows["4"]["outputs"][0]["shape"] == [609, 1280, 704, 3]
-    assert rows["4"]["transient"] == 81 * 1280 * 704 * 3 * 4 + 2 * 81 * frame
+    sampler = rows["4"]
+    assert "chunk plan 81 + 81 + 81 + 81 + 81 + 81 + 81 + 81:" in sampler["note"]  # 81 + 7 x 76 = 613
+    assert sampler["outputs"][0]["shape"] == [609, 1280, 704, 3] and sampler["output_bytes"] == 609 * 1280 * 704 * 3 * 2
+    # chunk 2: both windows span chunks 1 and 2 (162 frames each, requantized to float32), its decoded frames and
+    # chunk 1's as its seed. The last chunk reads past the videos (613 > 609): gathered windows of 81 frames,
+    # less than chunk 2
+    decoded = 1280 * 704 * 3 * 4
+    assert sampler["transient"] == 2 * 162 * FRAME + 81 * decoded + 81 * decoded
+
+
+def test_wan_animate_sampler_paints_the_background(em):
+    # replacement mode on Load Video's half frames: the background the clip itself, the character mask
+    # WanAnimate Preprocess's final mask (half); 161 frames: chunks 81 + 81 + 9
+    p = {"1": loader(frame_count="161"),
+         "2": N("BCVWanAnimatePreprocess", images=["1", 0], mode="prompt"),
+         "3": N("BCVWanAnimateLongVideoSampler", pose_video=["2", 0], face_video=["2", 1], background_video=["1", 0],
+                character_mask=["2", 7], width=720, height=1280, frames_per_chunk=81, total_frames=0),
+         "4": N("PreviewImage", images=["3", 0])}
+    rows = rows_of(em, p)
+    assert [o["slot"] for o in rows["2"]["outputs"]] == [0, 1, 7]
+    sampler = rows["3"]
+    assert "chunk plan 81 + 81 + 9:" in sampler["note"]
+    # chunk 2 reads frames 0..161 (its seed, the whole chunk 1, and its own, cut at the plan's reach): the pose and
+    # background windows requantized to float32, the character mask's too, the painted half background window
+    # (referenced until the next chunk cuts its windows), its decoded frames and chunk 1's as its seed
+    assert sampler["transient"] == 161 * FRAME + 161 * FRAME + 161 * MASK + 161 * FRAME // 2 + 81 * FRAME + 81 * FRAME
+    # float32: the background painted into a new window every chunk; no requantized copy, no seed apart
+    p["1"] = loader(frame_count="161", precision="fp32")
+    assert rows_of(em, p)["3"]["transient"] == 161 * FRAME + 81 * FRAME
+    # the background alone: nothing painted, a float32 background inside its video is read as a view
+    del p["3"]["inputs"]["character_mask"]
+    assert rows_of(em, p)["3"]["transient"] == 81 * FRAME
 
 
 def test_preprocess_wrappers_and_guards(em):
-    frame, mask = 1280 * 720 * 3 * 4, 1280 * 720 * 4
     p = {"1": loader(), "9": N("LoadImage", image="ref.png"),
          "2": N("BCVWanAnimatePreprocess", images=["1", 0], mode="prompt"),
          "3": N("BCVWanAnimatePreprocessGuard", mask=["2", 2], pose_data=["2", 3]),
@@ -318,7 +404,9 @@ def test_preprocess_wrappers_and_guards(em):
          "6": N("BCVMaskGuard", mask=["4", 3]), "7": N("BCVPoseGuard", pose_data=["2", 3]),
          "8": N("PreviewImage", images=["4", 0]), "10": N("BCVSaveVideo", images=["4", 0])}
     rows = rows_of(em, p)
-    assert [o["shape"] for o in rows["2"]["outputs"]] == [[609, 1280, 720, 3], [609, 512, 512, 3], [609, 1280, 720]]
+    # only the raw mask is linked: no pose image drawn, no face cut; the half clip read two float32 frames at a time
+    assert [o["shape"] for o in rows["2"]["outputs"]] == [[609, 1280, 720]]
+    assert rows["2"]["output_bytes"] == 609 * MASK // 2 and rows["2"]["transient"] == 2 * FRAME
     guard = rows["3"]
     assert guard["output_bytes"] == (128 + 190 * 4) * 1200 * 3 * 4  # the mask is passed on; the timeline is new
     assert guard["transient"] == 5 * 1280 * 720 and guard["outputs"][0]["shared"]
@@ -326,47 +414,86 @@ def test_preprocess_wrappers_and_guards(em):
     shapes = [o["shape"] for o in scail["outputs"]]
     assert shapes == [[609, 1280, 720, 3], [609, 1280, 720, 3], [1, 480, 640, 3], [609, 1280, 720], [1, 480, 640]]
     assert scail["outputs"][0]["shared"]  # black_background off: the driving video itself
-    assert scail["output_bytes"] == 609 * frame + 480 * 640 * 3 * 4 + 609 * mask + 480 * 640 * 4
-    assert scail["transient"] == 0  # box_keypoint reads Pose Detection's pose_data only: no pose images drawn
+    # the driving masks in the clip's half dtype, the reference ones float32 (the reference image is)
+    assert scail["output_bytes"] == 609 * FRAME // 2 + 480 * 640 * 3 * 4 + 609 * MASK // 2 + 480 * 640 * 4
+    # box_keypoint runs Pose Detection (two float32 frames; no pose image drawn); the driving mask is colored
+    # 16 frames at a time: a float32 copy of the half frames and the boolean cut
+    assert scail["transient"] == 16 * 1280 * 720 * (4 + 1)
     assert rows["5"]["transient"] == 609 * 1280 * 720 and rows["5"]["output_bytes"] == (128 + 190 * 2) * 1200 * 3 * 4
     assert rows["6"]["output_bytes"] == (128 + 190 * 3) * 1200 * 3 * 4
     assert rows["7"]["output_bytes"] == (128 + 190 * 2) * 1200 * 3 * 4
     assert rows["8"]["output_bytes"] == 0 and rows["10"]["outputs"] == []
     p["4"]["inputs"].update(mode="prompt", black_background=True)
     scail = rows_of(em, p)["4"]
-    assert scail["transient"] == 0 and not scail["outputs"][0]["shared"]
+    assert scail["transient"] == 16 * 1280 * 720 * (4 + 1) and not scail["outputs"][0]["shared"]
+    assert scail["outputs"][0]["bytes"] == 609 * FRAME // 2  # the driving video on black, in its dtype
+    # the masks not linked: pose_video_mask not rendered, the mask dropped at return (alive until then)
+    for node in ("5", "6", "8", "10"):
+        del p[node]
+    scail = rows_of(em, p)["4"]
+    assert [o["slot"] for o in scail["outputs"]] == [2, 4]
+    assert scail["transient"] == 609 * MASK // 2 + 480 * 640  # the reference mask's boolean cut, one frame
 
 
 def test_pose_detection_size_and_model(em):
-    p = {"1": loader(), "2": N("BCVPoseDetection", images=["1", 0], width=832, height=480)}
+    p = {"1": loader(), "2": N("BCVPoseDetection", images=["1", 0], width=832, height=480), "3": N("PreviewImage", images=["2", 0])}
     row = rows_of(em, p)["2"]
-    assert row["outputs"][0]["shape"] == [609, 480, 832, 3] and row["transient"] == 0  # drawn at width x height
+    # drawn at width x height in the clip's half dtype; the half frames read two float32 frames at a time
+    assert row["outputs"][0]["shape"] == [609, 480, 832, 3] and row["output_bytes"] == 609 * 480 * 832 * 3 * 2
+    assert row["transient"] == 2 * FRAME
     assert "(ViTPose-H) weights and working set not counted" in row["note"]
     p["2"]["inputs"]["pose_model"] = "Sapiens2 1b bf16"  # the same outputs; the model is named in the note
     row = rows_of(em, p)["2"]
     assert row["outputs"][0]["shape"] == [609, 480, 832, 3] and "(Sapiens2 1b bf16)" in row["note"]
+    p["1"] = loader(precision="fp32")  # a float32 clip is read as a view
+    row = rows_of(em, p)["2"]
+    assert row["transient"] == 0 and row["output_bytes"] == 609 * 480 * 832 * 3 * 4
     p["2"]["inputs"].update(width=["9", 0], height=["9", 1])  # sockets fed by links: known at run time only
     row = rows_of(em, p)["2"]
     assert row["status"] == "not counted" and "width / height come from links: the pose images'" in row["note"]
+    del p["3"]  # pose images not linked: not drawn, so their size does not matter
+    row = rows_of(em, p)["2"]
+    assert row["status"] == "counted" and row["outputs"] == []
+    p["3"] = N("PreviewImage", images=["2", 0])
     p["2"]["inputs"] = {"images": ["1", 0], "width": 832}
     row = rows_of(em, p)["2"]
     assert row["status"] == "not counted" and "only one of width / height is set" in row["note"]
 
 
-def test_wan_animate_preprocess_final_mask_and_bg_images_only_when_linked(em):
-    frame, mask = 1280 * 720 * 3 * 4, 1280 * 720 * 4
-    base = {"1": loader(), "2": N("BCVWanAnimatePreprocess", images=["1", 0], mode="prompt")}
-    consumers = {"final_mask": N("BCVWanAnimatePreprocessGuard", mask=["2", 7], pose_data=["2", 3]),
-                 "bg_images": N("PreviewImage", images=["2", 8])}
-    for linked, slots, transient in [((), [0, 1, 2], 0), (("final_mask",), [0, 1, 2, 7], 0),
-                                     (("bg_images",), [0, 1, 2, 8], 609 * mask),  # the final mask made and dropped
-                                     (("final_mask", "bg_images"), [0, 1, 2, 7, 8], 0)]:
-        row = rows_of(em, {**base, **{str(10 + i): consumers[name] for i, name in enumerate(linked)}})["2"]
-        assert [o["slot"] for o in row["outputs"]] == slots, linked
-        shapes = {o["slot"]: o["shape"] for o in row["outputs"]}
-        assert shapes.get(7, [609, 1280, 720]) == [609, 1280, 720] and shapes.get(8, [609, 1280, 720, 3]) == [609, 1280, 720, 3]
-        assert row["output_bytes"] == 609 * (frame + 512 * 512 * 3 * 4 + mask) + 609 * mask * (7 in slots) + 609 * frame * (8 in slots)
-        assert row["transient"] == transient, linked
+def test_wan_animate_preprocess_outputs_only_when_linked(em):
+    consumers = {0: N("PreviewImage", images=["2", 0]), 1: N("PreviewImage", images=["2", 1]),
+                 2: N("BCVMaskGuard", mask=["2", 2]), 7: N("BCVWanAnimatePreprocessGuard", mask=["2", 7], pose_data=["2", 3]),
+                 8: N("PreviewImage", images=["2", 8])}
+    for precision, two in (("fp16", 2), ("fp32", 4)):
+        base = {"1": loader(precision=precision), "2": N("BCVWanAnimatePreprocess", images=["1", 0], mode="prompt")}
+        mask, sizes = 609 * 1280 * 720 * two, {0: 609 * FRAME * two // 4, 1: 609 * FACE, 2: 0, 7: 0, 8: 609 * FRAME * two // 4}
+        sizes[2] = sizes[7] = mask
+        reading = 2 * FRAME if two == 2 else 0  # Pose Detection's two float32 frames on a half clip
+        # linked slots, then the transient: the raw mask made for the final mask and freed once it is made;
+        # the final mask made for bg_images and kept until they are painted
+        for linked, transient in [((), reading), ((7,), mask), ((8,), 2 * mask), ((7, 8), mask), ((2, 7, 8), reading),
+                                  ((0, 1, 2), reading), ((2, 8), mask)]:
+            prompt = {**base, **{str(10 + slot): consumers[slot] for slot in linked}}
+            row = rows_of(em, prompt)["2"]
+            assert [o["slot"] for o in row["outputs"]] == list(linked), (precision, linked)
+            assert row["output_bytes"] == sum(sizes[slot] for slot in linked), (precision, linked)
+            assert row["transient"] == max(reading, transient), (precision, linked)
+
+
+def test_scail2_colored_mask(em):
+    p = {"1": loader(), "3": N("BCVSAM3VideoTrack", images=["1", 0]),
+         "2": N("BCVSCAIL2ColoredMask", driving_mask=["3", 0], replacement_mode=False), "4": N("PreviewImage", images=["2", 0])}
+    row = rows_of(em, p)["2"]
+    # the driving mask colored in its half dtype, 16 frames at a time (a float32 copy and the boolean cut); without a
+    # reference mask the reference is one float32 frame of zeros
+    assert row["output_bytes"] == 609 * FRAME // 2 + FRAME and row["transient"] == 16 * 1280 * 720 * (4 + 1)
+    del p["4"]  # pose_video_mask not linked: not rendered; the zeros and their cut
+    row = rows_of(em, p)["2"]
+    assert [o["slot"] for o in row["outputs"]] == [1] and row["transient"] == MASK + 1280 * 720
+    p["9"] = N("LoadImage", image="ref.png")
+    p["2"]["inputs"]["reference_mask"] = ["9", 1]
+    row = rows_of(em, p)["2"]
+    assert row["outputs"][0]["shape"] == [1, 480, 640, 3] and row["transient"] == 480 * 640
 
 
 def test_seedvr2_chain(em):
@@ -456,4 +583,23 @@ def test_a_passed_on_input_is_counted_once(em):
     rows = rows_of(em, p)
     mask = 609 * 1280 * 720 * 4
     assert rows["3"]["cache_after"] == rows["2"]["cache_after"] + rows["3"]["output_bytes"]
-    assert rows["4"]["output_bytes"] == mask and not rows["4"]["outputs"][0]["shared"]  # a new mask built on it
+    assert rows["4"]["output_bytes"] == mask and not rows["4"]["outputs"][0]["shared"]  # a new float32 mask built on it
+    assert rows["4"]["transient"] == mask  # the half mask read as float32: copied whole first
+
+
+def test_bcnodes_mask_nodes_make_float32(em):
+    # BCNodes' mask nodes read their mask as float32 and output float32: a half mask (SAM 3.1's on Load Video's
+    # half clip) is copied to float32 whole first; Draw Mask On Image's output is float32 whatever the image's dtype
+    p = {"1": loader(), "2": N("BCVSAM3VideoTrack", images=["1", 0]), "3": N("BC_MaskGrow", mask=["2", 0]),
+         "4": N("BC_BlockifyMask", masks=["2", 0], block_size=32), "5": N("BC_MaskFillHoles", masks=["2", 0]),
+         "6": N("BC_DrawMaskOnImage", image=["1", 0], mask=["2", 0], color="0, 0, 0")}
+    rows = rows_of(em, p)
+    for node in "345":
+        assert rows[node]["outputs"][0]["shape"] == [609, 1280, 720] and rows[node]["output_bytes"] == 609 * MASK, node
+        assert rows[node]["transient"] == 609 * MASK, node
+    assert rows["6"]["outputs"][0]["shape"] == [609, 1280, 720, 3] and rows["6"]["output_bytes"] == 609 * FRAME
+    assert rows["6"]["transient"] == 609 * MASK
+    p["1"] = loader(precision="fp32")  # a float32 mask is read as it is
+    rows = rows_of(em, p)
+    assert [rows[node]["transient"] for node in "3456"] == [0, 0, 0, 0]
+    assert rows["6"]["output_bytes"] == 609 * FRAME
