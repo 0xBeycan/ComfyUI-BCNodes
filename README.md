@@ -32,6 +32,8 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_SeedVR2VAEEncode` | [SeedVR2 VAE Encode](docs/seedvr2.md#bc_seedvr2vaeencode--seedvr2-vae-encode) | SeedVR2 VAE encode with the frames streamed from RAM slice by slice, so VRAM does not grow with the frame count |
 | `BC_SeedVR2VAEDecode` | [SeedVR2 VAE Decode](docs/seedvr2.md#bc_seedvr2vaedecode--seedvr2-vae-decode) | SeedVR2 VAE decode with every decoded slice streamed to RAM, so VRAM does not grow with the frame count |
 | `BC_SeedVR2PostProcess` | [SeedVR2 PostProcess](docs/seedvr2.md#bc_seedvr2postprocess--seedvr2-postprocess) | Post-Process SeedVR2 Output one frame at a time into one float16 output, no full-size temporaries |
+| `BC_SeedVR2PreprocessCompact` | [SeedVR2 Preprocess (Compact)](docs/seedvr2.md#bc_seedvr2preprocesscompact--seedvr2-preprocess-compact) | SeedVR2 Resize and VAE Encode in one node: outputs only the latent and the plan PostProcess (Compact) reads, no colour reference kept |
+| `BC_SeedVR2PostProcessCompact` | [SeedVR2 PostProcess (Compact)](docs/seedvr2.md#bc_seedvr2postprocesscompact--seedvr2-postprocess-compact) | SeedVR2 VAE Decode and PostProcess in one node: decodes only the kept frames and corrects them in place against a reference rebuilt per chunk from the original frames |
 | `BC_AutoModelDownloader` | [Auto Model Downloader](docs/loaders.md#bc_automodeldownloader--auto-model-downloader) | Lists a workflow's models and fetches the missing ones into `models/` |
 | `BC_PostFxApply` | [PostFx Apply](docs/postfx.md#bc_postfxapply--postfx-apply-and-the-look-nodes) | Applies a `postfx` film-emulation look (theme + condition + strength) to an image batch, optional look override and mask |
 | `BC_PostFxTheme` | [PostFx Theme](docs/postfx.md#bc_postfxapply--postfx-apply-and-the-look-nodes) | Built-in `postfx` theme → `POSTFX_LOOK`, to start a chain from a named look |
@@ -59,7 +61,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | [`BCNodes/analysis`](docs/analysis.md) | Image Quality Gate, Caption Audit |
 | [`BCNodes/text`](docs/text.md) | Prompt List, Show Text |
 | [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Auto Model Downloader |
-| [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, VAE Decode, PostProcess |
+| [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, VAE Decode, PostProcess; Compact: Preprocess (Compact), PostProcess (Compact) |
 | [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
 
 ## Installation

@@ -145,7 +145,8 @@ where it is.
 ## How to add a node
 
 - Key `BC_<Name>`, a display name, and `CATEGORY` one of the 9 groups: `BCNodes/analysis`,
-  `image`, `loaders`, `logic`, `mask`, `postfx`, `seedvr2`, `text`, `workflow`.
+  `image`, `loaders`, `logic`, `mask`, `postfx`, `seedvr2` (with its subcategory `seedvr2/compact`),
+  `text`, `workflow`.
 - A literal `INPUT_TYPES` in the node class. The node file holds the surface only; the work goes
   to a pipeline (or straight to libs/models when there is no flow).
 - Import the module in the root `__init__.py` and add it to the registration loop (order = menu
