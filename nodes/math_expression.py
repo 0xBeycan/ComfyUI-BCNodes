@@ -10,7 +10,6 @@ node types and functions is walked; anything else is a ValueError.
     iif(a > b, a, b)     comparisons yield 1 / 0
 """
 
-from ..libs.math_expression import evaluate, is_volatile
 from .common import ANY
 
 
@@ -75,9 +74,13 @@ class MathExpression:
         # changed on every run, which also re-runs everything below it, so it
         # is reserved for expressions whose result can differ with the same
         # inputs.
+        from ..libs.math_expression import is_volatile
+
         return float("nan") if is_volatile(expression) else expression
 
     def run(self, expression, prompt=None, extra_pnginfo=None, a=None, b=None, c=None):
+        from ..libs.math_expression import evaluate
+
         result = evaluate(expression, {"a": a, "b": b, "c": c}, _size_of, lambda owner, attr: _widget_value(extra_pnginfo, prompt, owner, attr))
         return {"ui": {"value": [result]}, "result": (int(result), float(result))}
 

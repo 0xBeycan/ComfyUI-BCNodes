@@ -225,12 +225,12 @@ def main():
                                                                                     sr.resize(levels, 1.5, down, 0, True))) or _fail())
 
     fd = m["seedvr2"].SeedVR2FramingDownscale()
-    fd_widgets = dict(sam3_model=m["seedvr2"].DEFAULT_SAM3, close_up_min_face=0.3, close_up_factor=0.5, medium_min_face=0.18,
+    fd_widgets = dict(sam3_model=m["models.sam3.checkpoint"].DEFAULT_SAM3, close_up_min_face=0.3, close_up_factor=0.5, medium_min_face=0.18,
                       medium_factor=0.75, far_factor=1.0, no_face_factor=1.0, detection_threshold=0.5)
     check("SeedVR2FramingDownscale None -> ValueError", lambda: _raises(ValueError, lambda: fd.choose(None, **fd_widgets)))
     check("SeedVR2FramingDownscale empty batch -> ValueError", lambda: _raises(ValueError, lambda: fd.choose(torch.zeros(0, 8, 8, 3), **fd_widgets)))
     check("SeedVR2FramingDownscale: the default checkpoint is offered even with no checkpoints on disk",
-          lambda: m["seedvr2"].DEFAULT_SAM3 in fd.INPUT_TYPES()["required"]["sam3_model"][0] or _fail())
+          lambda: m["models.sam3.checkpoint"].DEFAULT_SAM3 in fd.INPUT_TYPES()["required"]["sam3_model"][0] or _fail())
 
     class VideoAutoencoderKLWrapper:  # stand-in for comfy's SeedVR2 VAE: 4 pixel frames <-> 1 latent frame (first slice 5 <-> 2), 8x spatial
         use_slicing = True
@@ -536,12 +536,13 @@ def main():
 
     # --- Skin Texture -------------------------------------------------------
     st = m["skin_texture"]
+    default_sam3 = m["models.sam3.checkpoint"].DEFAULT_SAM3  # the node imports it inside INPUT_TYPES
     node = st.SkinTexture()
-    kw = dict(sam3_model=st.DEFAULT_SAM3, texture=0.5, detail=0.6, pore_scale=1.0, feather=0, seed=3, threshold=0.5)
+    kw = dict(sam3_model=default_sam3, texture=0.5, detail=0.6, pore_scale=1.0, feather=0, seed=3, threshold=0.5)
     src = torch.rand(1, 64, 80, 3) * 0.5 + 0.25
     ones = torch.ones(1, 64, 80)
     check("SkinTexture: the default checkpoint is offered even with no checkpoints on disk",
-          lambda: st.DEFAULT_SAM3 in node.INPUT_TYPES()["required"]["sam3_model"][0] or _fail())
+          lambda: default_sam3 in node.INPUT_TYPES()["required"]["sam3_model"][0] or _fail())
     check("SkinTexture None -> empty", lambda: node.run(None, **kw)[0].shape == (0, 64, 64, 3) or _fail())
     r = node.run(src, mask=ones, **kw)
     check("SkinTexture: mask path skips SAM 3, same shape, in [0, 1], changed",

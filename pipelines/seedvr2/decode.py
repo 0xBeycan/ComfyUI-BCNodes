@@ -26,7 +26,7 @@ import logging
 import torch
 
 from ...models.seedvr2.tiling import tile_plan, tile_weight
-from ...models.seedvr2.vae import DECODER_BYTES_PER_PIXEL, DECODER_FIXED_BYTES, LATENT_CHANNELS, make_room_for_vae, vae_model
+from ...models.seedvr2.vae import DECODER_BYTES_PER_PIXEL, DECODER_FIXED_BYTES, LATENT_CHANNELS, make_room_for_vae, tile_for, vae_model
 from . import FRAMES_PER_CHUNK, TRIM_EVERY
 from .progress import Progress
 
@@ -43,6 +43,7 @@ def decode(samples, vae, tile_size, overlap, keep=None):
     b, _, t_latent, h, w = z.shape
     t_pixel = max(1, t_latent * 4 - 3)  # comfy/sd.py upscale_ratio for this VAE
     out_t = t_pixel if keep is None else min(t_pixel, keep[0])
+    tile_size = tile_for(tile_size, h * 8, w * 8, DECODER_FIXED_BYTES, DECODER_BYTES_PER_PIXEL, vae.device, "SeedVR2 VAE Decode")
     if tile_size < overlap * 4:  # nodes.py VAEDecodeTiled
         overlap = tile_size // 4
     tile_lat = max(1, tile_size // 8)  # vae.py decode_tiled -> tiled_vae(encode=False): latent tile and overlap

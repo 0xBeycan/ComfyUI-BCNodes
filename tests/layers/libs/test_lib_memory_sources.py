@@ -85,6 +85,25 @@ def test_v1_memory_controller(ms, tmp_path):
     assert cg.open_peak_window() is None  # v1 has no per-reader reset
 
 
+def test_a_limit_equal_to_the_ram_the_container_shows_is_found(ms, tmp_path, monkeypatch):
+    """A container whose /proc/meminfo is its own (LXCFS: MemTotal is the cgroup's limit, as on every
+    RunPod pod measured, v2 and v1) shows psutil the limit as the machine's RAM: the cgroup is still
+    the reading, not the process RSS."""
+    files = dict(V2_FILES, **{"memory.max": f"{129490747392}\n"})
+    root, proc = tree(tmp_path, "0::/", files)
+
+    class Shown:  # psutil's reading inside such a container: MemTotal == memory.max
+        kind, limit = "process", 129490747392
+
+    monkeypatch.setattr(ms, "ProcessMemory", Shown)
+    ram = ms.ram_source(root, proc)
+    assert ram.kind == "cgroup" and (ram.version, ram.limit, ram.directory) == (2, 129490747392, root)
+    files = {"memory/memory.limit_in_bytes": f"{GIB}\n", "memory/memory.usage_in_bytes": "900000000\n"}
+    root, proc = tree(tmp_path / "v1", "4:memory:/docker/x", files)
+    cg = ms.find_cgroup(GIB, root, proc)
+    assert (cg.version, cg.limit) == (1, GIB)
+
+
 def test_v1_unlimited_is_ignored(ms, tmp_path):
     files = {"memory/memory.limit_in_bytes": "9223372036854771712\n", "memory/memory.usage_in_bytes": "1\n"}
     root, proc = tree(tmp_path, "4:memory:/", files)

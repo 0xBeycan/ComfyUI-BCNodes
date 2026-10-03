@@ -7,7 +7,6 @@ The merge is libs/frequency.py: a Gaussian low-pass of `base` plus the high-pass
 
 import torch
 
-from ..libs.frequency import frequency_merge
 from .common import DEVICES, compute_device
 
 
@@ -49,6 +48,8 @@ class FrequencyMerge:
                    "at two downscale factors: the face of one, the skin texture of the other.")
 
     def merge(self, base, detail, split_sigma, detail_strength, device="cpu"):
+        from ..libs.frequency import frequency_merge
+
         if not isinstance(base, torch.Tensor) or base.ndim != 4 or not isinstance(detail, torch.Tensor) or detail.ndim != 4:
             raise ValueError("Frequency Merge: connect two image batches (B, H, W, C) to base and detail")
         return (frequency_merge(base, detail, split_sigma, detail_strength, compute_device(device)),)

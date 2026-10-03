@@ -1,8 +1,8 @@
 """RAM and VRAM readers for the Process Monitor.
 
-RAM comes from the container's cgroup when one limits this process below the host's RAM (v2
-`memory.current` / `memory.max` / `memory.peak` / `memory.events`, or the v1 files of the same
-counters), otherwise from the process RSS through psutil. Host RAM is never used inside a
+RAM comes from the container's cgroup when one limits this process at or below the RAM the
+process sees (v2 `memory.current` / `memory.max` / `memory.peak` / `memory.events`, or the v1 files of
+the same counters), otherwise from the process RSS through psutil. Host RAM is never used inside a
 container: it hides the limit the kernel kills at.
 
 VRAM comes from torch's allocator counters (CUDA, or MPS on Apple silicon); NVML adds the
@@ -155,12 +155,14 @@ class PeakWindow:
 
 
 def find_cgroup(host_total, root=CGROUP_ROOT, proc_self_cgroup=PROC_SELF_CGROUP):
-    """The cgroup whose memory limit is the tightest one below host_total, or None (no container, no
-    limit, or not Linux when the default paths are used)."""
+    """The cgroup whose memory limit is the tightest one at or below host_total (the RAM /proc/meminfo
+    shows), or None (no container, no limit, or not Linux when the default paths are used). A
+    container's /proc/meminfo can be its own (LXCFS, as on RunPod: MemTotal is the cgroup's limit), so
+    the limit that binds can equal host_total; v1's "unlimited" is far above it."""
     best = None
     for directory, version in _candidates(root, proc_self_cgroup):
         limit = _int(os.path.join(directory, _FILES[version]["limit"]))
-        if limit is not None and 0 < limit < host_total and (best is None or limit < best.limit):
+        if limit is not None and 0 < limit <= host_total and (best is None or limit < best.limit):
             best = CgroupMemory(directory, version, limit)
     return best
 

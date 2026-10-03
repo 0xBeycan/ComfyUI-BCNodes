@@ -34,6 +34,7 @@ Nodes:
     BC_SeedVR2FramingDownscale   SeedVR2 Resize's downscale_factor from the face size (SAM 3)
     BC_SeedVR2Resize             SeedVR2 resize: shortest edge, antialiased bicubic, bf16 path
     BC_SeedVR2VAEEncode          SeedVR2 VAE encode, frames streamed from RAM
+    BC_SeedVR2ChunkSize          the frames per chunk the card holds, for Split SeedVR2 Latent
     BC_SeedVR2VAEDecode          SeedVR2 VAE decode, frames streamed to RAM
     BC_SeedVR2PostProcess        SeedVR2 post-process, one frame at a time
     BC_SeedVR2PreprocessCompact  SeedVR2 resize + VAE encode, no clip-sized output

@@ -5,9 +5,6 @@
 
 import torch
 
-from ..models.common import registry
-from ..models.common.registry import MATTING
-from ..pipelines import matting
 from .common import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
 
 
@@ -18,6 +15,9 @@ class BiRefNetRemoveBackground:
 
     @classmethod
     def INPUT_TYPES(cls):
+        from ..models.common import registry
+        from ..models.common.registry import MATTING
+
         return {
             "required": {
                 "image": ("IMAGE",),
@@ -52,6 +52,8 @@ class BiRefNetRemoveBackground:
     def remove_background(self, image, model, sensitivity=1.0, mask_blur=0, mask_offset=0, invert_output=False,
                           refine_foreground=False, background="Alpha", background_color="#222222", prompt_graph=None,
                           unique_id=None):
+        from ..pipelines import matting
+
         if image is None or image.shape[0] == 0:
             return (torch.zeros((0, 64, 64, 4)), torch.zeros((0, 64, 64)), torch.zeros((0, 64, 64, 3)))
         wanted = heavy_wanted(type(self), prompt_graph, unique_id)

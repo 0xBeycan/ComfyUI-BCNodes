@@ -1,5 +1,6 @@
 """The SeedVR2 VAE: its latent channels, the working set per tile pixel, the check that
-a VAE is the SeedVR2 one, and the VRAM room made before it runs."""
+a VAE is the SeedVR2 one, the tile tile_size 0 (auto) picks for the card, and the VRAM room
+made before it runs."""
 
 import logging
 
@@ -24,10 +25,24 @@ LATENT_CHANNELS = 16
 # under-estimate kills the run, an over-estimate costs a DiT reload. The old figures (17,000 and
 # 16,300 bytes per pixel, no fixed part, the decoder never measured) put the decoder's 1024 tile at
 # 16.6 GiB, and a 32 GB card with the DiT resident ran out of memory with 20.7 GiB free.
+#
+# Checked on an RTX 5090 (device limit 31.36 GiB, 30.7 GiB free with every model unloaded), 81 frames of
+# 1088x1920, overlap 256. Encoder, tile 1024: estimate 21.0 GiB, NVML peak 15.99; whole frame (2048):
+# estimate 36.0, NVML peak 30.08, and the same tile on 901 frames ran out of memory in its first slice
+# (28.67 GiB allocated + 2.49 asked). Decoder, tile 1024: estimate 29.8, NVML peak 31.22 (30.0 reserved,
+# the driver's own ~1.2 on top); whole frame: estimate 52.0, out of memory at its first slice. The
+# encoder's estimate is 5 to 6 GiB over its NVML peak on a free card, the margin the hold test above
+# showed it needs on a tight one and the 901-frame failure shows on a free one; the decoder's matches.
 ENCODER_FIXED_BYTES = 6_360_000_000
 ENCODER_BYTES_PER_PIXEL = 15_440
 DECODER_FIXED_BYTES = 7_950_000_000
 DECODER_BYTES_PER_PIXEL = 22_940
+# What the driver never hands out with no model loaded (the CUDA context, the libraries' handles): the 5090
+# above had 30.7 of its 31.36 GiB free with every model unloaded. tile_size 0 (auto) fits the working set
+# into the card's total less this.
+CONTEXT_BYTES = 768 * 2 ** 20
+TILE_STEP = 32  # the tile_size widget's step; an auto tile is a value it could hold
+MIN_TILE = 64  # the tile_size widget's smallest tile
 
 
 def vae_model(vae):
@@ -50,6 +65,31 @@ def _free_vram(device):
     if device.type == "cuda":
         return torch.cuda.mem_get_info(device)[0]
     return mm.get_free_memory(device)
+
+
+def tile_for(tile_size, height, width, fixed, per_pixel, device, label):
+    """The spatial tile a VAE flow runs with: `tile_size` itself, or for 0 (auto) the largest tile (a
+    multiple of TILE_STEP) whose working set, `fixed` + `per_pixel` x the tile's pixels on a `height` x
+    `width` frame, fits the card's total less CONTEXT_BYTES. That is the smallest tile covering the frame
+    (one tile, no blend) when it fits, else the largest one that does."""
+    import comfy.model_management as mm
+
+    if tile_size != 0:
+        return tile_size
+    budget = mm.get_total_memory(device) - CONTEXT_BYTES
+    tile = -(-max(height, width) // TILE_STEP) * TILE_STEP
+
+    def working_set(t):
+        return fixed + per_pixel * min(height, t) * min(width, t)
+
+    while tile > MIN_TILE and working_set(tile) > budget:
+        tile -= TILE_STEP
+    if working_set(tile) > budget:
+        logging.warning("%s: even a %d tile needs %.1f GiB, more than the %.1f GiB this card gives: it may run out of memory",
+                        label, tile, working_set(tile) / 2 ** 30, budget / 2 ** 30)
+    logging.info("%s: tile_size auto -> %d (%dx%d frame, %.1f GiB of %.1f GiB)", label, tile, width, height,
+                 working_set(tile) / 2 ** 30, budget / 2 ** 30)
+    return tile
 
 
 def make_room_for_vae(vae, needed):

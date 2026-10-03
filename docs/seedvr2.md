@@ -32,7 +32,28 @@ One node for the whole input stage of the SeedVR2 graph: `ImageScaleBy(lanczos, 
 
 `pixels` (`IMAGE`, the frames from *SeedVR2 Resize* `image`), `vae` (`VAE`, the SeedVR2 VAE), widgets `tile_size` (default `1024`), `overlap` (default `256`), `temporal_size`, `temporal_overlap` (the four of *VAE Encode (Tiled)*; the temporal two are ignored, as they are there for this VAE) → `LATENT` `(1, 16, T', H/8, W/8)`, float32.
 
-ComfyUI's *VAE Encode (Tiled)* moves the whole clip to the GPU first (after a full float32 `x × 2 − 1` copy in RAM), then encodes it slice by slice, so VRAM grows with the frame count on top of the encoder's fixed working set (over 28 GB for a whole 1080p frame, measured on a 32 GB card): 897 frames at 1080p do not fit a 32 GB card in one tile. This node runs the same slice loop with the same causal memory cache and the same `x × 2 − 1`, but builds each 4-frame input slice on the GPU only when its turn comes; the posterior mode, the crop to the latent size and the `× scaling_factor` follow the native path. VRAM is the encoder's working set whatever the length, and the float32 copy in RAM is gone. Spatial tiling is the native one: the same tile grid, cosine blend on the latent grid and count normalisation as `tiled_vae`, tile by tile with one causal cache at a time, the blend accumulated in float32 in RAM in the latent the node returns; a `tile_size` that covers the frame means one tile and no blend. At 1080p a whole-frame tile (2048) needs 27.7 GiB (driver level; 24.3 GiB torch peak) and just fits a 32 GB card with nothing else loaded; a 1024 tile needs 14 GiB, about 21 GiB free next to other resident memory (measured on an RTX PRO 4500, 81 frames at 1088x1920). `tests/parity_seedvr2_video.py --vae … --tile …` checks it against `VAE.encode_tiled` (expected: identical latent) and prints both peak VRAMs.
+ComfyUI's *VAE Encode (Tiled)* moves the whole clip to the GPU first (after a full float32 `x × 2 − 1` copy in RAM), then encodes it slice by slice, so VRAM grows with the frame count on top of the encoder's fixed working set (over 28 GB for a whole 1080p frame, measured on a 32 GB card): 897 frames at 1080p do not fit a 32 GB card in one tile. This node runs the same slice loop with the same causal memory cache and the same `x × 2 − 1`, but builds each 4-frame input slice on the GPU only when its turn comes; the posterior mode, the crop to the latent size and the `× scaling_factor` follow the native path. VRAM is the encoder's working set whatever the length, and the float32 copy in RAM is gone. Spatial tiling is the native one: the same tile grid, cosine blend on the latent grid and count normalisation as `tiled_vae`, tile by tile with one causal cache at a time, the blend accumulated in float32 in RAM in the latent the node returns; a `tile_size` that covers the frame means one tile and no blend. At 1080p a whole-frame tile (2048) needs 27.7 GiB (driver level; 24.3 GiB torch peak) on 81 frames and barely fits a 32 GB card with nothing else loaded (a 5090 peaked at 30.08 of its 31.36 GiB, and ran out of memory in the first slice of a 901-frame clip); a 1024 tile needs 14 GiB, about 21 GiB free next to other resident memory (measured on an RTX PRO 4500, 81 frames at 1088x1920). `tests/parity_seedvr2_video.py --vae … --tile …` checks it against `VAE.encode_tiled` (expected: identical latent) and prints both peak VRAMs.
+
+## `BC_SeedVR2ChunkSize` — SeedVR2 Chunk Size
+
+`latent` (`LATENT`, the encoded clip: *SeedVR2 Preprocess (Compact)* or *SeedVR2 VAE Encode* `latent`), widget `safety_margin` (default `0.64`) → `frames_per_chunk` (`INT`).
+
+The longest chunk ComfyUI's SeedVR2 sampler can take on this card. Set *Split SeedVR2 Latent*'s `chunking_mode` to `manual` and wire `frames_per_chunk` into its `frames_per_chunk` socket (it appears with `manual`). Split's own `auto` budgets the memory free when it runs with a law fitted on the 3B, and ran out of memory on both cards measured (at 1080p, 281 frames on an RTX PRO 6000).
+
+The pick is the largest 4n+1 chunk, at most the clip's frames, with
+
+    8.36 GiB + 0.6075 GiB × megapixels × latent frames × (1 + safety_margin)  ≤  the card's total memory
+
+where the megapixels are the DiT's frame (8 × 8 per latent cell, so 2.09 for 1088x1920) and a chunk of `n` latent frames is `4(n − 1) + 1` pixel frames. The line is the 5090's KSampler allocated peaks at 21 to 57 frames per chunk (7B int8, 1080p, dynamic VRAM, cudaMallocAsync). The card is ComfyUI's total for its device (on CUDA the driver's total, what an out-of-memory message calls the device limit), not the memory free when the node runs, so the pick is the same on every run of a card. A long clip on a busy card needs more than the line: the 5090's 900-frame clip at 49 frames failed in its 11th chunk with the driver at 1.42× the line's part per frame, and the 96 GB card ran 161 frames at 1.44× (its torch peak, 78 GiB, is far above the 60 the line gives). `safety_margin` 0.64 keeps 14% over the worse of those. Raise it if a chunk runs out of memory; lower it to try longer chunks.
+
+| card (device total) | 720p → 1080p (DiT 1088x1920) | 1080p → 4K (DiT 2160x3840) |
+| --- | --- | --- |
+| 24 GB (23.65 GiB) | 25 frames | 1 frame |
+| 32 GB (31.36 GiB, 5090) | 41 | 5 |
+| 48 GB (47.50 GiB) | 69 | 13 |
+| 96 GB (94.97 GiB, RTX PRO 6000) | 161 | 37 |
+
+41 and 161 are the longest chunks measured to run on those cards' long clips. The law is the 7B's; the 3B is narrower, so it gets the same, shorter-than-needed chunks. The node logs the card, the megapixels, the margin and the pick. A card that holds no latent frame gets 1 frame and a warning.
 
 ## `BC_SeedVR2VAEDecode` — SeedVR2 VAE Decode
 
@@ -58,7 +79,7 @@ Menu `BCNodes/seedvr2/compact`. The same chain as *SeedVR2 Resize* → *SeedVR2 
 
 ### `BC_SeedVR2PreprocessCompact` — SeedVR2 Preprocess (Compact)
 
-`image` (`IMAGE`, the original frames), `vae` (`VAE`, the SeedVR2 VAE), the widgets of *SeedVR2 Resize* (`upscale_factor`, `downscale_factor`, `max_resolution`, `emulate_bf16`) and of *SeedVR2 VAE Encode* (`tile_size`, `overlap`; the two temporal widgets, which this VAE ignores, are left out), with the same names and defaults.
+`image` (`IMAGE`, the original frames), `vae` (`VAE`, the SeedVR2 VAE), the widgets of *SeedVR2 Resize* (`upscale_factor`, `downscale_factor`, `max_resolution`, `emulate_bf16`) and of *SeedVR2 VAE Encode* (`tile_size`, `overlap`; the two temporal widgets, which this VAE ignores, are left out), with the same names and defaults, except that `tile_size` takes `0` (auto, the default; see *Auto tile* below).
 
 | Output | Type | Value |
 | --- | --- | --- |
@@ -69,9 +90,22 @@ Resize's `image` (the padded float16 clip) exists only inside the node, while it
 
 ### `BC_SeedVR2PostProcessCompact` — SeedVR2 PostProcess (Compact)
 
-`samples` (`LATENT`, the sampler's), `vae` (`VAE`), `image` (`IMAGE`, the same original frames), `plan` (`SEEDVR2_PLAN`), widgets `color_correction_method` (`lab` / `wavelet` / `adain` / `none`), `tile_size`, `overlap` → `images` (`IMAGE`, float16).
+`samples` (`LATENT`, the sampler's), `vae` (`VAE`), `image` (`IMAGE`, the same original frames), `plan` (`SEEDVR2_PLAN`), widgets `color_correction_method` (`lab` / `wavelet` / `adain` / `none`), `tile_size` (`0`, auto, by default), `overlap` → `images` (`IMAGE`, float16).
 
 The decode writes only the frames, rows and columns the output keeps into the output buffer (the 4n+1 frames and the pad to 16 are decoded, never stored), and each frame is colour-corrected in place there. Its reference is rebuilt from `image` four frames at a time with Resize's own code, so it is Resize's `reference`; `none` builds none. A float16 `image` is requantized to `k / 255` first, as in Resize. The node stops with an error when `image` is not the batch the plan was made from.
+
+### Auto tile
+
+`tile_size` `0` (the default of a new compact node) picks the largest tile whose working set fits the card: the one covering the frame (one tile, no blend, the fastest) when it fits, else the largest multiple of 32 below it that does. The working set is the VAE's own estimate, the one both nodes compare with the free VRAM before they run (a fixed part plus bytes per tile pixel; the encoder 6.36 GB + 15,440 bytes, the decoder 7.95 GB + 22,940), and the card is its total less 768 MiB the driver never hands out (a 5090 shows 30.7 of its 31.36 GiB free with every model unloaded). Any other `tile_size` is used as it is, so a saved workflow runs as before.
+
+| card | 1088x1920: encode / decode | 2160x3840: encode / decode |
+| --- | --- | --- |
+| 24 GB (23.65 GiB) | 1056 / 832 | 1056 / 832 |
+| 32 GB (31.36 GiB) | 1568 (2 tiles) / 1024 | 1280 / 1024 |
+| 48 GB (47.50 GiB) | 1920 (1 tile) / 1664 | 1664 / 1344 |
+| 96 GB (94.97 GiB) | 1920 (1 tile) / 1920 (1 tile) | 2816 / 1984 |
+
+On a 5090 a whole 1080p frame is not counted on for the encode: its estimate (36 GiB) is over the card, and although 81 frames ran at 30.08 GiB on the driver, 901 frames ran out of memory in the first slice. The 1568 tile is two tiles instead of 1024's six (27.5 s for 81 frames at 1024, 20.7 s at one tile). The decode keeps 1024, which ran with the driver at 31.22 of 31.36 GiB.
 
 ### Same output, less RAM
 

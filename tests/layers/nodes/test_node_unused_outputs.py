@@ -349,7 +349,7 @@ def test_image_scale_by_aspect_ratio_computes_only_linked_outputs(bcnodes, commo
                    round_to_multiple="8", scale_to_side="longest", scale_to_length=40, background_color="#000000")
     image, mask = torch.rand(2, 30, 20, 3), (torch.rand(2, 30, 20) if with_mask else None)
     full = cls().scale(**widgets, image=image, mask=mask)
-    fits = spy(monkeypatch, module, "fit_image")
+    fits = spy(monkeypatch, bcnodes["libs.image"], "fit_image")  # the node imports it when it runs
     out = cls().scale(**widgets, image=image, mask=mask, **hidden(common, cls, linked))
     check_outputs(cls, out, full, set(cls.HEAVY_OUTPUTS) - set(linked))
     # one fit per frame of each linked output

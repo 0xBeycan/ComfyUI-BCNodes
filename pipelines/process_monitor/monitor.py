@@ -28,7 +28,7 @@ from dataclasses import asdict
 
 from ...libs import memory_sources
 from ...libs.tensor_census import Covered, census, sized, storage_bytes
-from . import blackbox, emulate as emulate_mod, settings as settings_mod
+from . import blackbox, settings as settings_mod
 from .hook import MIN_COMFYUI, Hook, find
 
 PERIOD = 0.1
@@ -36,8 +36,8 @@ LIVE_EVERY = 10  # ticks: the live bars update once a second
 _LIBRARY_DIRS = tuple(p for p in {sysconfig.get_paths().get("stdlib"), sysconfig.get_paths().get("platstdlib")} if p)
 
 
-def _frame_text(frame):
-    return f"{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}" if frame is not None else None
+def _entry_text(code, line):
+    return f"{code.co_filename}:{line} {code.co_name}"
 
 
 def _is_library(filename):
@@ -45,28 +45,43 @@ def _is_library(filename):
             or filename.startswith(_LIBRARY_DIRS))
 
 
-def code_lines(frame):
-    """(line, top): the innermost frame outside the stdlib and installed packages (the line of the
-    node's own code, e.g. the torch.stack call), and the innermost frame when it is another one."""
-    f = frame
-    while f is not None and _is_library(f.f_code.co_filename):
-        f = f.f_back
-    return _frame_text(f or frame), (_frame_text(frame) if f is not frame else None)
-
-
-def stack_codes(frame):
-    """The code objects of frame's stack, innermost first: what runs where, never a frame's locals."""
-    codes = []
+def _walk(frame):
+    stack = []
     while frame is not None:
-        codes.append(frame.f_code)
+        stack.append((frame.f_code, frame.f_lineno))
         frame = frame.f_back
-    return codes
+    return stack
 
 
-def find_execution_thread(frames):
-    """The id of the thread running a prompt: the one with PromptExecutor's frame on its stack."""
-    for ident, frame in frames.items():
-        if any(c.co_name in ("execute_async", "execute") and c.co_filename.endswith("execution.py") for c in stack_codes(frame)):
+def thread_stack(ident):
+    """[(code, line), ...] of a thread's stack, innermost first; [] for a thread that is gone, or ident None.
+
+    With thread_stacks, the only place the monitor touches frame objects, and none leaves it: a frame
+    object held after its function ends keeps that function's locals (the node's tensors), and the
+    caller's frame with them. The dict sys._current_frames() returns is never bound to a name: it holds
+    the frame of the function that called it, so a local holding the dict makes the two a reference
+    cycle, which keeps every frame of the dict, and the locals of each one that ends meanwhile, until
+    the garbage collector runs (a GPU loop that allocates and frees can run for minutes without one)."""
+    return _walk(sys._current_frames().get(ident))
+
+
+def thread_stacks():
+    """{thread id: [(code, line), ...]} of every thread, as thread_stack."""
+    return {ident: _walk(frame) for ident, frame in sys._current_frames().items()}
+
+
+def code_lines(stack):
+    """(line, top) of a stack: the innermost entry outside the stdlib and installed packages (the line
+    of the node's own code, e.g. the torch.stack call), and the innermost entry when it is another one."""
+    own = next((i for i, (code, _) in enumerate(stack) if not _is_library(code.co_filename)), None)
+    return _entry_text(*stack[own or 0]), (_entry_text(*stack[0]) if own != 0 else None)
+
+
+def find_execution_thread(stacks):
+    """The id of the thread running a prompt (stacks as thread_stacks gives them): the one with
+    PromptExecutor's frame on its stack."""
+    for ident, stack in stacks.items():
+        if any(code.co_name in ("execute_async", "execute") and code.co_filename.endswith("execution.py") for code, _ in stack):
             return ident
     return None
 
@@ -299,9 +314,9 @@ class Monitor:
     def _sample(self, run):
         sample = {"type": "sample", "t": time.time(), **self._read(),
                   "node": run.node or self.probe.last_node(), "class_type": run.class_type}
-        frame = self._execution_frame()
-        if frame is not None:
-            sample["line"], top = code_lines(frame)
+        stack = self._execution_stack()
+        if stack:
+            sample["line"], top = code_lines(stack)
             if top:
                 sample["top"] = top
         if sample.get("ram") is not None:
@@ -309,11 +324,14 @@ class Monitor:
         self.last = sample
         return sample
 
-    def _execution_frame(self):
-        frames = sys._current_frames()
-        if self.exec_thread not in frames:
-            self.exec_thread = find_execution_thread(frames)
-        return frames.get(self.exec_thread)
+    def _execution_stack(self):
+        """The execution thread's stack as thread_stack gives it; [] when no thread runs a prompt."""
+        stack = thread_stack(self.exec_thread)
+        if not stack:
+            stacks = thread_stacks()
+            self.exec_thread = find_execution_thread(stacks)
+            stack = stacks.get(self.exec_thread, [])
+        return stack
 
     def _live(self, sample):
         run = self.run
@@ -322,17 +340,15 @@ class Monitor:
                                                  "class_type": run.class_type, "elapsed": time.time() - run.t0}}
 
     def _snapshot(self, run, sample):
-        """Once per run: the execution thread's stack, read from its code and line numbers only (a
-        record written at once: the kill can be a fraction of a second away), then the same record
-        with every live tensor of the process (tensor_census.census: the list of all objects is made,
-        filtered and freed inside one C call with the collector paused, so no other thread runs while
-        it exists). No frame's locals are read: from another thread that races with the frame and
-        keeps its locals alive."""
+        """Once per run: the execution thread's stack, its 40 innermost calls as traceback.format_stack
+        prints them, from code and line numbers only (thread_stack; a record written at once: the kill
+        can be a fraction of a second away), then the same record with every live tensor of the
+        process (tensor_census.census: the list of all objects is made, filtered and freed inside one C
+        call with the collector paused, so no other thread runs while it exists)."""
         run.snapshot_done = True
         t0 = time.perf_counter()
-        frame = self._execution_frame()
-        stack = traceback.format_stack(frame, limit=40) if frame is not None else []
-        del frame  # a frame object held after its function returns keeps the function's locals
+        stack = traceback.format_list([(code.co_filename, line, code.co_name, None)
+                                       for code, line in reversed(self._execution_stack()[:40])])
         stopped = False
         if self.settings.stop_at_threshold:
             try:
@@ -501,6 +517,8 @@ class Monitor:
         return sum(self.node_cost) / len(self.node_cost) if self.node_cost else None
 
     def emulate(self, prompt, workflow, env):
+        from . import emulate as emulate_mod  # with its cost profiles: only an estimate needs them, not the startup
+
         ram = self.ram or memory_sources.ram_source()
         return emulate_mod.emulate(prompt, workflow, env, ram.limit, ram.read()["ram"], self.measurement(workflow.get("id")),
                                    self.node_cost_s())

@@ -42,7 +42,8 @@ pipelines/depth_anything.py   Depth Anything: output size (short side, or cover 
                               normalisation, one depth-family predict per frame
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/seedvr2/            resize, encode, decode, postprocess, compact flows; framing (Resize's downscale factor
-                              from the SAM 3 face size); progress; shared constants
+                              from the SAM 3 face size); chunk_size (SeedVR2 Chunk Size: frames per chunk for the
+                              card); progress; shared constants
 pipelines/process_monitor/    monitor (sampler thread, runs, per-node records, snapshot), hook (the executor hook),
                               blackbox (run logs, reports), emulate + profiles (estimate, per-node-type costs), settings,
                               clear (the full clear: its steps, each measured against the startup baseline)
@@ -54,7 +55,8 @@ models/depth_anything_v2/     Depth Anything V2 Small: weights, loader, inferenc
 models/depth_anything_3/      Depth Anything 3 over core (comfy.ldm.depth_anything_3, nothing vendored): weights
                               (Comfy-Org/Depth-Anything-3 into models/geometry_estimation), loader, inference; registered
                               as v3-small, v3-base, v3-mono-large, v3-metric-large in the depth family
-models/seedvr2/               VAE adapter, tiling, frame-shape rules (no registry)
+models/seedvr2/               VAE adapter, tiling (tile_for: the auto tile), frame-shape rules; dit (the sampler's
+                              VRAM law and safety margin, from measurements) (no registry)
 models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 3)
 libs/image.py                 is_half, float_frame, output_dtype (half-precision inputs), tensor_to_u8, tensor_to_pil_u8,
                               pil_to_tensor_hwc, fit_image
@@ -99,8 +101,13 @@ Rules that keep it cheap and safe:
   over all objects are the threshold snapshot, once per run, after the stack record is written, and
   the full clear's report, once per click. That pass is one C-level call with the collector paused
   (`libs/tensor_census.census`) and must stay one: a Python loop over `gc.get_objects()` breaks other
-  threads' tuple builds. No frame's locals are read from another thread: a thread's stack is read
-  as its code objects (`stack_codes`).
+  threads' tuple builds. The census keeps weak references, each tensor held only while its row is
+  made. No frame's locals are read from another thread: a thread's stack is read only as (code,
+  line) pairs by `thread_stack` / `thread_stacks` in `pipelines/process_monitor/monitor.py`, the only
+  place frame objects are touched. The dict `sys._current_frames()` returns is never bound to a
+  name: it holds the caller's own frame, and a local holding it is a cycle that keeps the running
+  node's frames and locals (its tensors) alive until the cyclic collector runs, which a GPU loop
+  that frees what it allocates almost never triggers (owner, 2026-10-03: the SeedVR2 encode OOM).
 - The full clear frees each part with the call that owns it, each step measured on its own:
   ComfyUI's own free (the `/free` flags, run by its prompt worker and waited for), the packs' own
   model caches (every hook in `bc_full_clear_hooks`, this pack's `release_pack_models` among them),
@@ -134,10 +141,20 @@ this statically; its `TRANSITIONAL` list stays empty (fix a violation, never all
 At module level only the standard library, `torch`, `numpy` and relative pack modules. Everything
 else (`scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*`,
 `comfy_extras.*`, `av`, `postfx`, `caption_audit`, `yaml`) is imported inside the function that
-uses it. The only exception is the downloader's guarded `server`/`aiohttp`. Gates:
-`tests/test_import_time.py` (package import under 0.1 s with torch and numpy preloaded, no module
-of its HEAVY list loaded, every layer module cold-imported with `PYTHONSAFEPATH=1`) and the static
-check in `tests/test_layers.py`.
+uses it. The only exception is the downloader's guarded `server`/`aiohttp`.
+
+A node module imports only `nodes.common` at module level: its pipeline, model and lib modules are
+imported inside the methods that use them, and a widget list or default inside `INPUT_TYPES`
+(model names, checkpoint choices, colour methods). The package import then reads and compiles
+little more than `nodes/`; on a cold start every module read is compiled first. The one exception
+is the Process Monitor (`nodes/process_monitor.py`), which registers its routes and the full-clear
+hook at import and starts there when it is on: its own modules are listed in `EAGER` in
+`tests/test_import_time.py`, and nothing else may be added there.
+
+Gates: `tests/test_import_time.py` (package import under 0.1 s with torch and numpy preloaded; no
+module of its HEAVY list loaded; every layer module cold-imported with `PYTHONSAFEPATH=1`; every
+node module loading no pack module outside `nodes/` beyond its `EAGER` entry) and the static check
+in `tests/test_layers.py`.
 
 A lazy import that looks unused can be an order lock: `from PIL import Image` in
 `nodes/save_image.py` `save_images` makes a missing Pillow fail before any other work. Keep it

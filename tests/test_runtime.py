@@ -724,6 +724,26 @@ async def main():
     valid = await execution.validate_prompt(str(uuid.uuid4()), framing_prompt, None)
     check("SeedVR2FramingDownscale: downscale_factor -> SeedVR2 Resize and face_fraction -> PreviewAny validate", valid[0], f"{valid[1]}")
 
+    # SeedVR2 Chunk Size: its INT into core's Split SeedVR2 Latent, manual mode, through the DynamicCombo
+    # sub-input chunking_mode.frames_per_chunk. The card is a 5090's 31.36 GiB: a 1088x1920 clip gets 41
+    # frames per chunk (11 latent frames), so Split clamps a temporal_overlap of 100 to 10 latent frames.
+    import comfy.model_management as mm
+    real_total = mm.get_total_memory
+    mm.get_total_memory = lambda dev=None, torch_total_too=False: int(31.36 * 2 ** 30)
+    try:
+        out, _ = await run({
+            "1": N("EmptyHunyuanLatentVideo", width=1920, height=1088, length=81, batch_size=1),
+            "2": N("BC_SeedVR2ChunkSize", latent=["1", 0], safety_margin=0.64),
+            "3": N("SeedVR2TemporalChunk", latent=["1", 0], temporal_overlap=100, chunking_mode="manual",
+                   **{"chunking_mode.frames_per_chunk": ["2", 0]}),
+            "4": N("PreviewAny", source=["2", 0]),
+            "5": N("PreviewAny", source=["3", 1]),
+        }, "seedvr2-chunk-size")
+    finally:
+        mm.get_total_memory = real_total
+    check("SeedVR2ChunkSize: 41 frames on a 31.36 GiB card, linked into Split SeedVR2 Latent's manual frames_per_chunk",
+          out is not None and out["4"]["text"] == ["41"] and out["5"]["text"] == ["10"], f"{out and (out.get('4'), out.get('5'))}")
+
     # Auto Model Downloader answers NaN on purpose: whether a file exists is
     # decided on disk, not by the inputs. It has no outputs, so nothing below
     # it can be dragged along.

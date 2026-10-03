@@ -18,9 +18,6 @@ to 8 bits through libs/image.tensor_to_u8.
 
 import os
 
-from ..libs.image import tensor_to_u8
-from ..pipelines import social_export as core
-
 _SPECS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "social_specs.json")
 
 # Platforms whose checkbox starts ON when the node is first dropped in.
@@ -58,6 +55,9 @@ def _tensor_to_pil(image):
     """ComfyUI IMAGE tensor [H,W,C] float 0..1 -> opaque RGB PIL image."""
     from PIL import Image
 
+    from ..libs.image import tensor_to_u8
+    from ..pipelines import social_export as core
+
     arr = tensor_to_u8(image.detach())
     if arr.ndim == 2:
         arr = arr[:, :, None]
@@ -77,6 +77,8 @@ class SocialMediaExport:
     def INPUT_TYPES(cls):
         # Load the specs so the platform checkboxes are always in sync with
         # social_specs.json (add a platform there and a checkbox appears here).
+        from ..pipelines import social_export as core
+
         try:
             specs = core.load_specs(_SPECS_PATH)
             names = core.platform_names(specs)
@@ -159,6 +161,8 @@ class SocialMediaExport:
     def export(self, images, resize_mode, quality, allow_upscale, filename_prefix,
                **platform_flags):
         import folder_paths
+
+        from ..pipelines import social_export as core
 
         # Fresh spec load every execution so edits to social_specs.json apply
         # without restarting ComfyUI.

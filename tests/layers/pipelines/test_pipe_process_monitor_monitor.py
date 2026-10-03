@@ -5,6 +5,7 @@ list, a fake RAM reader and a fake prompt queue. The real ComfyUI path runs in t
 
 import asyncio
 import enum
+import gc
 import sys
 import threading
 import time
@@ -341,6 +342,142 @@ def test_snapshot_keeps_no_local_of_the_execution_thread_alive(mon, bcnodes, tmp
     stack, full = [r for r in records(bcnodes, tmp_path) if r["type"] == "snapshot"]
     assert "census" not in stack and stack["line"].endswith("node_code") and any("in node_code" in line for line in stack["stack"])
     assert [g["count"] for g in full["census"]["groups"] if g["shape"] == [16, 1024, 1024]] == [1]
+
+
+class TickingProbe(Probe):
+    """Counts the sampler's ticks: each one calls running() first."""
+
+    def __init__(self):
+        super().__init__()
+        self.ticks = 0
+
+    def running(self):
+        self.ticks += 1
+        return super().running()
+
+    def sampled(self, timeout=5.0):
+        """Returns once a whole tick ran after this call: the sampler read the caller's stack."""
+        end, deadline = self.ticks + 2, time.monotonic() + timeout
+        while self.ticks < end:
+            if time.monotonic() > deadline:
+                raise TimeoutError("the monitor's sampler did not tick")
+            time.sleep(0.0005)
+
+
+def run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, node, ram, hooked=True):
+    """Runs node(probe) as ComfyUI runs a node, under the whole monitor: inside execute through the
+    hook, the run armed (hooked; else as on a ComfyUI without the hook point: the sampler looks for the
+    execution thread on every thread's stack at every tick), the black box on, the sampler thread
+    ticking every millisecond. The garbage collector is paused, as it practically is in a GPU loop that
+    allocates as much as it frees: only reference counting frees. Returns the run's records."""
+    def behaviour(uid, caches, executed, execution_list):
+        node(probe)
+        executed.add(uid)
+        return Result.SUCCESS
+
+    module, probe = fake_execution(behaviour), TickingProbe()
+    monkeypatch.setattr(mon, "PERIOD", 0.001)
+    monkeypatch.setattr(mon, "find", lambda: (module, None) if hooked else (None, "no hook point"))
+    monkeypatch.setattr(mon.memory_sources, "ram_source", lambda: FakeRam(ram))
+    monkeypatch.setattr(mon.memory_sources, "gpu_source", lambda: None)
+    m = mon.Monitor(str(tmp_path), probe, platform="linux")
+    m.start()
+    gc.disable()
+    try:
+        if hooked:
+            m.arm(True)
+        probe.prompt = "p1"
+        caches, executed, el = types.SimpleNamespace(outputs=Cache()), set(), types.SimpleNamespace(execution_cache={})
+        assert call_execute(module, "2", caches, executed, el)[0] is Result.SUCCESS
+        probe.prompt = None
+        probe.sampled()  # the sampler ends the run
+    finally:
+        gc.enable()
+        m.stop()
+    return records(bcnodes, tmp_path)
+
+
+def slice_loop(survived, slices=20):
+    """A node's loop over time slices, as SeedVR2's encode: each iteration makes its tensors in a call of
+    its own (the model's encode) while the monitor's sampler reads the stack, then appends to survived
+    how many of them are still alive when the iteration ends."""
+    def encode(x, refs, probe):  # the model call: its activations live in this frame
+        h = x * 2
+        refs.append(weakref.ref(h))
+        probe.sampled()  # the sampler reads the stack while h is alive
+        return h.sum(dim=0)
+
+    def node(probe):
+        for i in range(slices):
+            refs = []
+            x = torch.full((64, 64), float(i))  # the slice
+            latent = encode(x, refs, probe)
+            refs += [weakref.ref(x), weakref.ref(latent)]
+            del x, latent
+            survived.append(sum(r() is not None for r in refs))
+    return node
+
+
+def test_a_node_loop_frees_every_iteration_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch):
+    """A SeedVR2 encode loop (one time slice per iteration) held flat VRAM without the monitor and grew
+    slice after slice with it on, to an OOM: the sampler's stack reads kept the frames it saw in a
+    reference cycle, and every call of the node that ended while kept kept its locals until the garbage
+    collector ran. Under the whole monitor, with the RAM threshold's snapshot taken during the loop,
+    every tensor of an iteration is freed when the iteration ends, as without the monitor; the records
+    are all there."""
+    survived = []
+    recs = run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, slice_loop(survived), ram=900)
+    assert survived == [0] * 20, f"tensors alive after each iteration: {survived}"
+    kinds = [r["type"] for r in recs]
+    assert kinds[:3] == ["start", "cached", "node"] and kinds[-2:] == ["node_end", "end"]
+    assert recs[-2]["state"] == "executed" and recs[-2]["node"] == "2"
+    samples = [r for r in recs if r["type"] == "sample"]
+    assert len(samples) >= 40 and all(s["node"] == "2" and s["class_type"] == "Grow" for s in samples)
+    assert any(s.get("line", "").endswith(" sampled") and "test_pipe_process_monitor_monitor.py" in s["line"] for s in samples)
+    stack, full = [r for r in recs if r["type"] == "snapshot"]
+    assert any("in encode" in line for line in stack["stack"]) and any("in node" in line for line in stack["stack"])
+    assert stack["stack"] == full["stack"] and isinstance(full["census"]["groups"], list)
+
+
+def test_the_execution_thread_search_frees_every_iteration(mon, bcnodes, tmp_path, monkeypatch):
+    """Without the hook the sampler reads every thread's stack at every tick to find the execution
+    thread: that read keeps no frame either."""
+    survived = []
+    recs = run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, slice_loop(survived), ram=100, hooked=False)
+    assert survived == [0] * 20, f"tensors alive after each iteration: {survived}"
+    assert [r["type"] for r in recs if r["type"] != "sample"] == ["start", "end"] and len(recs) > 40
+
+
+def test_a_long_call_frees_every_step_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch):
+    """KSampler's case: one long call (the sampler) runs the steps, and each step's tensors are made in
+    the calls below it while the monitor's sampler reads the stack. Each step's tensors, its input
+    among them, are freed when the step ends."""
+    survived = []
+
+    def model(x, refs, probe):
+        h = x + 1
+        refs.append(weakref.ref(h))
+        probe.sampled()
+        return h * 0.5
+
+    def step(x, refs, probe):
+        noise = model(x, refs, probe)
+        refs.append(weakref.ref(noise))
+        return x - 0.1 * noise
+
+    def sample(x, steps, probe):  # the long call
+        for _ in range(steps):
+            refs = [weakref.ref(x)]  # the step's input, replaced by its output
+            x = step(x, refs, probe)
+            survived.append(sum(r() is not None for r in refs))
+        return x
+
+    def node(probe):
+        sample(torch.zeros(64, 64), 20, probe)
+
+    recs = run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, node, ram=100)
+    assert survived == [0] * 20, f"tensors alive after each iteration: {survived}"
+    assert [r["type"] for r in recs if r["type"] != "sample"] == ["start", "cached", "node", "node_end", "end"]
 
 
 def fill_tuples(stop, errors):

@@ -10,9 +10,6 @@ report and badge in pipelines/quality_gate.py; cv2 and PIL are imported there,
 inside the functions that use them.
 """
 
-from ..libs.image import pil_to_tensor_hwc
-from ..pipelines import quality_gate
-
 
 class ImageQualityGate:
     """Analyzes Blur, Sharpness, Noise, Clipping and Entropy; PASS (green),
@@ -96,6 +93,9 @@ class ImageQualityGate:
 
     def analyze(self, image, shot_type, blur_mode, blur_threshold, blur_var_threshold,
                 sharpness_threshold, noise_threshold, clipping_threshold, entropy_threshold):
+        from ..libs.image import pil_to_tensor_hwc
+        from ..pipelines import quality_gate
+
         img, verdict_int, report, blur_score, sharpness_score, noise_score, clipping_score, entropy_score = quality_gate.analyze(
             image, shot_type, blur_mode, blur_threshold, blur_var_threshold,
             sharpness_threshold, noise_threshold, clipping_threshold, entropy_threshold)

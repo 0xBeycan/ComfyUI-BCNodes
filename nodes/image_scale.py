@@ -14,9 +14,6 @@ one preallocated output (libs/resize.py).
 
 import torch
 
-from ..libs.geometry import aspect_ratio as ratio_of, round_up_to_multiple, target_size
-from ..libs.image import fit_image, output_dtype, pil_to_tensor_hwc, tensor_to_pil_u8
-from ..libs.resize import resize_image
 from .common import DEVICES, LINK_INPUTS, compute_device, drop_unwanted, heavy_wanted, wants
 
 RATIOS = ["original", "custom", "1:1", "3:2", "4:3", "16:9", "2:3", "3:4", "9:16"]
@@ -33,6 +30,8 @@ PLACEHOLDER_MASK_SHAPE = (64, 64)
 def _to_pil(frame):
     """float (H, W) or (H, W, C) in 0..1 -> 8-bit PIL image (truncated, as the
     original does; a half frame with tensor_to_u8's margin)."""
+    from ..libs.image import tensor_to_pil_u8
+
     if frame.ndim == 3 and frame.shape[-1] == 1:
         frame = frame[..., 0]
     return tensor_to_pil_u8(frame)
@@ -73,6 +72,9 @@ class ImageScaleByAspectRatio:
     def scale(self, aspect_ratio, proportional_width, proportional_height, fit, method, round_to_multiple,
               scale_to_side, scale_to_length, background_color, image=None, mask=None, prompt_graph=None, unique_id=None):
         from PIL import Image
+
+        from ..libs.geometry import aspect_ratio as ratio_of, round_up_to_multiple, target_size
+        from ..libs.image import fit_image, output_dtype, pil_to_tensor_hwc
 
         wanted = heavy_wanted(type(self), prompt_graph, unique_id)
 
@@ -199,6 +201,8 @@ class ImageResize:
 
     def resize(self, image, width, height, upscale_method, keep_proportion, pad_color, crop_position, divisible_by,
                mask=None, device="cpu", prompt_graph=None, unique_id=None):
+        from ..libs.resize import resize_image
+
         if not isinstance(image, torch.Tensor) or image.ndim != 4:
             raise ValueError("Image Resize: connect an image batch (B, H, W, C)")
         wanted = heavy_wanted(type(self), prompt_graph, unique_id)

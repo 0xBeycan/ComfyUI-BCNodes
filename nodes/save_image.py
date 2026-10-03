@@ -17,17 +17,15 @@ JXL Pillow plugins are imported only when a file of that type is written.
 
 from datetime import datetime
 
-from ..libs.files import COUNTER_POSITIONS
-from ..libs.image import tensor_to_pil_u8
-from ..libs.image_write import DEFAULT_QUALITY, output_extensions
-from ..pipelines.save_image import save_batch
-
 JOB_DATA_OPTIONS = ["disabled", "prompt", "basic, prompt", "basic, sampler, prompt", "basic, models, sampler, prompt"]
 
 
 class SaveImage:
     @classmethod
     def INPUT_TYPES(cls):
+        from ..libs.files import COUNTER_POSITIONS
+        from ..libs.image_write import DEFAULT_QUALITY, output_extensions
+
         return {
             "required": {
                 "images": ("IMAGE",),
@@ -83,6 +81,9 @@ class SaveImage:
                     positive_text_opt=None, negative_text_opt=None, prompt=None, extra_pnginfo=None):
         import folder_paths
         from PIL import Image  # unused here: a missing Pillow must fail before the empty-batch guard
+
+        from ..libs.image import tensor_to_pil_u8
+        from ..pipelines.save_image import save_batch
 
         if images is None or len(images) == 0:
             return {"ui": {"images": []}}

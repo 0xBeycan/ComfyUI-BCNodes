@@ -16,7 +16,7 @@ a time) and the scaling run on it in place.
 import torch
 
 from ...models.seedvr2.tiling import tile_plan, tile_weight
-from ...models.seedvr2.vae import ENCODER_BYTES_PER_PIXEL, ENCODER_FIXED_BYTES, LATENT_CHANNELS, make_room_for_vae, vae_model
+from ...models.seedvr2.vae import ENCODER_BYTES_PER_PIXEL, ENCODER_FIXED_BYTES, LATENT_CHANNELS, make_room_for_vae, tile_for, vae_model
 from . import FRAMES_PER_CHUNK, TRIM_EVERY, require_image_batch
 from .progress import Progress
 
@@ -31,6 +31,7 @@ def encode(pixels, vae, tile_size, overlap):
     pixels = pixels[..., :3]  # comfy/sd.py vae_encode_crop_pixels: output_channels = 3
     n, height, width = pixels.shape[0], pixels.shape[1], pixels.shape[2]
     target_t, target_h, target_w = (n + 3) // 4, (height + 7) // 8, (width + 7) // 8  # vae.py tiled_vae encode targets
+    tile_size = tile_for(tile_size, height, width, ENCODER_FIXED_BYTES, ENCODER_BYTES_PER_PIXEL, vae.device, "SeedVR2 VAE Encode")
     overlap = min(overlap, max(0, tile_size - 8))  # vae.py encode_tiled
     single_tile = height <= tile_size and width <= tile_size
     tile_pixels = height * width if single_tile else min(height, tile_size) * min(width, tile_size)

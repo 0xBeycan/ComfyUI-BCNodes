@@ -561,6 +561,9 @@ def test_seedvr2_compact_chain(em):
              "3": N("BC_SeedVR2VAEEncode", pixels=["2", 0], tile_size=1024, overlap=256),
              "4": N("BC_SeedVR2VAEDecode", samples=["3", 0], tile_size=1024, overlap=256),
              "5": N("BC_SeedVR2PostProcess", images=["4", 0], original_resized_images=["2", 1], color_correction_method="lab")}
+    p["2"]["inputs"]["tile_size"] = 0  # auto: decided by the card the node runs on, counted as tiled (the larger transient)
+    assert rows_of(em, p)["2"]["transient"] == 77 * 1920 * 1088 * 3 * 2 + 16 * 4 * 240 * 136 * 2
+    p["2"]["inputs"]["tile_size"] = 1024
     old, new = em.estimate(today, Env(videos={"v.mp4": PORTRAIT})), em.estimate(p, Env(videos={"v.mp4": PORTRAIT}))
     # what the output cache keeps less: Resize's two clips and Decode's
     assert old["cache_total"] - new["cache_total"] == 77 * 1920 * (1088 + 1080 + 1088) * 3 * 2

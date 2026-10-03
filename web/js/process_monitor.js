@@ -5,18 +5,24 @@ import { callJson } from "./bcnodes_api.js";
 // Process Monitor — the frontend half of nodes/process_monitor.py.
 //
 // One ComfyUI setting turns it on and off, live. The top bar shows RAM against its limit, VRAM
-// and the GPU load while it is on, and a button that opens the modal (always there: Emulate and
-// the crash report work with the monitor off). The button turns red when the last run was killed.
-// Modal tabs: Live, Emulate, Last run (a row click selects and centres the node), Crash, Full clear
-// (RAM and VRAM back to the reading taken when ComfyUI started, no restart), Settings.
+// and the GPU load while it is on; next to them the Full clear button (RAM and VRAM back to the
+// reading taken when ComfyUI started, no restart), its outcome in a short status with the details
+// in a tooltip, and a button that opens the modal. Both buttons are always there: the full clear,
+// Emulate and the crash report work with the monitor off. The modal button turns red when the last
+// run was killed. Modal tabs: Live, Emulate, Last run (a row click selects and centres the node),
+// Crash, Settings.
 
 const SETTING = "BCNodes.ProcessMonitor.Enabled";
 const EVENT = "bcnodes.monitor";
-const TABS = ["Live", "Emulate", "Last run", "Crash", "Full clear", "Settings"];
+const TABS = ["Live", "Emulate", "Last run", "Crash", "Settings"];
 // the tensor census's "backing" of cpu memory (none on a GPU)
 const BACKING = { ram: "RAM", file: "file (page cache)", unknown: "unknown" };
+const CLEAR_TITLE = "Full clear: RAM and VRAM back to where they were right after ComfyUI started, without a restart "
+	+ "(every model unloaded, every cached node output dropped, the freed memory given back to the system). "
+	+ "Refused while a prompt runs or waits. The next run loads its models again, so it starts slower.";
+const CLEAR_STATUS_S = 30; // a success fades from the bar after this; the button's tooltip keeps it
 
-const state = { status: null, sample: null, tab: "Live", modal: null, bar: null, clear: { busy: false, report: null, error: null } };
+const state = { status: null, sample: null, tab: "Live", modal: null, bar: null };
 
 const call = (route, body) => callJson(`/bcnodes/monitor/${route}`, body);
 
@@ -67,6 +73,9 @@ function ensureStyle() {
 .bcpm-meter>span{position:relative;display:block;text-align:center;line-height:16px;white-space:nowrap}
 .bcpm-btn{cursor:pointer;border:1px solid var(--border-color,#555);border-radius:4px;padding:1px 6px;background:var(--comfy-input-bg,#333);color:inherit}
 .bcpm-btn.bcpm-red{background:#b91c1c;border-color:#ef4444;color:#fff}
+.bcpm-btn:disabled{opacity:.6;cursor:default}
+.bcpm-status{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bcpm-status:empty{display:none}
 .bcpm-overlay{position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center}
 .bcpm-panel{width:min(1100px,94vw);height:min(760px,90vh);display:flex;flex-direction:column;background:var(--comfy-menu-bg,#222);color:var(--fg-color,#ddd);border:1px solid var(--border-color,#555);border-radius:8px;font:12px sans-serif}
 .bcpm-tabs{display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--border-color,#555)}
@@ -96,10 +105,13 @@ function buildBar() {
 	const vram = meter("VRAM");
 	const gpu = meter("GPU");
 	const meters = el("div", { class: "bcpm-bar" }, ram.root, vram.root, gpu.root);
+	const clear = el("button", { class: "bcpm-btn", title: CLEAR_TITLE }, "Full clear");
+	clear.onclick = fullClear;
+	const clearStatus = el("span", { class: "bcpm-status" });
 	const button = el("button", { class: "bcpm-btn", title: "Process Monitor" }, "PM");
 	button.onclick = openModal;
-	const root = el("div", { class: "bcpm-bar" }, meters, button);
-	state.bar = { root, meters, button, ram, vram, gpu };
+	const root = el("div", { class: "bcpm-bar" }, meters, clear, clearStatus, button);
+	state.bar = { root, meters, button, clear, clearStatus, clearTimer: null, ram, vram, gpu };
 	// The frontend rebuilds the top menu, action bar included, whenever its layout changes (the
 	// right side panel opened or closed, focus mode, the app builder), so an element put into the
 	// action bar is dropped with it. The legacy top-menu element (app.menu.element) is the place the
@@ -130,6 +142,53 @@ function renderBar() {
 	setMeter(bar.vram, s.vram_device ?? s.vram, vramTotal, `VRAM ${gb(s.vram_device ?? s.vram)}`);
 	bar.gpu.root.style.display = s.gpu_util == null ? "none" : "";
 	if (s.gpu_util != null) setMeter(bar.gpu, s.gpu_util, 100, `GPU ${s.gpu_util}%`);
+}
+
+// "RAM 12.4 GB → 3.10 GB", with " (baseline …)" when asked and known; null when the readings lack the counter
+function clearChange(r, label, key, withBaseline) {
+	if (r.before[key] == null || r.after[key] == null) return null;
+	const base = withBaseline && r.baseline?.[key] != null ? ` (baseline ${gb(r.baseline[key])})` : "";
+	return `${label} ${gb(r.before[key])} → ${gb(r.after[key])}${base}`;
+}
+
+function setClearStatus(text, cls, details) {
+	const { clear, clearStatus } = state.bar;
+	clearStatus.textContent = text;
+	clearStatus.className = cls ? `bcpm-status ${cls}` : "bcpm-status";
+	clearStatus.title = details;
+	clear.title = details ? `${CLEAR_TITLE}\n\nLast: ${details}` : CLEAR_TITLE;
+}
+
+async function fullClear() {
+	const bar = state.bar;
+	clearTimeout(bar.clearTimer);
+	bar.clear.disabled = true;
+	bar.clear.textContent = "Clearing…";
+	setClearStatus("", null, "");
+	try {
+		const r = await call("clear", {});
+		const failed = (r.steps.find((s) => s.name === "pack_models")?.detail ?? []).filter((h) => h.error);
+		const short = [clearChange(r, "RAM", "ram"), clearChange(r, "VRAM", "vram_reserved")].filter(Boolean).join(", ");
+		const details = [
+			`full clear at ${new Date().toLocaleTimeString()}`,
+			clearChange(r, "RAM", "ram", true),
+			clearChange(r, "VRAM reserved", "vram_reserved", true),
+			r.baseline ? null : "No baseline: the server's startup was not seen.",
+			...r.steps.map((s) => `${s.name}: ${s.found}`),
+			`Tensors still referenced after the clear: ${gb(r.remaining.total_bytes)}`,
+		].filter(Boolean).join("\n");
+		setClearStatus(`Cleared: ${short}${failed.length ? ` · ${failed.length} hook(s) failed` : ""}`,
+			failed.length ? "bcpm-warn" : "bcpm-ok", details);
+		// a success fades from the bar, the button's tooltip keeps it; a failed hook stays until the next clear
+		if (!failed.length) bar.clearTimer = setTimeout(() => (bar.clearStatus.textContent = ""), CLEAR_STATUS_S * 1000);
+	} catch (e) {
+		const message = String(e.message ?? e);
+		setClearStatus(`Not cleared: ${message}`, "bcpm-bad", message);
+	} finally {
+		bar.clear.disabled = false;
+		bar.clear.textContent = "Full clear";
+	}
+	refreshStatus();
 }
 
 // ---------------------------------------------------------------------------
@@ -377,79 +436,6 @@ async function crashTab() {
 	return el("div", {}, parts);
 }
 
-// [label, reading -> bytes or null, reading -> extra text]; a row shows when one of its columns has a value
-const CLEAR_ROWS = [
-	["RAM (the bar's reading)", (r) => r.ram],
-	["Process RSS", (r) => r.rss],
-	["… its own memory (anon: what a restart frees)", (r) => r.rss_anon],
-	["… pages mapped from files (page cache)", (r) => r.rss_file],
-	["… its own memory (USS; macOS keeps freed pages in the RSS until it needs them)", (r) => r.uss],
-	["Container: processes' own memory (anon)", (r) => r.cgroup?.anon],
-	["Container: page cache, active / inactive", (r) => r.cgroup?.file, (r) => r.cgroup && `${gb(r.cgroup.active_file)} / ${gb(r.cgroup.inactive_file)}`],
-	["glibc: free blocks its arenas keep (in the RSS until malloc_trim)", (r) => r.malloc_free],
-	["Pinned host memory (ComfyUI's models)", (r) => r.comfy_pinned],
-	["Pinned host memory (torch's cache)", (r) => r.pinned_cache],
-	["VRAM allocated (torch)", (r) => r.vram],
-	["VRAM reserved (torch)", (r) => r.vram_reserved],
-	["VRAM on the device (every process)", (r) => r.vram_device],
-];
-
-function renderClear(r) {
-	const cols = [r.baseline, r.before, r.after];
-	const rows = CLEAR_ROWS.filter(([, get]) => cols.some((c) => c && get(c) != null)).map(([label, get, extra]) => ({
-		cells: [label, ...cols.map((c) => (c ? `${gb(get(c))}${extra ? ` (${extra(c)})` : ""}` : "–"))],
-	}));
-	// after malloc_trim glibc still counts the blocks as free, but their pages are back with the system
-	const trimmed = r.steps.some((s) => s.name === "malloc_trim" && s.found.includes("pages released"));
-	const glibcRow = rows.find((row) => row.cells[0].startsWith("glibc"));
-	if (trimmed && glibcRow) glibcRow.cells[3] = "pages given back (malloc_trim)";
-	const freed = (s, k) => (s.freed[k] == null ? "–" : gb(s.freed[k]));
-	// the process's own memory: what a restart frees (RssAnon on Linux, USS on macOS)
-	const own = r.after.rss_anon != null ? "rss_anon" : r.after.uss != null ? "uss" : null;
-	const change = (label, k) => `${label} ${gb(r.before[k])} → ${gb(r.after[k])}` + (r.baseline?.[k] != null ? ` (baseline ${gb(r.baseline[k])})` : "");
-	return el("div", {},
-		el("div", {}, change("RAM", "ram"), own ? `; own memory ${change("", own).trim()}` : "",
-			r.after.vram_reserved != null ? `; ${change("VRAM reserved", "vram_reserved")}` : "",
-			r.baseline ? "" : ". No baseline: the server's startup was not seen."),
-		table(["", "Baseline (ComfyUI started)", "Before", "After"], rows),
-		el("h4", {}, "Steps"),
-		table(["Step", "What it did", "Found", "RAM freed", "Own memory freed", "VRAM reserved freed", "Time"], r.steps.map((s) => ({
-			cells: [s.name, s.text, s.found, freed(s, "ram"), freed(s, s.freed.rss_anon != null ? "rss_anon" : s.freed.uss != null ? "uss" : "rss"), freed(s, "vram_reserved"), secs(s.seconds)],
-		}))),
-		el("h4", {}, "Model caches the packs dropped (their full-clear hooks)"),
-		table(["Hook", "Model", "Weights"], (r.steps.find((s) => s.name === "pack_models")?.detail ?? []).flatMap((h) =>
-			h.error ? [{ cells: [h.hook, el("span", { class: "bcpm-bad" }, `failed: ${h.error}`), "–"] }]
-				: Object.keys(h.freed).length ? Object.entries(h.freed).map(([m, b]) => ({ cells: [h.hook, m, gb(b)] }))
-					: [{ cells: [h.hook, "nothing loaded", "–"] }])),
-		el("h4", {}, `Tensors still referenced after the clear: ${gb(r.remaining.total_bytes)}`),
-		el("div", { class: "bcpm-note" }, "What the clear cannot free: a model or tensor a pack without a full-clear hook keeps in its own cache (listed here), and the libraries and GPU kernels loaded during the run. The page cache (files read or mapped) is reported, not dropped: the kernel takes it back when memory runs short, and a restart keeps it too."),
-		r.remaining.groups.length ? censusTable(r.remaining) : el("div", { class: "bcpm-note" }, "None of 1 MB or more."));
-}
-
-function clearTab() {
-	const c = state.clear;
-	const go = el("button", { class: "bcpm-btn" }, c.busy ? "Clearing…" : "Full clear");
-	if (c.busy) go.disabled = true;
-	go.onclick = async () => {
-		state.clear = { busy: true, report: c.report, error: null };
-		showTab("Full clear");
-		try {
-			state.clear = { busy: false, report: await call("clear", {}), error: null };
-		} catch (e) {
-			state.clear = { busy: false, report: c.report, error: String(e.message ?? e) };
-		}
-		refreshStatus();
-		if (state.tab === "Full clear") showTab("Full clear");
-	};
-	const b = state.status?.baseline;
-	return el("div", {},
-		go,
-		el("div", { class: "bcpm-note" }, "Brings RAM and VRAM back to where they were right after ComfyUI started, without a restart: every model unloaded, every cached node output dropped, the freed memory given back to the system. Refused while a prompt runs or waits. The next run loads its models again, so it starts slower."),
-		el("div", { class: "bcpm-note" }, b ? `Baseline, read when ComfyUI started: RAM ${gb(b.ram)}${b.vram_reserved != null ? `, VRAM reserved ${gb(b.vram_reserved)}` : ""}.` : "No baseline: the server's startup was not seen."),
-		c.error ? el("div", { class: "bcpm-bad" }, c.error) : null,
-		c.report ? renderClear(c.report) : null);
-}
-
 function settingsTab() {
 	const s = state.status?.settings ?? {};
 	const blackBox = el("input", { type: "checkbox" });
@@ -479,7 +465,7 @@ function settingsTab() {
 		row("Run logs kept", keep), save, msg);
 }
 
-const RENDER = { "Live": liveTab, "Emulate": emulateTab, "Last run": lastRunTab, "Crash": crashTab, "Full clear": clearTab, "Settings": settingsTab };
+const RENDER = { "Live": liveTab, "Emulate": emulateTab, "Last run": lastRunTab, "Crash": crashTab, "Settings": settingsTab };
 
 // ---------------------------------------------------------------------------
 // Extension

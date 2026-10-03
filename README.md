@@ -30,6 +30,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_SeedVR2FramingDownscale` | [SeedVR2 Framing Downscale](docs/seedvr2.md#bc_seedvr2framingdownscale--seedvr2-framing-downscale) | SeedVR2 Resize's `downscale_factor` from the face size: the tallest SAM 3 face box picks close-up, medium or far, each with its factor; the measured face fraction comes out too |
 | `BC_SeedVR2Resize` | [SeedVR2 Resize](docs/seedvr2.md#bc_seedvr2resize--seedvr2-resize) | Original image → the padded frame SeedVR2 encodes (lanczos downscale, shortest-edge antialiased bicubic, pad 16, 4n+1 frames) plus the colour reference |
 | `BC_SeedVR2VAEEncode` | [SeedVR2 VAE Encode](docs/seedvr2.md#bc_seedvr2vaeencode--seedvr2-vae-encode) | SeedVR2 VAE encode with the frames streamed from RAM slice by slice, so VRAM does not grow with the frame count |
+| `BC_SeedVR2ChunkSize` | [SeedVR2 Chunk Size](docs/seedvr2.md#bc_seedvr2chunksize--seedvr2-chunk-size) | The longest 4n+1 chunk the SeedVR2 sampler fits on this card, from the latent's size and the card's total memory; wire to Split SeedVR2 Latent's manual `frames_per_chunk` |
 | `BC_SeedVR2VAEDecode` | [SeedVR2 VAE Decode](docs/seedvr2.md#bc_seedvr2vaedecode--seedvr2-vae-decode) | SeedVR2 VAE decode with every decoded slice streamed to RAM, so VRAM does not grow with the frame count |
 | `BC_SeedVR2PostProcess` | [SeedVR2 PostProcess](docs/seedvr2.md#bc_seedvr2postprocess--seedvr2-postprocess) | Post-Process SeedVR2 Output one frame at a time into one float16 output, no full-size temporaries |
 | `BC_SeedVR2PreprocessCompact` | [SeedVR2 Preprocess (Compact)](docs/seedvr2.md#bc_seedvr2preprocesscompact--seedvr2-preprocess-compact) | SeedVR2 Resize and VAE Encode in one node: outputs only the latent and the plan PostProcess (Compact) reads, no colour reference kept |
@@ -61,7 +62,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | [`BCNodes/analysis`](docs/analysis.md) | Image Quality Gate, Caption Audit |
 | [`BCNodes/text`](docs/text.md) | Prompt List, Show Text |
 | [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Auto Model Downloader |
-| [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, VAE Decode, PostProcess; Compact: Preprocess (Compact), PostProcess (Compact) |
+| [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, Chunk Size, VAE Decode, PostProcess; Compact: Preprocess (Compact), PostProcess (Compact) |
 | [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
 
 ## Installation
@@ -88,7 +89,7 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [Analysis](docs/analysis.md) — the caption set audit and the image quality gate
 - [Text](docs/text.md) — prompt lists and showing text
 - [Loaders](docs/loaders.md) — LoRA loading and the model downloader
-- [SeedVR2](docs/seedvr2.md) — the downscale factor from the framing, the SeedVR2 input stage, streaming VAE encode / decode, post-processing
+- [SeedVR2](docs/seedvr2.md) — the downscale factor from the framing, the SeedVR2 input stage, streaming VAE encode / decode, the chunk size and the VAE tile for the card, post-processing
 - [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, Auto Bypass, the Align buttons
 - [Unused outputs](docs/unused-outputs.md) — unconnected whole-batch outputs come out empty
 - [Measurements](docs/measurements.md) — time, RAM and output size of the mask nodes and Image Resize against the nodes they replace

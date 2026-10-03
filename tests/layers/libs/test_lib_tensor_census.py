@@ -10,6 +10,7 @@ import gc
 import mmap
 import sys
 import warnings
+import weakref
 
 import numpy as np
 import pytest
@@ -185,6 +186,27 @@ def test_census_scan_keeps_no_reference(tc):
         assert not gc.isenabled() and sys.getrefcount(probe) == before
     finally:
         gc.enable()
+
+
+def test_census_holds_no_tensor_while_it_describes_the_others(tc, monkeypatch):
+    """The census runs when RAM is near its limit, while the node goes on: a tensor the node frees
+    meanwhile is freed at once, not kept until the census returns. The census holds one tensor at a
+    time, the one it describes."""
+    shapes = {(11, 13, 17), (11, 13, 19)}  # shapes of their own
+    held = [torch.zeros(shape) for shape in sorted(shapes)]
+    refs = [weakref.ref(t) for t in held]
+    alive = []
+    describe = tc.describe
+
+    def describing(t):
+        if tuple(t.shape) in shapes and not alive:
+            held.clear()  # the node frees both while the census describes one of them
+            alive.append(sum(r() is not None for r in refs))
+        return describe(t)
+
+    monkeypatch.setattr(tc, "describe", describing)
+    tc.census(min_bytes=1, top=10_000)
+    assert alive == [1]
 
 
 def test_census_puts_small_tensors_aside(tc):

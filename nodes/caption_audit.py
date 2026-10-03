@@ -9,11 +9,6 @@ take the rest of the pack down with it.
 
 import os
 
-from ..pipelines.caption_audit.audit import (
-    build_args, dir_fingerprint, report_json, report_text, resolve_dir, run_audit,
-)
-from ..pipelines.caption_audit.card import render_card, render_error_card
-
 
 # --- PIL <-> ComfyUI IMAGE bridge -----------------------------------------
 
@@ -143,6 +138,8 @@ class CaptionAudit:
         # Captions are edited outside the graph, so widget values alone do not
         # say whether a re-run is needed. Fingerprint the .txt files instead:
         # an untouched dataset still hits the execution cache.
+        from ..pipelines.caption_audit.audit import dir_fingerprint, resolve_dir
+
         try:
             resolved = resolve_dir(directory)
         except ValueError as exc:
@@ -154,6 +151,9 @@ class CaptionAudit:
     def audit(self, directory, trigger, class_words, fuse, critical_threshold,
               warn_threshold, info_threshold, ngram_max, no_stopwords,
               recursive, table_rows, images_dir=""):
+        from ..pipelines.caption_audit.audit import build_args, report_json, report_text, resolve_dir, run_audit
+        from ..pipelines.caption_audit.card import render_card, render_error_card
+
         # resolve_dir rejects a path outside the allowed roots, so it belongs
         # inside the same try as the audit: both end on the error card.
         shown = str(directory or "").strip()

@@ -5,8 +5,6 @@
 
 import torch
 
-from ..models.sam3.checkpoint import DEFAULT_SAM3, choices
-from ..pipelines import skin_texture
 from .common import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
 
 
@@ -15,6 +13,8 @@ class SkinTexture:
 
     @classmethod
     def INPUT_TYPES(cls):
+        from ..models.sam3.checkpoint import DEFAULT_SAM3, choices
+
         return {
             "required": {
                 "image": ("IMAGE",),
@@ -54,6 +54,8 @@ class SkinTexture:
 
     def run(self, image, sam3_model, texture, detail, pore_scale, feather, seed, threshold, mask=None, exclude_mask=None,
             prompt_graph=None, unique_id=None):
+        from ..pipelines import skin_texture
+
         if image is None or image.shape[0] == 0:
             return (torch.zeros((0, 64, 64, 3)), torch.zeros((0, 64, 64)))
         wanted = heavy_wanted(type(self), prompt_graph, unique_id)

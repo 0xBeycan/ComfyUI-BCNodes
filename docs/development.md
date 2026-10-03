@@ -17,8 +17,8 @@ ComfyUI-BCNodes/
     image_comparer.py      BC_ImageComparer
     power_lora_loader.py   BC_PowerLoraLoader
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
-    seedvr2.py             BC_SeedVR2FramingDownscale, BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2VAEDecode,
-                           BC_SeedVR2PostProcess, BC_SeedVR2PreprocessCompact, BC_SeedVR2PostProcessCompact
+    seedvr2.py             BC_SeedVR2FramingDownscale, BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2ChunkSize,
+                           BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess, BC_SeedVR2PreprocessCompact, BC_SeedVR2PostProcessCompact
     common.py              wildcard type + flexible optional inputs + slot order + the device widget + unused outputs
     birefnet.py            BC_BiRefNetRemoveBackground
     depth_anything.py      BC_DepthAnythingV2
@@ -53,6 +53,7 @@ ComfyUI-BCNodes/
       postprocess.py       per-frame colour correction
       compact.py           the compact pair: Resize + Encode, Decode + PostProcess, the SEEDVR2_PLAN between them
       framing.py           Framing Downscale: the tallest SAM 3 face box -> close-up / medium / far -> the factor
+      chunk_size.py        Chunk Size: the DiT's VRAM law against the card -> frames per chunk (4n+1)
       progress.py          progress bar + timed log lines of the slice loops
     process_monitor/       the Process Monitor
       monitor.py           sampler thread, runs, per-node records, threshold snapshot
@@ -83,7 +84,8 @@ ComfyUI-BCNodes/
       loader.py            one model at a time, core's loader; unload() for the full clear
       inference.py         core's preprocess and forward, sky, inverse depth, percentile clip
     seedvr2/               adapters over ComfyUI's SeedVR2 VAE
-      vae.py               VAE check + VRAM room
+      vae.py               VAE check, auto tile (tile_size 0) + VRAM room
+      dit.py               the DiT's VRAM law per chunk (measured), SeedVR2 Chunk Size's margin
       tiling.py            tile plan + blend weights
       frames.py            shortest-edge resize, pad, 4n+1 frame count
     sam3/                  adapter over ComfyUI's SAM 3
@@ -154,4 +156,4 @@ The tests need `postfx` and `caption-audit` importable: `pip install -r requirem
 
 The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, Select Switch running only the selected lazy branch, and that a genuine type mismatch is still rejected.
 
-Every module in `nodes/`, `pipelines/`, `models/` and `libs/` imports only `torch`, `numpy` and the standard library at module level; `scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*` and the pip packages `postfx` / `caption_audit` are imported inside the functions that use them (the downloader also touches `server` / `aiohttp`, which ComfyUI has loaded already), so the pack adds nothing to ComfyUI's startup. `python tests/test_import_time.py` checks that.
+Every module in `nodes/`, `pipelines/`, `models/` and `libs/` imports only `torch`, `numpy` and the standard library at module level; `scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*` and the pip packages `postfx` / `caption_audit` are imported inside the functions that use them (the downloader also touches `server` / `aiohttp`, which ComfyUI has loaded already), so the pack adds nothing to ComfyUI's startup. A node module also imports its pipeline, model and lib modules inside the methods that use them (a widget list such as the model names inside `INPUT_TYPES`), so the package import reads and compiles little more than `nodes/`; the Process Monitor's own modules load at import, where it registers and starts. `python tests/test_import_time.py` checks both.

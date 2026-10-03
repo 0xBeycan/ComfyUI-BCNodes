@@ -16,11 +16,6 @@ functions that use it: the package is a pip dependency, and a missing install
 must not take the rest of the pack down with it.
 """
 
-from ..pipelines.postfx import (
-    apply_look, condition_names, custom_look, default_theme, lut_files, lut_look, postfx_package,
-    signature_sheet, theme_names, theme_stem,
-)
-
 POSTFX_LOOK = "POSTFX_LOOK"
 
 _CATEGORY = "BCNodes/postfx"
@@ -45,6 +40,8 @@ class PostFxApply:
 
     @classmethod
     def INPUT_TYPES(cls):
+        from ..pipelines.postfx import condition_names, default_theme, theme_names
+
         themes = ["none"] + theme_names()
         return {
             "required": {
@@ -71,6 +68,8 @@ class PostFxApply:
         }
 
     def apply(self, image, theme, condition, strength, seed, batch_seed, look=None, mask=None):
+        from ..pipelines.postfx import apply_look
+
         if look is None and theme == "none":
             return (image,)
         return apply_look(image, theme, condition, strength, seed, batch_seed, look, mask)
@@ -91,10 +90,14 @@ class PostFxTheme:
 
     @classmethod
     def INPUT_TYPES(cls):
+        from ..pipelines.postfx import default_theme, theme_names
+
         themes = theme_names()
         return {"required": {"theme": (themes, {"default": default_theme(themes)})}}
 
     def load(self, theme):
+        from ..pipelines.postfx import postfx_package, theme_stem
+
         return (postfx_package().load_theme(theme_stem(theme)),)
 
 
@@ -147,6 +150,8 @@ class PostFxCustomLook:
 
     def build(self, temp, tint, exposure, contrast, vibrance, saturation,
               grain, grain_size, vignette, halation, clarity, look=None):
+        from ..pipelines.postfx import custom_look
+
         return custom_look(temp, tint, exposure, contrast, vibrance, saturation,
                            grain, grain_size, vignette, halation, clarity, look)
 
@@ -167,6 +172,8 @@ class PostFxLut:
 
     @classmethod
     def INPUT_TYPES(cls):
+        from ..pipelines.postfx import lut_files
+
         return {
             "required": {
                 "lut": (["none"] + lut_files(), {"default": "none",
@@ -182,6 +189,8 @@ class PostFxLut:
         }
 
     def build(self, lut, intensity, lut_path="", look=None):
+        from ..pipelines.postfx import lut_look
+
         return lut_look(lut, intensity, lut_path, look)
 
 
@@ -200,6 +209,8 @@ class PostFxSignatureSheet:
 
     @classmethod
     def INPUT_TYPES(cls):
+        from ..pipelines.postfx import condition_names
+
         return {
             "required": {
                 "image": ("IMAGE",),
@@ -211,6 +222,8 @@ class PostFxSignatureSheet:
         }
 
     def build(self, image, category, condition, strength, columns):
+        from ..pipelines.postfx import signature_sheet
+
         return signature_sheet(image, category, condition, strength, columns)
 
 

@@ -5,10 +5,6 @@
 
 import torch
 
-from ..models.common import registry
-from ..models.common.registry import DEPTH
-from ..pipelines.depth_anything import estimate
-
 
 class DepthAnythingV2:
     """IMAGE in -> a grayscale depth map, near = white, far = black (the ControlNet depth
@@ -19,6 +15,9 @@ class DepthAnythingV2:
 
     @classmethod
     def INPUT_TYPES(cls):
+        from ..models.common import registry
+        from ..models.common.registry import DEPTH
+
         return {
             "required": {
                 "image": ("IMAGE",),
@@ -48,6 +47,8 @@ class DepthAnythingV2:
     SEARCH_ALIASES = ['BCNodes', 'depth anything', 'depth anything 3', 'da3', 'depth map', 'depth', 'controlnet depth']
 
     def estimate_depth(self, image, resolution=518, model="v2-small", width=None, height=None):
+        from ..pipelines.depth_anything import estimate
+
         if (width is None) != (height is None):
             raise ValueError("Depth Anything: connect both width and height, or neither "
                              "(neither gives a depth map with the short side `resolution`).")

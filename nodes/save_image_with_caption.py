@@ -13,13 +13,12 @@ web/js/save_image_with_caption.js) and ComfyUI's own (%year% ... %second%, %widt
 PIL inside tensor_to_pil_u8.
 """
 
-from ..libs.image import tensor_to_pil_u8
-from ..pipelines.save_image import CAPTION_EXTENSIONS, caption_extension, caption_folder, save_with_captions
-
 
 class SaveImageWithCaption:
     @classmethod
     def INPUT_TYPES(cls):
+        from ..pipelines.save_image import CAPTION_EXTENSIONS
+
         return {
             "required": {
                 "images": ("IMAGE", {"tooltip": "The images to save, as PNG."}),
@@ -59,6 +58,9 @@ class SaveImageWithCaption:
                     prompt=None, extra_pnginfo=None):
         import folder_paths
         from comfy.cli_args import args
+
+        from ..libs.image import tensor_to_pil_u8
+        from ..pipelines.save_image import caption_extension, caption_folder, save_with_captions
 
         extension = caption_extension(caption_file_extension) if caption is not None else None
         if images is None or len(images) == 0:

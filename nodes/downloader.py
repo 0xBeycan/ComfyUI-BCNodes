@@ -14,9 +14,9 @@ The node has two halves:
 
 `server` and `aiohttp` are loaded long before custom nodes, so importing them
 here costs nothing; the import is guarded so the module also loads outside
-ComfyUI (tests), where the routes are simply not registered. `folder_paths`
-is imported inside libs/download.py and pipelines/model_download.py, where it
-is used.
+ComfyUI (tests), where the routes are simply not registered. libs/download.py
+and pipelines/model_download.py are imported inside the functions that use
+them, `folder_paths` inside those modules' functions.
 """
 
 import hashlib
@@ -29,11 +29,6 @@ try:
 except ImportError:
     PromptServer = None
     web = None
-
-from ..libs.download import SERVICE_NAMES, download_file, save_tokens, tokens_present
-from ..pipelines.model_download import (
-    describe, entries_key, mark_seen, missing_tokens, missing_tokens_message, parse_entries, read_seen,
-)
 
 EVENT = "bcnodes.downloader"
 
@@ -65,6 +60,8 @@ def _send(data):
 
 def _download_item(item, on_progress):
     """One resolved item, announced on the console first (the job runner and the node)."""
+    from ..libs.download import download_file
+
     print(f"[BCNodes] downloading {item['url']} -> models/{item['dir']}/{item['filename']}")
     download_file(item["url"], item["path"], on_progress)
 
@@ -110,6 +107,9 @@ if getattr(PromptServer, "instance", None) is not None:
 
     @routes.post("/bcnodes/downloader/check")
     async def _check(request):
+        from ..libs.download import tokens_present
+        from ..pipelines.model_download import describe, entries_key, missing_tokens, read_seen
+
         body = await request.json()
         items = describe(body.get("entries") or [])
         valid = [i for i in items if not i.get("error")]
@@ -123,16 +123,22 @@ if getattr(PromptServer, "instance", None) is not None:
 
     @routes.get("/bcnodes/downloader/tokens")
     async def _tokens_get(request):
+        from ..libs.download import tokens_present
+
         return web.json_response({"tokens": tokens_present()})
 
     @routes.post("/bcnodes/downloader/tokens")
     async def _tokens_set(request):
+        from ..libs.download import SERVICE_NAMES, save_tokens, tokens_present
+
         body = await request.json()
         save_tokens({k: body.get(k) for k in SERVICE_NAMES if k in body})
         return web.json_response({"tokens": tokens_present()})
 
     @routes.post("/bcnodes/downloader/dismiss")
     async def _dismiss(request):
+        from ..pipelines.model_download import mark_seen
+
         body = await request.json()
         key = body.get("key")
         if key:
@@ -141,6 +147,8 @@ if getattr(PromptServer, "instance", None) is not None:
 
     @routes.post("/bcnodes/downloader/start")
     async def _start(request):
+        from ..pipelines.model_download import describe, entries_key, mark_seen, missing_tokens, missing_tokens_message
+
         body = await request.json()
         valid = [i for i in describe(body.get("entries") or []) if not i.get("error")]
         missing = [i for i in valid if not i["exists"]]
@@ -183,6 +191,8 @@ class AutoModelDownloader:
 
     def download(self, entries):
         from comfy.utils import ProgressBar
+
+        from ..pipelines.model_download import describe, entries_key, mark_seen, missing_tokens, missing_tokens_message, parse_entries
 
         items = describe(parse_entries(entries))
         bad = [i for i in items if i.get("error")]

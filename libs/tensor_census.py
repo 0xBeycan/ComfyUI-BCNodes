@@ -15,7 +15,8 @@ storage) add no byte twice.
 
 import bisect
 import gc
-from itertools import chain, compress, starmap
+import weakref
+from itertools import chain, compress, repeat, starmap
 
 import numpy as np
 import torch
@@ -159,6 +160,15 @@ def _backing(maps, device, address):
     return "file" if files[i] else "ram"
 
 
+def _row(t, maps):
+    """A census row of t, or None for a meta tensor or a tensor freed since the pass (None)."""
+    if t is None or (isinstance(t, torch.Tensor) and t.device.type == "meta"):
+        return None
+    device, storage, view = _memory(t)
+    return {"d": describe(t), "device": device, "storage": storage, "view": view,
+            "backing": _backing(maps, device, storage[0]), "bytes": 0}
+
+
 def census(values=None, min_bytes=1 << 20, top=20):
     """The live tensors grouped by (shape, dtype, device, backing), largest first:
     {"groups": [{"count", "shape", "dtype", "device", "backing", "bytes_each", "bytes"}], "small_bytes",
@@ -175,7 +185,7 @@ def census(values=None, min_bytes=1 << 20, top=20):
     or, with None, every torch tensor of the process, found through the garbage collector: a pass over
     all of the process's objects, the slow part. Any thread may call it."""
     if values is not None:
-        found = {id(t): t for t in tensors_in(values)}
+        tensors = {id(t): t for t in tensors_in(values)}.values()  # the caller's values: the caller holds them
     else:
         # The pass must stay ONE C-level call, with no bytecode while the list of all objects is alive.
         # gc.get_objects() also returns objects other threads are still building: a tuple filled from a
@@ -188,32 +198,30 @@ def census(values=None, min_bytes=1 << 20, top=20):
         # cleared, so no iterator made before the list keeps it in a cycle). The collector is paused
         # around the call, so no finalizer runs Python code inside it. A tensor is told by its type
         # alone (type.__subclasscheck__ in C): isinstance reads __class__, which can run Python code.
+        # The pass keeps a weak reference to each tensor: the census runs while the node goes on, and a
+        # tensor the node frees meanwhile is freed at once; below, each one is held only while its row
+        # is made (None once it is gone).
         # Guarded by test_threshold_snapshot_races_no_tuple_builder (tests/layers/pipelines/
-        # test_pipe_process_monitor_monitor.py) and test_census_scan_keeps_no_reference.
+        # test_pipe_process_monitor_monitor.py), test_census_scan_keeps_no_reference and
+        # test_census_holds_no_tensor_while_it_describes_the_others.
         holder = []
         every, again = chain.from_iterable(holder), chain.from_iterable(holder)  # two passes over the list in holder
         scan = chain(
             filter(None, map(holder.append, starmap(gc.get_objects, [()]))),  # the list of all objects into holder
-            compress(every, map(torch.Tensor.__subclasscheck__, map(type, again))),  # its tensors
+            map(weakref.ref, compress(every, map(torch.Tensor.__subclasscheck__, map(type, again)))),  # its tensors
             filter(None, again),  # `again` reaches its end and drops the list
             filter(None, starmap(holder.clear, [()])),  # holder drops it: the list is freed here
         )
         collecting = gc.isenabled()
         gc.disable()
         try:
-            tensors = list(scan)
+            refs = list(scan)
         finally:
             if collecting:
                 gc.enable()
-        found = {id(t): t for t in tensors}
+        tensors = map(weakref.ref.__call__, refs)
     maps = _maps()
-    rows = []
-    for t in found.values():
-        if isinstance(t, torch.Tensor) and t.device.type == "meta":
-            continue
-        device, storage, view = _memory(t)
-        rows.append({"d": describe(t), "device": device, "storage": storage, "view": view,
-                     "backing": _backing(maps, device, storage[0]), "bytes": 0})
+    rows = [row for row in map(_row, tensors, repeat(maps)) if row is not None]
     rows.sort(key=lambda r: r["view"][1] - r["view"][0], reverse=True)
     covered = Covered()
     for part in ("view", "storage"):

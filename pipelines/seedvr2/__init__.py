@@ -1,5 +1,6 @@
 """SeedVR2 streaming flows, one module per node: resize, encode, decode, postprocess, compact,
-framing (Resize's downscale factor from the face size); progress is their progress bar and log.
+framing (Resize's downscale factor from the face size), chunk_size (the frames per chunk the card holds);
+progress is their progress bar and log.
 The constants and the IMAGE-batch check they share live here.
 
 The encode, decode and post-process nodes follow ComfyUI's own

@@ -80,3 +80,37 @@ def test_encode_2048_tile_is_one_tile_larger_than_the_card(bcnodes, asked):
     _encode(bcnodes, 2048)
     assert asked == [6_360_000_000 + 15_440 * 1920 * 1088]
     assert asked[0] > 31.37 * GIB
+
+
+@pytest.fixture
+def card(monkeypatch):
+    import comfy.model_management as mm
+
+    def set_total(gib):
+        monkeypatch.setattr(mm, "get_total_memory", lambda dev=None, torch_total_too=False: int(gib * GIB), raising=False)
+    return set_total
+
+
+def test_auto_tile_on_a_5090(bcnodes, asked, card):
+    """tile_size 0 on a 31.36 GiB card (30.61 GiB less the driver's 768 MiB): the encoder's whole 1088x1920 frame
+    (36.0 GiB) does not fit, the 1568 tile (1088 x 1568: 30.45 GiB) does; the decoder's 1024 (29.8 GiB) fits and
+    1056 (31.2 GiB) does not."""
+    card(31.36)
+    _encode(bcnodes, 0)
+    _decode(bcnodes, 0)
+    assert asked == [6_360_000_000 + 15_440 * 1088 * 1568, 7_950_000_000 + 22_940 * 1024 * 1024]
+
+
+def test_auto_tile_on_a_96_gb_card(bcnodes, asked, card):
+    """94.97 GiB: one tile covering the frame for both (the smallest multiple of 32 over 1920)."""
+    card(94.97)
+    _encode(bcnodes, 0)
+    _decode(bcnodes, 0)
+    assert asked == [6_360_000_000 + 15_440 * 1088 * 1920, 7_950_000_000 + 22_940 * 1088 * 1920]
+
+
+def test_a_set_tile_ignores_the_card(bcnodes, asked, card):
+    card(8.0)  # far too small: a set tile_size is used as it is, as before
+    _encode(bcnodes, 1024)
+    _decode(bcnodes, 1024)
+    assert asked == [6_360_000_000 + 15_440 * 1024 * 1024, 7_950_000_000 + 22_940 * 1024 * 1024]

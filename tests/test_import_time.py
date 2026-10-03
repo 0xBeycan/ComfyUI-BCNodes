@@ -12,9 +12,15 @@ before custom nodes are imported):
   * each module of nodes/, pipelines/, models/ and libs/ on its own, cold, in a
     fresh subprocess whose sys.path does not hold the repo root
     (PYTHONSAFEPATH=1), as under ComfyUI: an absolute `import libs` fails here
-    too instead of passing by accident.
+    too instead of passing by accident;
+  * each module of nodes/ loads no pack module outside nodes/ beyond its EAGER
+    entry: a node module imports its pipeline, model and lib modules inside the
+    methods that use them, so the package import reads and compiles only nodes/
+    and what runs at registration (on a cold start, with no bytecode cached,
+    every module read is compiled first).
 
-Exits non-zero when the budget or the heavy-module rule is broken.
+Exits non-zero when the budget, the heavy-module rule or the eager-import rule
+is broken.
 """
 
 import importlib
@@ -40,6 +46,15 @@ HEAVY = [
     "safetensors", "kornia", "einops", "torchvision", "folder_paths",
     "yaml", "postfx", "caption_audit",
 ]
+# The pack modules outside nodes/ a node module may load at import, with the reason. The Process
+# Monitor registers its routes and the full-clear hook at import and starts there when it is on.
+EAGER = {
+    "nodes.process_monitor": {
+        "libs", "libs.download", "libs.memory_sources", "libs.tensor_census",
+        "pipelines", "pipelines.process_monitor", "pipelines.process_monitor.blackbox", "pipelines.process_monitor.clear",
+        "pipelines.process_monitor.hook", "pipelines.process_monitor.monitor", "pipelines.process_monitor.settings",
+    },
+}
 
 
 def bind_package(execute_init):
@@ -85,7 +100,8 @@ def time_module(module):
         f"import importlib; importlib.import_module(t.PKG_NAME + '.{module}')\n"
         "dt = time.perf_counter() - t0\n"
         "heavy = sorted(m for m in set(sys.modules) - before if m.split('.')[0] in t.HEAVY)\n"
-        "print(__import__('json').dumps({'seconds': dt, 'heavy': heavy}))\n"
+        "pack = sorted(m[len(t.PKG_NAME) + 1:] for m in set(sys.modules) - before if m.startswith(t.PKG_NAME + '.'))\n"
+        "print(__import__('json').dumps({'seconds': dt, 'heavy': heavy, 'pack': pack}))\n"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=PKG_DIR,
                          env={**os.environ, "PYTHONSAFEPATH": "1"})
@@ -105,7 +121,9 @@ def main():
     pkg = bind_package(execute_init=True)
     package_s = time.perf_counter() - t0
     heavy = sorted(m for m in set(sys.modules) - before if m.split(".")[0] in HEAVY)
+    pack = [m for m in set(sys.modules) - before if m.startswith(PKG_NAME + ".")]
 
+    print(f"package import loads {len(pack)} pack modules")
     print(f"{'module':<28}{'import (s)':>12}  heavy imports")
     print(f"{'package':<28}{package_s:>12.4f}  {', '.join(heavy) or '-'}")
     if package_s > BUDGET_S:
@@ -122,6 +140,10 @@ def main():
         print(f"{module:<28}{r['seconds']:>12.4f}  {', '.join(r['heavy']) or '-'}")
         if r["heavy"]:
             failures.append(f"{module} pulled in heavy modules: {', '.join(r['heavy'])}")
+        if module.startswith("nodes."):
+            eager = sorted(m for m in r["pack"] if m != "nodes" and not m.startswith("nodes.") and m not in EAGER.get(module, set()))
+            if eager:
+                failures.append(f"{module} imports at module level what its methods should import: {', '.join(eager)}")
 
     expected = {
         "BC_LogicBoolean", "BC_IsMaskEmpty", "BC_MaskFillHoles", "BC_MaskGrow", "BC_DrawMaskOnImage", "BC_BlockifyMask",
@@ -130,7 +152,7 @@ def main():
         "BC_MathExpression", "BC_PromptList", "BC_AnySwitch", "BC_SelectSwitch", "BC_Seed", "BC_ShowText",
         "BC_ImageComparer", "BC_PowerLoraLoader", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
         "BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode", "BC_SeedVR2PostProcess",
-        "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact", "BC_SeedVR2FramingDownscale",
+        "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact", "BC_SeedVR2FramingDownscale", "BC_SeedVR2ChunkSize",
         "BC_PostFxApply", "BC_PostFxTheme", "BC_PostFxCustomLook", "BC_PostFxLut", "BC_PostFxSignatureSheet",
         "BC_CaptionAudit", "BC_SocialMediaExport", "BC_ImageQualityGate", "BC_SaveImage", "BC_SaveImageWithCaption", "BC_SkinTexture",
         "BC_FrequencyMerge",

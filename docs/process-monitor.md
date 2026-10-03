@@ -4,7 +4,7 @@ Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_moni
 
 **On / off.** One ComfyUI setting, *Settings → BCNodes → Process Monitor*, on by default, applied live, no restart. Off means no thread, no hook into the executor and no file writes. The server keeps a copy of the setting, so a ComfyUI started without a browser (a pod queued through the API) still runs the monitor when it was left on, or never set.
 
-**Top bar.** RAM against its limit, VRAM and the GPU load, once a second, while the monitor is on; and a `PM` button that opens the modal. The button is there with the monitor off too (Emulate and the crash report do not need it on) and turns red when the last run was killed (also on a page left open across the restart). The bar sits in the top menu, so it stays when the side panel or focus mode rebuilds the action bar.
+**Top bar.** RAM against its limit, VRAM and the GPU load, once a second, while the monitor is on; next to them the *Full clear* button (below) and a `PM` button that opens the modal. Both buttons are there with the monitor off too (the full clear, Emulate and the crash report do not need it on); `PM` turns red when the last run was killed (also on a page left open across the restart). The bar sits in the top menu, so it stays when the side panel or focus mode rebuilds the action bar.
 
 | Tab | What it shows |
 | --- | --- |
@@ -12,7 +12,6 @@ Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_moni
 | Emulate | An estimate of the current workflow, labelled *rough estimate; a real measurement exists only after the workflow has run once* (below) |
 | Last run | The last finished run: status, run time, the monitor's own time (`run 2.9 s, monitor 4.9 ms (0.17%)`), RAM / VRAM peaks, and the per-node table of an armed run. A row click selects and centres the node; a node inside a subgraph centres its subgraph node |
 | Crash | The report of a run that ended without an end record (below) |
-| Full clear | The *Full clear* button and its report (below) |
 | Settings | Black box on / off, the snapshot threshold, the experimental stop, how many run logs are kept |
 
 **Sources.**
@@ -30,7 +29,7 @@ Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_moni
 
 **Emulate.** Built per component from the workflow as the frontend sends it: model weights from the safetensors headers (no model load), tensors exact from their sizes, every output kept in RAM until the prompt ends (ComfyUI-BCVideoNodes' WanAnimate Preprocess `final_mask` and `bg_images` only when something is connected to them: the node makes them only then), and each node's own transients (copies, lists before a stack or concat) from a cost profile worked out from that node's code. A node without a profile is listed as *not counted*, never guessed; bypassed and muted nodes are listed, not added; subgraphs are expanded. A video workflow also gets a table of resolution (480p / 720p / 1080p) by frame count. The fit check sets the estimate against a 24 GB and a 32 GB GPU and the RAM limit. After an armed run, that workflow's measured nodes replace the formulas, scaled to other sizes; the measurements live in `user/BCNodes/process_monitor/measurements/`, never in the workflow.
 
-**Full clear.** The button in the Full clear tab (`POST /bcnodes/monitor/clear`) brings the process's RAM and VRAM back to the reading taken right after ComfyUI started (once every custom node has loaded, before the first prompt; the monitor does not need to be on). It is refused while a prompt runs or waits in the queue, and a second click waits for the first. Its steps, in order, each measured on its own:
+**Full clear.** The *Full clear* button in the top bar, next to the RAM bars (`POST /bcnodes/monitor/clear`), brings the process's RAM and VRAM back to the reading taken right after ComfyUI started (once every custom node has loaded, before the first prompt; the monitor does not need to be on). It is refused while a prompt runs or waits in the queue, and a second click waits for the first. Its steps, in order, each measured on its own:
 
 | Step | What it frees |
 | --- | --- |
@@ -40,7 +39,7 @@ Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_moni
 | `torch_caches` | ComfyUI's cast buffers, the free blocks of torch's GPU allocator (CUDA or MPS) and torch's pinned host cache |
 | `malloc_trim` | Linux (glibc): freed memory glibc keeps in its arenas for reuse goes back to the system (`malloc_trim(0)`) |
 
-The report sets the baseline against the readings before and after the clear: RAM as the bar shows it, the process's RSS split into its own memory (RssAnon) and pages mapped from files (RssFile) on Linux (the USS on macOS, which keeps freed pages in the RSS until it needs them), the container's anon / page cache split, glibc's free blocks, pinned host memory, and VRAM allocated, reserved and on the device. Per step: what it found and what it freed; per hook, each model it dropped and its weights. Last, the tensors something still references after the clear, grouped by shape (the same census as the crash report).
+The bar shows the outcome next to the button: `Cleared: RAM 12.4 GB → 3.10 GB, VRAM …` (it fades after 30 s), `· 1 hook(s) failed` when a pack's hook raised (it stays), or `Not cleared: …` with the reason (a prompt runs or waits, another clear runs, ComfyUI's free did not finish). Its tooltip, kept on the button, has the details: RAM and VRAM reserved before and after against the baseline, one line per step with what it found (each hook's models and weights, or its error), and the bytes of the tensors something still references after the clear. The route answers with the full report (every reading before and after against the baseline, what each step freed, the census of the remaining tensors), for a script that calls it.
 
 What the clear cannot free, and a restart would: a model or tensor a pack without a hook keeps in its own cache (it shows in that list), and the libraries and GPU kernels loaded during the run. The page cache (files read or mapped, the container's `file`) is shown, not dropped: the kernel takes it back when memory runs short, and a restart keeps it too. The next run loads its models again, so it starts slower.
 

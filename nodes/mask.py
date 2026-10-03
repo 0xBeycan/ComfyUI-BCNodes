@@ -15,8 +15,6 @@ imports cv2 and PIL inside the functions that use them.
 
 import torch
 
-from ..libs.image import is_half
-from ..libs.mask import blockify, draw_mask_on_image, fill_holes, grow_and_blur
 from .common import DEVICES, compute_device
 
 EMPTY_MASK_SHAPE = (1, 64, 64)
@@ -29,6 +27,8 @@ def _empty_mask():
 def _frames(mask):
     """Any of (H, W) / (B, H, W) / (B, 1, H, W) -> (B, H, W) on the CPU, half precision kept and any
     other dtype as float32, or None when there is nothing to process."""
+    from ..libs.image import is_half
+
     if not isinstance(mask, torch.Tensor) or mask.ndim < 2 or mask.numel() == 0:
         return None
     mask = mask.detach().cpu()
@@ -51,6 +51,8 @@ class MaskFillHoles:
     SEARCH_ALIASES = ['BCNodes', 'mask fill holes', 'fill holes']
 
     def fill_region(self, masks=None):
+        from ..libs.mask import fill_holes
+
         frames = _frames(masks)
         if frames is None:
             return (_empty_mask(),)
@@ -82,6 +84,8 @@ class MaskGrow:
     SEARCH_ALIASES = ['BCNodes', 'mask grow', 'grow mask', 'shrink mask', 'erode', 'dilate']
 
     def mask_grow(self, invert_mask, grow, blur, mask=None):
+        from ..libs.mask import grow_and_blur
+
         frames = _frames(mask)
         if frames is None:
             return (_empty_mask(),)
@@ -117,6 +121,8 @@ class DrawMaskOnImage:
     SEARCH_ALIASES = ["BCNodes", "draw mask on image", "mask overlay", "fill mask", "paint mask", "composite mask"]
 
     def apply(self, image, mask, color, device="cpu"):
+        from ..libs.mask import draw_mask_on_image
+
         if not isinstance(image, torch.Tensor) or image.ndim != 4:
             raise ValueError("Draw Mask On Image: connect an image batch (B, H, W, C)")
         frames = _frames(mask)
@@ -150,6 +156,8 @@ class BlockifyMask:
     SEARCH_ALIASES = ["BCNodes", "blockify mask", "block mask", "pixelate mask", "grid mask"]
 
     def process(self, masks, block_size, device="cpu"):
+        from ..libs.mask import blockify
+
         frames = _frames(masks)
         if frames is None:
             return (_empty_mask(),)

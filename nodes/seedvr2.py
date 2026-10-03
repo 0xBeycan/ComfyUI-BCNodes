@@ -9,20 +9,18 @@
     BC_SeedVR2PostProcessCompact (SeedVR2 PostProcess (Compact))  VAE Decode + PostProcess into one buffer
 
     BC_SeedVR2FramingDownscale (SeedVR2 Framing Downscale)  Resize's downscale_factor from the face size (SAM 3)
+    BC_SeedVR2ChunkSize        (SeedVR2 Chunk Size)         the frames per chunk the card holds, for Split SeedVR2 Latent
 
 Resize is the whole input stage of the SeedVR2 upscale graph in one node. The compact
 pair is the same chain with no clip between the input stage and the end (the output
 cache keeps only the result); it gives the same frames.
 
-The flows are in pipelines/seedvr2/ (resize, encode, decode, postprocess, compact, framing), the
-SeedVR2 VAE adapter, its tiling and the frame-shape rules in models/seedvr2/.
+The flows are in pipelines/seedvr2/ (resize, encode, decode, postprocess, compact, framing, chunk_size),
+the SeedVR2 VAE adapter, its tiling, the frame-shape rules and the DiT's VRAM law in models/seedvr2/.
+Each node imports its flow inside the method that runs it, and a widget list or default inside
+INPUT_TYPES.
 """
 
-from ..models.sam3.checkpoint import DEFAULT_SAM3, choices
-from ..pipelines.seedvr2 import (
-    compact as compact_flow, decode as decode_flow, encode as encode_flow, framing as framing_flow, postprocess as postprocess_flow,
-    resize as resize_flow,
-)
 from .common import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
 
 RESIZE_INPUTS = {
@@ -65,6 +63,8 @@ class SeedVR2Resize:
     SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "resize", "shortest edge", "upscale", "downscale", "pad"]
 
     def resize(self, image, upscale_factor, downscale_factor, max_resolution, emulate_bf16, prompt_graph=None, unique_id=None):
+        from ..pipelines.seedvr2 import resize as resize_flow
+
         wanted = heavy_wanted(type(self), prompt_graph, unique_id)
         return drop_unwanted(type(self), resize_flow.resize(
             image, upscale_factor, downscale_factor, max_resolution, emulate_bf16, want_image=wants(wanted, "image"),
@@ -75,6 +75,13 @@ TILE_INPUTS = {
     "tile_size": ("INT", {"default": 1024, "min": 64, "max": 4096, "step": 32, "advanced": True,
                           "tooltip": "Spatial tile in pixels, as VAE Encode/Decode (Tiled). A tile that covers the frame means no tiling."}),
     "overlap": ("INT", {"default": 256, "min": 0, "max": 4096, "step": 32, "advanced": True}),
+}
+COMPACT_TILE_INPUTS = {
+    "tile_size": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 32, "advanced": True,
+                          "tooltip": "0 = auto: the largest tile whose working set fits this card (no tiling when the "
+                                     "whole frame fits). Otherwise the spatial tile in pixels, as VAE Encode/Decode "
+                                     "(Tiled); a tile that covers the frame means no tiling."}),
+    "overlap": TILE_INPUTS["overlap"],
 }
 TILED_INPUTS = {
     **TILE_INPUTS,
@@ -104,6 +111,8 @@ class SeedVR2VAEEncode:
     SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "vae encode", "video", "streaming", "tiled"]
 
     def encode(self, pixels, vae, tile_size, overlap, temporal_size=64, temporal_overlap=8):
+        from ..pipelines.seedvr2 import encode as encode_flow
+
         return encode_flow.encode(pixels, vae, tile_size, overlap)
 
 
@@ -127,21 +136,23 @@ class SeedVR2VAEDecode:
     SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "vae decode", "video", "streaming", "tiled"]
 
     def decode(self, samples, vae, tile_size, overlap, temporal_size=64, temporal_overlap=8):
+        from ..pipelines.seedvr2 import decode as decode_flow
+
         return decode_flow.decode(samples, vae, tile_size, overlap)
 
 
 class SeedVR2PostProcess:
     """Post-Process SeedVR2 Output, one frame at a time into one float16 output."""
 
-    METHODS = postprocess_flow.METHODS
-
     @classmethod
     def INPUT_TYPES(cls):
+        from ..pipelines.seedvr2.postprocess import METHODS
+
         return {
             "required": {
                 "images": ("IMAGE", {"tooltip": "The generated frames."}),
                 "original_resized_images": ("IMAGE", {"tooltip": "The reference frames (SeedVR2 Resize `reference`)."}),
-                "color_correction_method": (cls.METHODS, {"default": "lab"}),
+                "color_correction_method": (METHODS, {"default": "lab"}),
             },
         }
 
@@ -153,6 +164,8 @@ class SeedVR2PostProcess:
     SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "color correction", "postprocess", "lab", "video"]
 
     def process(self, images, original_resized_images, color_correction_method):
+        from ..pipelines.seedvr2 import postprocess as postprocess_flow
+
         return postprocess_flow.process(images, original_resized_images, color_correction_method)
 
 
@@ -169,7 +182,7 @@ class SeedVR2PreprocessCompact:
                 "image": ("IMAGE", {"tooltip": "The original frames. Connect the same batch to SeedVR2 PostProcess (Compact) `image`."}),
                 "vae": ("VAE",),
                 **RESIZE_INPUTS,
-                **TILE_INPUTS,
+                **COMPACT_TILE_INPUTS,
             },
         }
 
@@ -184,16 +197,18 @@ class SeedVR2PreprocessCompact:
     SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "compact", "resize", "vae encode", "upscale", "low ram"]
 
     def preprocess(self, image, vae, upscale_factor, downscale_factor, max_resolution, emulate_bf16, tile_size, overlap):
+        from ..pipelines.seedvr2 import compact as compact_flow
+
         return compact_flow.preprocess(image, vae, upscale_factor, downscale_factor, max_resolution, emulate_bf16, tile_size, overlap)
 
 
 class SeedVR2PostProcessCompact:
     """SeedVR2 VAE Decode + SeedVR2 PostProcess: decoded and colour-corrected in one float16 buffer."""
 
-    METHODS = postprocess_flow.METHODS
-
     @classmethod
     def INPUT_TYPES(cls):
+        from ..pipelines.seedvr2.postprocess import METHODS
+
         return {
             "required": {
                 "samples": ("LATENT", {"tooltip": "The sampler's latent."}),
@@ -201,8 +216,8 @@ class SeedVR2PostProcessCompact:
                 "image": ("IMAGE", {"tooltip": "The original frames: the batch SeedVR2 Preprocess (Compact) got. "
                                                "The colour reference is rebuilt from them, a few frames at a time."}),
                 "plan": ("SEEDVR2_PLAN", {"tooltip": "SeedVR2 Preprocess (Compact) `plan`."}),
-                "color_correction_method": (cls.METHODS, {"default": "lab"}),
-                **TILE_INPUTS,
+                "color_correction_method": (METHODS, {"default": "lab"}),
+                **COMPACT_TILE_INPUTS,
             },
         }
 
@@ -214,6 +229,8 @@ class SeedVR2PostProcessCompact:
     SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "compact", "vae decode", "color correction", "postprocess", "low ram"]
 
     def process(self, samples, vae, image, plan, color_correction_method, tile_size, overlap):
+        from ..pipelines.seedvr2 import compact as compact_flow
+
         return compact_flow.postprocess(samples, vae, image, plan, tile_size, overlap, color_correction_method)
 
 
@@ -225,6 +242,8 @@ class SeedVR2FramingDownscale:
 
     @classmethod
     def INPUT_TYPES(cls):
+        from ..models.sam3.checkpoint import DEFAULT_SAM3, choices
+
         return {
             "required": {
                 "image": ("IMAGE", {"tooltip": "The original image(s), the batch SeedVR2 Resize gets. One factor for the whole "
@@ -267,14 +286,54 @@ class SeedVR2FramingDownscale:
 
     def choose(self, image, sam3_model, close_up_min_face, close_up_factor, medium_min_face, medium_factor, far_factor,
                no_face_factor, detection_threshold):
+        from ..pipelines.seedvr2 import framing as framing_flow
+
         return framing_flow.downscale_factor(image, sam3_model, detection_threshold, close_up_min_face, close_up_factor,
                                              medium_min_face, medium_factor, far_factor, no_face_factor)
+
+
+class SeedVR2ChunkSize:
+    """The largest 4n+1 frames per chunk whose DiT working set fits the card, for Split SeedVR2 Latent."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        from ..models.seedvr2.dit import SAFETY_MARGIN
+
+        return {
+            "required": {
+                "latent": ("LATENT", {"tooltip": "The encoded clip (SeedVR2 Preprocess (Compact) or SeedVR2 VAE Encode `latent`): "
+                                                 "its length and frame size."}),
+                "safety_margin": ("FLOAT", {"default": SAFETY_MARGIN, "min": 0.0, "max": 4.0, "step": 0.01,
+                                            "tooltip": "Each frame's share of the DiT's working set is budgeted at (1 + this) x the "
+                                                       "measured line. 0.64: a long clip needed up to 1.44x it on a 32 GB and a "
+                                                       "96 GB card; this keeps 14% over that. Raise it if a chunk runs out of "
+                                                       "memory, lower it to try longer chunks."}),
+            },
+        }
+
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("frames_per_chunk",)
+    OUTPUT_TOOLTIPS = ("Pixel frames per chunk (4n+1), at most the clip's. Wire to Split SeedVR2 Latent's frames_per_chunk "
+                       "with its chunking_mode on manual.",)
+    FUNCTION = "size"
+    CATEGORY = "BCNodes/seedvr2"
+    SEARCH_ALIASES = ["BCNodes", "seedvr2", "seedvr", "chunk", "frames per chunk", "temporal", "vram", "split"]
+    DESCRIPTION = ("The longest chunk the SeedVR2 sampler can take on this card: the DiT's working set (a fixed part plus a "
+                   "part per frame and megapixel, measured on the 7B) against the card's total memory, not the memory free "
+                   "right now. Set Split SeedVR2 Latent's chunking_mode to manual and wire this to its frames_per_chunk; its "
+                   "own auto ran out of memory on both cards measured.")
+
+    def size(self, latent, safety_margin):
+        from ..pipelines.seedvr2 import chunk_size as chunk_size_flow
+
+        return chunk_size_flow.frames_per_chunk(latent, safety_margin)
 
 
 NODE_CLASS_MAPPINGS = {
     "BC_SeedVR2FramingDownscale": SeedVR2FramingDownscale,
     "BC_SeedVR2Resize": SeedVR2Resize,
     "BC_SeedVR2VAEEncode": SeedVR2VAEEncode,
+    "BC_SeedVR2ChunkSize": SeedVR2ChunkSize,
     "BC_SeedVR2VAEDecode": SeedVR2VAEDecode,
     "BC_SeedVR2PostProcess": SeedVR2PostProcess,
     "BC_SeedVR2PreprocessCompact": SeedVR2PreprocessCompact,
@@ -285,6 +344,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BC_SeedVR2FramingDownscale": "SeedVR2 Framing Downscale",
     "BC_SeedVR2Resize": "SeedVR2 Resize",
     "BC_SeedVR2VAEEncode": "SeedVR2 VAE Encode",
+    "BC_SeedVR2ChunkSize": "SeedVR2 Chunk Size",
     "BC_SeedVR2VAEDecode": "SeedVR2 VAE Decode",
     "BC_SeedVR2PostProcess": "SeedVR2 PostProcess",
     "BC_SeedVR2PreprocessCompact": "SeedVR2 Preprocess (Compact)",

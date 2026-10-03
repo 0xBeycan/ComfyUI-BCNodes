@@ -21,13 +21,11 @@ loads the model again. This pack registers release_pack_models there.
 import asyncio
 import logging
 import os
-import sys
 
 from ..libs import memory_sources
 from ..libs.download import user_file
-from ..libs.safetensors_info import weights_info
 from ..pipelines.process_monitor.clear import Busy, FullClear, release_pack_models
-from ..pipelines.process_monitor.monitor import Monitor, stack_codes
+from ..pipelines.process_monitor.monitor import Monitor, thread_stacks
 from .common import _pack_of
 
 FULL_CLEAR_HOOKS = "bc_full_clear_hooks"  # the attribute on PromptServer.instance (locked)
@@ -71,8 +69,8 @@ class ServerProbe:
 
     def _worker_stack(self):
         """The code objects on the stack of ComfyUI's prompt worker thread (main.py's prompt_worker)."""
-        for frame in sys._current_frames().values():
-            codes = stack_codes(frame)
+        for stack in thread_stacks().values():
+            codes = [code for code, _ in stack]
             if any(c.co_name == "prompt_worker" for c in codes):
                 return codes
         raise RuntimeError("ComfyUI's prompt worker thread was not found (a ComfyUI that does not run prompts "
@@ -129,6 +127,8 @@ class ComfyEnv:
         return None
 
     def weights(self, path):
+        from ..libs.safetensors_info import weights_info
+
         return weights_info(path)
 
     def _input_path(self, name):

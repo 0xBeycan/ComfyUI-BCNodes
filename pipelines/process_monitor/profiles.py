@@ -674,7 +674,8 @@ def _seedvr2_encoded(c, pixels):
     lt, lh, lw = (n + 3) // 4, (h + 7) // 8, (w + 7) // 8
     elements = SEEDVR2_LATENT_CHANNELS * lt * lh * lw
     tile = int(c.widget("tile_size", 1024))
-    single = h <= tile and w <= tile
+    # tile_size 0 (auto) is decided by the card the node runs on: counted as tiled, the larger of the two
+    single = 0 < tile and h <= tile and w <= tile
     # the latent slices go straight into the float32 output; tiles: the output is the float32 sum,
     # rounded through the VAE dtype (2 bytes) in place, a chunk of latent frames at a time
     transient = 0 if single else SEEDVR2_LATENT_CHANNELS * min(lt, SEEDVR2_CHUNK) * lh * lw * 2
