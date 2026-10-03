@@ -78,9 +78,10 @@ TILE_INPUTS = {
 }
 COMPACT_TILE_INPUTS = {
     "tile_size": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 32, "advanced": True,
-                          "tooltip": "0 = auto: the largest tile whose working set fits this card (no tiling when the "
-                                     "whole frame fits). Otherwise the spatial tile in pixels, as VAE Encode/Decode "
-                                     "(Tiled); a tile that covers the frame means no tiling."}),
+                          "tooltip": "0 = auto: the tiling that computes the fewest pixels with a working set that fits "
+                                     "this card, tiles of any width and height (full-height strips when they fit; no tiling "
+                                     "when the whole frame fits), the overlap kept. Otherwise a square spatial tile in "
+                                     "pixels, as VAE Encode/Decode (Tiled); a tile that covers the frame means no tiling."}),
     "overlap": TILE_INPUTS["overlap"],
 }
 TILED_INPUTS = {
@@ -305,9 +306,9 @@ class SeedVR2ChunkSize:
                                                  "its length and frame size."}),
                 "safety_margin": ("FLOAT", {"default": SAFETY_MARGIN, "min": 0.0, "max": 4.0, "step": 0.01,
                                             "tooltip": "Each frame's share of the DiT's working set is budgeted at (1 + this) x the "
-                                                       "measured line. 0.64: a long clip needed up to 1.44x it on a 32 GB and a "
-                                                       "96 GB card; this keeps 14% over that. Raise it if a chunk runs out of "
-                                                       "memory, lower it to try longer chunks."}),
+                                                       "measured line. 0.64 picks the longest chunks measured on a long clip: 41 "
+                                                       "frames at 1080p on a 32 GB card, 161 on a 96 GB card. Raise it if a "
+                                                       "chunk runs out of memory, lower it to try longer chunks."}),
             },
         }
 

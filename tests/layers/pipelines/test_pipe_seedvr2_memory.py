@@ -159,13 +159,13 @@ def _encoded_whole(model, pixels):
 
 def _encode_whole_clip(bcnodes, pixels, tile, overlap):
     """The slices in the VAE dtype (one tile) or the float32 tile blend cast to it (tiles), then
-    cropped, cast to float32 and scaled."""
+    cropped, cast to float32 and scaled. `tile` and `overlap` in pixels per axis, (rows, columns), as
+    tiled_vae takes them."""
     tiling = bcnodes["models.seedvr2.tiling"]
     model = VAE.first_stage_model
     n, height, width = pixels.shape[:3]
     target_t, target_h, target_w = (n + 3) // 4, (height + 7) // 8, (width + 7) // 8
-    overlap = min(overlap, max(0, tile - 8))
-    if height <= tile and width <= tile:
+    if height <= tile[0] and width <= tile[1]:
         z = _encoded_whole(model, pixels)
     else:
         ranges, ramp = tiling.tile_plan(height, width, tile, overlap, CPU)
@@ -174,7 +174,7 @@ def _encode_whole_clip(bcnodes, pixels, tile, overlap):
         for y0, y1, x0, x1 in ranges:
             part = _encoded_whole(model, pixels[:, y0:y1, x0:x1])[:, :, :target_t]
             th, tw = part.shape[3], part.shape[4]
-            weight = tiling.tile_weight(y0, y1, x0, x1, height, width, th, tw, overlap // 8, overlap // 8, ramp, CPU)
+            weight = tiling.tile_weight(y0, y1, x0, x1, height, width, th, tw, overlap[0] // 8, overlap[1] // 8, ramp, CPU)
             result[:, :, :, y0 // 8:y0 // 8 + th, x0 // 8:x0 // 8 + tw] += part.mul_(weight).float()
             count[:, :, :, y0 // 8:y0 // 8 + th, x0 // 8:x0 // 8 + tw] += weight
         z = (result / count.clamp(min=1e-6)).to(torch.float16)
@@ -186,7 +186,30 @@ def test_encode_equals_the_whole_clip_way(stubbed, tile):
     pixels = _pixels(13, 48, 80)  # 13 frames: slices of 5, 4 and 4; tile 32 / overlap 16: 2 x 4 tiles
     z = stubbed["pipelines.seedvr2.encode"].encode(pixels, VAE(), tile, 16)[0]["samples"]
     assert z.shape == (1, 16, 4, 6, 10) and z.dtype == torch.float32 and z.is_contiguous()
-    assert torch.equal(z, _encode_whole_clip(stubbed, pixels, tile, 16))
+    overlap = min(16, tile - 8)  # vae.py encode_tiled
+    assert torch.equal(z, _encode_whole_clip(stubbed, pixels, (tile, tile), (overlap, overlap)))
+
+
+def card_for(monkeypatch, bcnodes, fixed, per_pixel, pixels):
+    """A card whose total, less the driver's share, is exactly `fixed` + `per_pixel` x `pixels`: the auto tile
+    can be no larger."""
+    import comfy.model_management as mm
+
+    total = bcnodes["models.seedvr2.vae"].CONTEXT_BYTES + fixed + per_pixel * pixels
+    monkeypatch.setattr(mm, "get_total_memory", lambda dev=None, torch_total_too=False: total, raising=False)
+
+
+def test_encode_auto_rectangle_equals_the_whole_clip_way(stubbed, monkeypatch):
+    """A 48x160 frame, overlap 16, on a card that holds a 48 x 96 tile and not the frame: auto runs one full-height
+    row of two 96-wide tiles (64 covers the 48 rows), the tiling tiled_vae gives for tile_size (64, 96)."""
+    vae = stubbed["models.seedvr2.vae"]
+    card_for(monkeypatch, stubbed, vae.ENCODER_FIXED_BYTES, vae.ENCODER_BYTES_PER_PIXEL, 48 * 96)
+    pixels = _pixels(13, 48, 160)
+    z = stubbed["pipelines.seedvr2.encode"].encode(pixels, VAE(), 0, 16)[0]["samples"]
+    assert torch.equal(z, _encode_whole_clip(stubbed, pixels, (64, 96), (16, 16)))
+    assert stubbed["models.seedvr2.tiling"].tile_plan(48, 160, (64, 96), (16, 16), CPU)[0] == [(0, 48, 0, 96), (0, 48, 80, 160)]
+    # another tiling blends otherwise (the stand-in's ramp across each tile): the equality above is not vacuous
+    assert not torch.equal(z, _encode_whole_clip(stubbed, pixels, (64, 64), (16, 16)))
 
 
 @pytest.mark.parametrize("tile", [128, 32])
@@ -212,22 +235,19 @@ def _latent(t, h=12, w=20):
 
 def _decode_whole_clip(bcnodes, z, tile, overlap):
     """The tiles summed into a float16 (B, 3, T, H, W) clip, then normalised in float32, cast
-    through the VAE dtype, put in range and stored channels last."""
+    through the VAE dtype, put in range and stored channels last. `tile` and `overlap` in latent cells per
+    axis, (rows, columns), as tiled_vae(encode=False) takes them."""
     tiling = bcnodes["models.seedvr2.tiling"]
     model = VAE.first_stage_model
     latent = z.to(torch.float16) / SCALE + 0.0
     b, _, t, h, w = latent.shape
-    if tile < overlap * 4:
-        overlap = tile // 4
-    tile_lat = tile // 8
-    ov_lat = min(min(overlap, tile - 8) // 8, tile_lat - 1)
     result = torch.zeros((b, 3, 4 * t - 3, h * 8, w * 8), dtype=torch.float16)
     count = torch.zeros((1, 1, 1, h * 8, w * 8))
-    ranges, ramp = tiling.tile_plan(h, w, tile_lat, ov_lat, CPU)
+    ranges, ramp = tiling.tile_plan(h, w, tile, overlap, CPU)
     for y0, y1, x0, x1 in ranges:
         decoded = model._decode(latent[:, :, :, y0:y1, x0:x1])
         th, tw = decoded.shape[3], decoded.shape[4]
-        weight = tiling.tile_weight(y0, y1, x0, x1, h, w, th, tw, ov_lat * 8, ov_lat * 8, ramp, CPU)
+        weight = tiling.tile_weight(y0, y1, x0, x1, h, w, th, tw, overlap[0] * 8, overlap[1] * 8, ramp, CPU)
         result[:, :, :, y0 * 8:y0 * 8 + th, x0 * 8:x0 * 8 + tw] += decoded.mul_(weight)
         count[:, :, :, y0 * 8:y0 * 8 + th, x0 * 8:x0 * 8 + tw] += weight
     out = (result.float() / count.clamp(min=1e-6)).to(torch.float16)
@@ -238,10 +258,23 @@ def _decode_whole_clip(bcnodes, z, tile, overlap):
 def test_decode_equals_the_whole_clip_way(stubbed):
     z = _latent(5)  # 17 frames of 96x160; tile 64 / overlap 16: latent tiles of 8 with 2 overlapping, 2 x 3 tiles
     out = stubbed["pipelines.seedvr2.decode"].decode({"samples": z}, VAE(), 64, 16)[0]
-    expected = _decode_whole_clip(stubbed, z, 64, 16)
+    expected = _decode_whole_clip(stubbed, z, (8, 8), (2, 2))  # 64 // 8 cells, 16 // 8 overlapping (16 is a quarter of 64)
     assert out.shape == (17, 96, 160, 3) and out.dtype == torch.float16
     assert torch.equal(out, expected)
     assert out.float().std() > 0.1  # the stand-in is not a constant
+
+
+def test_decode_auto_rectangle_equals_the_whole_clip_way(stubbed, monkeypatch):
+    """A latent of 12 x 24 cells (96x192), overlap 16, on a card that holds a 96 x 128 tile and not the frame: auto
+    runs one full-height row of two 128-wide tiles, the tiling tiled_vae(encode=False) gives for (96, 128)
+    pixels: (12, 16) cells overlapping by 2."""
+    vae = stubbed["models.seedvr2.vae"]
+    card_for(monkeypatch, stubbed, vae.DECODER_FIXED_BYTES, vae.DECODER_BYTES_PER_PIXEL, 96 * 128)
+    z = _latent(5, 12, 24)
+    out = stubbed["pipelines.seedvr2.decode"].decode({"samples": z}, VAE(), 0, 16)[0]
+    assert out.shape == (17, 96, 192, 3)
+    assert torch.equal(out, _decode_whole_clip(stubbed, z, (12, 16), (2, 2)))
+    assert stubbed["models.seedvr2.tiling"].tile_plan(12, 24, (12, 16), (2, 2), CPU)[0] == [(0, 12, 0, 16), (0, 12, 14, 24)]
 
 
 @pytest.mark.parametrize("tile", [256, 64])

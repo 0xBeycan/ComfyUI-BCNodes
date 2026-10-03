@@ -92,13 +92,14 @@ def card(monkeypatch):
 
 
 def test_auto_tile_on_a_5090(bcnodes, asked, card):
-    """tile_size 0 on a 31.36 GiB card (30.61 GiB less the driver's 768 MiB): the encoder's whole 1088x1920 frame
-    (36.0 GiB) does not fit, the 1568 tile (1088 x 1568: 30.45 GiB) does; the decoder's 1024 (29.8 GiB) fits and
-    1056 (31.2 GiB) does not."""
+    """tile_size 0 on a 31.36 GiB card (30.61 GiB less the driver's 768 MiB), the 1088-wide portrait frame here:
+    the encoder's whole frame (36.0 GiB) does not fit, two full-width bands of 1088 x 1088 (22.95 GiB) do; the
+    decoder's two bands (32.7 GiB) do not, three of 832 x 1088 (26.74 GiB) do, a fifth less decoding than the
+    1024 square's six tiles."""
     card(31.36)
     _encode(bcnodes, 0)
     _decode(bcnodes, 0)
-    assert asked == [6_360_000_000 + 15_440 * 1088 * 1568, 7_950_000_000 + 22_940 * 1024 * 1024]
+    assert asked == [6_360_000_000 + 15_440 * 1088 * 1088, 7_950_000_000 + 22_940 * 832 * 1088]
 
 
 def test_auto_tile_on_a_96_gb_card(bcnodes, asked, card):

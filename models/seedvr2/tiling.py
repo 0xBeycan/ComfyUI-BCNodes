@@ -1,22 +1,45 @@
-"""The spatial tiles of the SeedVR2 VAE and their blend weights."""
+"""The spatial tiles of the SeedVR2 VAE and their blend weights.
+
+A tiling is one tile size and overlap per axis, (rows, columns), as tiled_vae takes them
+(comfy/ldm/seedvr/vae.py `tile_size=(ti_h, ti_w)`, `tile_overlap=(ov_h, ov_w)`): a tile_size typed into a
+node is the same on both axes, the auto tile may differ (models/seedvr2/vae.py tile_for)."""
 
 import torch
 
 
-def tile_plan(h, w, tile, overlap, device):
-    """The spatial tiles of comfy/ldm/seedvr/vae.py tiled_vae (lines 137-146) on a grid of
-    `h` x `w` cells, and the cosine ramp used for their blend weights."""
+def spans(length, tile, overlap):
+    """tiled_vae's tiles along one axis of `length` cells (lines 137-146): starts `tile - overlap` apart, a
+    last tile no longer than the overlap dropped. -> [(start, end)]"""
     stride = max(1, tile - overlap)
-    ranges = []
-    for y in range(0, h, stride):
-        y_end = min(y + tile, h)
-        if y > 0 and (y_end - y) <= overlap:
+    out = []
+    for start in range(0, length, stride):
+        end = min(start + tile, length)
+        if start > 0 and end - start <= overlap:
             continue
-        for x in range(0, w, stride):
-            x_end = min(x + tile, w)
-            if x > 0 and (x_end - x) <= overlap:
-                continue
-            ranges.append((y, y_end, x, x_end))
+        out.append((start, end))
+    return out
+
+
+def encode_axis(tile, overlap):
+    """One axis of VAE Encode (Tiled) on the SeedVR2 VAE with a typed tile, in pixels: (tile, overlap),
+    the overlap cut to the tile less 8 (vae.py encode_tiled)."""
+    return tile, min(overlap, max(0, tile - 8))
+
+
+def decode_axis(tile, overlap):
+    """One axis of VAE Decode (Tiled) on the SeedVR2 VAE with a typed tile, in latent cells: (tile, overlap),
+    the overlap first cut to a quarter of the tile (nodes.py VAEDecodeTiled), then as vae.py decode_tiled ->
+    tiled_vae(encode=False) takes it."""
+    if tile < overlap * 4:
+        overlap = tile // 4
+    cells = max(1, tile // 8)
+    return cells, min(max(0, min(overlap, max(0, tile - 8)) // 8), cells - 1)
+
+
+def tile_plan(h, w, tile, overlap, device):
+    """The spatial tiles of tiled_vae on a grid of `h` x `w` cells, `tile` and `overlap` per axis as
+    (rows, columns), and the cosine ramp used for their blend weights."""
+    ranges = [(y, y_end, x, x_end) for y, y_end in spans(h, tile[0], overlap[0]) for x, x_end in spans(w, tile[1], overlap[1])]
 
     ramps = {}
 

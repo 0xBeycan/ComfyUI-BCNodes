@@ -2,16 +2,18 @@
 than asked for it unloads every model first, with enough it keeps them; either way it loads the VAE with
 that amount as memory_required.
 
-tile_for: a set tile_size is used as it is; 0 (auto) is the largest multiple of 32, from the one covering
-the frame down, whose working set (fixed + bytes per pixel x min(H, t) x min(W, t)) fits the card's total
-less 768 MiB. Worked out by hand, 1088x1920 (720p -> 1080p) and 2160x3840 (1080p -> 4K):
-  - 32 GB (31.36 GiB, 30.61 left): encoder 1568 (1088 x 1568 x 15,440 + 6.36e9 = 30.45 GiB; 1600 is 30.96),
-    decoder 1024 (29.81; 1056 is 31.23); at 4K encoder 1280 (29.48; 1312 is 30.68), decoder 1024;
-  - 96 GB (94.97 GiB, 94.22 left): one 1920 tile each at 1080p (35.96 and 52.03); at 4K encoder 2816
-    (2160 x 2816: 93.39; 2848 is 94.38), decoder 1984 (91.50; 2016 is 94.23);
-  - 24 GB (23.65 GiB, 22.90 left): encoder 1056 (21.96), decoder 832 (22.19), at both sizes;
-  - 48 GB (47.50 GiB, 46.75 left): encoder 1920 (one tile), decoder 1664 (46.08); at 4K 1664 (45.74) and 1344
-    (46.00)."""
+tile_for: a typed tile_size is the same tile on both axes, its overlap cut as VAE Encode / Decode (Tiled) cut
+it. 0 (auto) picks the tile sides (multiples of 32) computing the fewest pixels (every tile in full, the
+overlaps again) whose working set (fixed + bytes per pixel x the largest tile's pixels) fits the card's total
+less 768 MiB, the overlap (256) kept: a side that does not cover the frame is at least 512. Worked out by hand
+for 32 GB (31.36 GiB, 30.61 left) at 1088x1920:
+  - encoder: the whole frame (6.36e9 + 15,440 x 1088 x 1920 = 35.96 GiB) does not fit; two full-height strips
+    compute 1088 x (1920 + 256) = 2,367,488 pixels whatever their width, the narrowest pair is 1088 wide
+    (1088 + 1088 - 256 = 1920): 22.95 GiB. Two rows would compute (1088 + 256) x 1920, more;
+  - decoder: two strips of 1088 x 1088 need 32.69 GiB; three, at least (1920 + 512) / 3 = 811 -> 832 wide,
+    need 7.95e9 + 22,940 x 1088 x 832 = 26.74 GiB and compute 1088 x 2432 = 2,646,016 pixels, a fifth less
+    than the 1024 square's six tiles ((1024 + 320) x (1024 + 1024 + 384) = 3,268,608).
+The other rows of the table come out of the same arithmetic."""
 
 import types
 
@@ -43,48 +45,86 @@ def test_make_room_unloads_only_when_short(bcnodes, monkeypatch, free_gib, unloa
 
 ENCODER = (6_360_000_000, 15_440)
 DECODER = (7_950_000_000, 22_940)
+CPU = torch.device("cpu")
 
 
-@pytest.mark.parametrize("total_gib, height, width, part, expected", [
-    (31.36, 1088, 1920, ENCODER, 1568), (31.36, 1088, 1920, DECODER, 1024),
-    (31.36, 2160, 3840, ENCODER, 1280), (31.36, 2160, 3840, DECODER, 1024),
-    (94.97, 1088, 1920, ENCODER, 1920), (94.97, 1088, 1920, DECODER, 1920),
-    (94.97, 2160, 3840, ENCODER, 2816), (94.97, 2160, 3840, DECODER, 1984),
-    (23.65, 1088, 1920, ENCODER, 1056), (23.65, 1088, 1920, DECODER, 832),
-    (47.50, 1088, 1920, ENCODER, 1920), (47.50, 1088, 1920, DECODER, 1664),
-    (47.50, 2160, 3840, ENCODER, 1664), (47.50, 2160, 3840, DECODER, 1344),
-])
-def test_auto_tile(bcnodes, monkeypatch, total_gib, height, width, part, expected):
+def tile(bcnodes, total_gib, height, width, part, tile_size=0, overlap=256):
+    vae, tiling = bcnodes["models.seedvr2.vae"], bcnodes["models.seedvr2.tiling"]
+    axis, cell = (tiling.encode_axis, 1) if part is ENCODER else (tiling.decode_axis, 8)
+    return vae.tile_for(tile_size, height, width, overlap, axis, cell, *part, CPU, "test"), cell
+
+
+def card(monkeypatch, total_gib):
     import comfy.model_management as mm
 
     monkeypatch.setattr(mm, "get_total_memory", lambda dev=None, torch_total_too=False: int(total_gib * GIB), raising=False)
-    assert bcnodes["models.seedvr2.vae"].tile_for(0, height, width, *part, torch.device("cpu"), "test") == expected
 
 
-def test_auto_tile_covering_size_is_a_multiple_of_32(bcnodes, monkeypatch):
-    import comfy.model_management as mm
+# card (GiB total), frame, part -> tile sides (rows, columns) in pixels, tiles (rows, columns), pixels computed
+@pytest.mark.parametrize("total_gib, height, width, part, sides, tiles, computed", [
+    (23.65, 1088, 1920, ENCODER, (1088, 832), (1, 3), 2646016),
+    (23.65, 1088, 1920, DECODER, (1088, 608), (1, 5), 3203072),
+    (23.65, 2160, 3840, ENCODER, (896, 1152), (3, 4), 12312576),
+    (23.65, 2160, 3840, DECODER, (896, 768), (3, 7), 14364672),
+    (31.36, 1088, 1920, ENCODER, (1088, 1088), (1, 2), 2367488),
+    (31.36, 1088, 1920, DECODER, (1088, 832), (1, 3), 2646016),
+    (31.36, 2160, 3840, ENCODER, (1216, 1152), (2, 4), 11132928),
+    (31.36, 2160, 3840, DECODER, (896, 1152), (3, 4), 12312576),
+    (47.50, 1088, 1920, ENCODER, (1088, 1920), (1, 1), 2088960),
+    (47.50, 1088, 1920, DECODER, (1088, 1088), (1, 2), 2367488),
+    (47.50, 2160, 3840, ENCODER, (1216, 2048), (2, 2), 9895936),
+    (47.50, 2160, 3840, DECODER, (1216, 1472), (2, 3), 10514432),
+    (94.97, 1088, 1920, ENCODER, (1088, 1920), (1, 1), 2088960),
+    (94.97, 1088, 1920, DECODER, (1088, 1920), (1, 1), 2088960),
+    (94.97, 2160, 3840, ENCODER, (2176, 2048), (1, 2), 8847360),
+    (94.97, 2160, 3840, DECODER, (2176, 1472), (1, 3), 9400320),
+])
+def test_auto_tile(bcnodes, monkeypatch, total_gib, height, width, part, sides, tiles, computed):
+    card(monkeypatch, total_gib)
+    ((rows, ov_h), (cols, ov_w)), cell = tile(bcnodes, total_gib, height, width, part)
+    assert (rows * cell, cols * cell) == sides and (ov_h, ov_w) == (256 // cell, 256 // cell)  # the overlap kept
+    ranges, _ = bcnodes["models.seedvr2.tiling"].tile_plan(height // cell, width // cell, (rows, cols), (ov_h, ov_w), CPU)
+    assert (len({r[:2] for r in ranges}), len({r[2:] for r in ranges})) == tiles
+    assert sum((y1 - y0) * (x1 - x0) for y0, y1, x0, x1 in ranges) * cell * cell == computed
+    largest = min(height, sides[0]) * min(width, sides[1])
+    assert part[0] + part[1] * largest <= total_gib * GIB - 768 * 2 ** 20
 
-    monkeypatch.setattr(mm, "get_total_memory", lambda dev=None, torch_total_too=False: 1000 * GIB, raising=False)
-    vae = bcnodes["models.seedvr2.vae"]
-    assert vae.tile_for(0, 720, 1296, *ENCODER, torch.device("cpu"), "test") == 1312
-    assert vae.tile_for(0, 32, 48, *ENCODER, torch.device("cpu"), "test") == 64  # never below the widget's smallest tile
+
+def test_auto_tile_keeps_the_overlap_where_the_square_would_cut_it(bcnodes, monkeypatch):
+    """24 GB, decoder: a typed 832 tile gets VAE Decode (Tiled)'s quarter (208, 26 cells); the auto strips keep 256."""
+    card(monkeypatch, 23.65)
+    assert bcnodes["models.seedvr2.tiling"].decode_axis(832, 256) == (104, 26)
+    ((rows, ov_h), (cols, ov_w)), _ = tile(bcnodes, 23.65, 1088, 1920, DECODER)
+    assert (ov_h, ov_w) == (32, 32) and cols * 8 == 608
 
 
-def test_a_card_too_small_gets_the_smallest_tile_and_a_warning(bcnodes, monkeypatch, caplog):
+def test_auto_tile_without_a_tiling_keeping_the_overlap(bcnodes, monkeypatch, caplog):
+    """No side of 2 x overlap fits: the largest square that does, its overlap cut as a typed one; with none
+    at all, the smallest tile and a warning."""
     import logging
 
-    import comfy.model_management as mm
-
-    monkeypatch.setattr(mm, "get_total_memory", lambda dev=None, torch_total_too=False: 4 * GIB, raising=False)
+    # 13.5 GiB, 12.75 left (13.69e9 bytes): the decoder's 7.95e9 + 22,940 per pixel holds a 480 square (13.24e9),
+    # not the smallest tile keeping the overlap, 512 x 512 (13.96e9)
+    card(monkeypatch, 13.5)
+    assert tile(bcnodes, 13.5, 1088, 1920, DECODER)[0] == ((60, 15), (60, 15))  # 480 // 8, (480 // 4) // 8
+    card(monkeypatch, 4.0)
     with caplog.at_level(logging.WARNING):
-        assert bcnodes["models.seedvr2.vae"].tile_for(0, 1088, 1920, *DECODER, torch.device("cpu"), "test") == 64
+        assert tile(bcnodes, 4.0, 1088, 1920, DECODER)[0] == ((8, 2), (8, 2))  # 64 // 8, (64 // 4) // 8
     assert "may run out of memory" in caplog.text
 
 
-@pytest.mark.parametrize("tile", [64, 1024, 4096])
-def test_a_set_tile_is_kept(bcnodes, monkeypatch, tile):
+def test_auto_tile_small_frames_and_odd_sizes(bcnodes, monkeypatch):
+    card(monkeypatch, 1000)
+    assert tile(bcnodes, 1000, 720, 1296, ENCODER)[0] == ((736, 256), (1312, 256))  # one tile: each side a multiple of 32 over the frame
+    assert tile(bcnodes, 1000, 32, 48, ENCODER)[0] == ((64, 256), (64, 256))  # never below the widget's smallest tile
+
+
+@pytest.mark.parametrize("size", [64, 1024, 4096])
+def test_a_typed_tile_is_today_square(bcnodes, monkeypatch, size):
     import comfy.model_management as mm
 
-    monkeypatch.setattr(mm, "get_total_memory", lambda dev=None, torch_total_too=False: pytest.fail("a set tile reads no card"),
+    monkeypatch.setattr(mm, "get_total_memory", lambda dev=None, torch_total_too=False: pytest.fail("a typed tile reads no card"),
                         raising=False)
-    assert bcnodes["models.seedvr2.vae"].tile_for(tile, 1088, 1920, *DECODER, torch.device("cpu"), "test") == tile
+    tiling = bcnodes["models.seedvr2.tiling"]
+    assert tile(bcnodes, None, 1088, 1920, ENCODER, size)[0] == (tiling.encode_axis(size, 256),) * 2
+    assert tile(bcnodes, None, 1088, 1920, DECODER, size)[0] == (tiling.decode_axis(size, 256),) * 2

@@ -84,9 +84,9 @@ ComfyUI-BCNodes/
       loader.py            one model at a time, core's loader; unload() for the full clear
       inference.py         core's preprocess and forward, sky, inverse depth, percentile clip
     seedvr2/               adapters over ComfyUI's SeedVR2 VAE
-      vae.py               VAE check, auto tile (tile_size 0) + VRAM room
+      vae.py               VAE check, the tiling a tile_size runs (0: auto, least work that fits) + VRAM room
       dit.py               the DiT's VRAM law per chunk (measured), SeedVR2 Chunk Size's margin
-      tiling.py            tile plan + blend weights
+      tiling.py            tile plan per axis (rows, columns), a typed tile's overlap rules, blend weights
       frames.py            shortest-edge resize, pad, 4n+1 frame count
     sam3/                  adapter over ComfyUI's SAM 3
       checkpoint.py        default checkpoint, combo list, path (downloads the default)

@@ -1,10 +1,12 @@
 """The SeedVR2 VAE: its latent channels, the working set per tile pixel, the check that
-a VAE is the SeedVR2 one, the tile tile_size 0 (auto) picks for the card, and the VRAM room
-made before it runs."""
+a VAE is the SeedVR2 one, the tiling a tile_size runs (0, auto: the one computing the least that fits
+the card), and the VRAM room made before it runs."""
 
 import logging
 
 import torch
+
+from .tiling import spans
 
 LATENT_CHANNELS = 16
 # Working set of the SeedVR2 VAE in bytes, independent of the frame count: a fixed part plus a part
@@ -26,13 +28,17 @@ LATENT_CHANNELS = 16
 # 16,300 bytes per pixel, no fixed part, the decoder never measured) put the decoder's 1024 tile at
 # 16.6 GiB, and a 32 GB card with the DiT resident ran out of memory with 20.7 GiB free.
 #
-# Checked on an RTX 5090 (device limit 31.36 GiB, 30.7 GiB free with every model unloaded), 81 frames of
-# 1088x1920, overlap 256. Encoder, tile 1024: estimate 21.0 GiB, NVML peak 15.99; whole frame (2048):
-# estimate 36.0, NVML peak 30.08, and the same tile on 901 frames ran out of memory in its first slice
-# (28.67 GiB allocated + 2.49 asked). Decoder, tile 1024: estimate 29.8, NVML peak 31.22 (30.0 reserved,
-# the driver's own ~1.2 on top); whole frame: estimate 52.0, out of memory at its first slice. The
-# encoder's estimate is 5 to 6 GiB over its NVML peak on a free card, the margin the hold test above
-# showed it needs on a tight one and the 901-frame failure shows on a free one; the decoder's matches.
+# Checked on an RTX 5090 (device limit 31.36 GiB, 30.7 GiB free with every model unloaded), 1088x1920,
+# overlap 256, with the Process Monitor off (on, it kept the running node's frames alive and inflated every
+# figure, the ones above likely included). Encoder: a 1088 x 1568 tile, estimate 30.5 GiB, driver peak
+# 22.77 on 901 frames (allocated 16.81, reserved 21.59); the whole frame, estimate 36.0, driver peak 27.89
+# (19.54 / 26.72), and a standalone run allocated the same 19.56 GiB at its peak slice on 81 and on 901
+# frames. Decoder: 1024 tile, estimate 29.8, driver peak 25.72 on 901 frames (17.90 / 24.50); 1088 x
+# 1568, estimate 43.9, out of memory (24.04 allocated + 2.03 asked); the whole frame, estimate 52.0, out
+# of memory. Both estimates stay: each is over every peak that ran and the decoder's above its failures.
+# The decoder's is 1.2x its driver peak at 1024; the encoder's is 1.34x to 1.40x (1.2x would be about
+# 0.62 GB fixed + 16,300 bytes per pixel), left as it is until the bigger cards are measured with the
+# monitor off.
 ENCODER_FIXED_BYTES = 6_360_000_000
 ENCODER_BYTES_PER_PIXEL = 15_440
 DECODER_FIXED_BYTES = 7_950_000_000
@@ -41,7 +47,7 @@ DECODER_BYTES_PER_PIXEL = 22_940
 # above had 30.7 of its 31.36 GiB free with every model unloaded. tile_size 0 (auto) fits the working set
 # into the card's total less this.
 CONTEXT_BYTES = 768 * 2 ** 20
-TILE_STEP = 32  # the tile_size widget's step; an auto tile is a value it could hold
+TILE_STEP = 32  # the tile_size widget's step; an auto tile's sides are values it could hold
 MIN_TILE = 64  # the tile_size widget's smallest tile
 
 
@@ -67,29 +73,61 @@ def _free_vram(device):
     return mm.get_free_memory(device)
 
 
-def tile_for(tile_size, height, width, fixed, per_pixel, device, label):
-    """The spatial tile a VAE flow runs with: `tile_size` itself, or for 0 (auto) the largest tile (a
-    multiple of TILE_STEP) whose working set, `fixed` + `per_pixel` x the tile's pixels on a `height` x
-    `width` frame, fits the card's total less CONTEXT_BYTES. That is the smallest tile covering the frame
-    (one tile, no blend) when it fits, else the largest one that does."""
+def tile_for(tile_size, height, width, overlap, axis, cell, fixed, per_pixel, device, label):
+    """The tiling a VAE flow runs: ((rows, overlap), (columns, overlap)) in its grid's cells (`cell` pixels
+    a side: 1 for the encoder, 8 for the decoder's latent) on a `height` x `width` pixel frame.
+
+    A typed `tile_size` is the same on both axes, its overlap cut by `axis` (tiling.encode_axis /
+    decode_axis), as before. 0 (auto) picks the tile sides (multiples of TILE_STEP) that compute the fewest
+    pixels (every tile in full, overlaps counted again) with a working set, `fixed` + `per_pixel` x the
+    largest tile's pixels, inside the card's total less CONTEXT_BYTES; then the fewest tiles, then the
+    smallest working set. The overlap stays the one given: a side that does not cover the frame is at least
+    twice it. Without such a tiling, the largest square tile that fits, as a typed one would run."""
     import comfy.model_management as mm
 
     if tile_size != 0:
-        return tile_size
+        square = axis(tile_size, overlap)
+        return square, square
     budget = mm.get_total_memory(device) - CONTEXT_BYTES
-    tile = -(-max(height, width) // TILE_STEP) * TILE_STEP
 
-    def working_set(t):
+    def sides(length):
+        """Per tile count along an axis of `length` pixels, the smallest side with that count:
+        (side, count, pixels its tiles cover together, pixels of its largest tile)."""
+        best = {}
+        for side in range(max(MIN_TILE, -(-length // TILE_STEP) * TILE_STEP), MIN_TILE - 1, -TILE_STEP):
+            if side < length and side < 2 * overlap:
+                break
+            row = spans(length // cell, side // cell, overlap // cell)
+            best[len(row)] = (side, len(row), sum(end - start for start, end in row) * cell, min(length // cell, side // cell) * cell)
+        return best.values()
+
+    chosen = None
+    for rows in sides(height):
+        for cols in sides(width):
+            working_set = fixed + per_pixel * rows[3] * cols[3]
+            key = (rows[2] * cols[2], rows[1] * cols[1], working_set)
+            if working_set <= budget and (chosen is None or key < chosen[0]):
+                chosen = (key, rows, cols)
+    if chosen is not None:
+        (computed, count, working_set), rows, cols = chosen
+        logging.info("%s: tile_size auto -> %dx%d (%d x %d tiles on a %dx%d frame, %.2f Mpx computed, %.1f GiB of %.1f GiB)",
+                     label, cols[0], rows[0], cols[1], rows[1], width, height, computed / 1e6, working_set / 2 ** 30, budget / 2 ** 30)
+        return (rows[0] // cell, overlap // cell), (cols[0] // cell, overlap // cell)
+
+    tile = max(MIN_TILE, -(-max(height, width) // TILE_STEP) * TILE_STEP)
+
+    def square_set(t):
         return fixed + per_pixel * min(height, t) * min(width, t)
 
-    while tile > MIN_TILE and working_set(tile) > budget:
+    while tile > MIN_TILE and square_set(tile) > budget:
         tile -= TILE_STEP
-    if working_set(tile) > budget:
+    if square_set(tile) > budget:
         logging.warning("%s: even a %d tile needs %.1f GiB, more than the %.1f GiB this card gives: it may run out of memory",
-                        label, tile, working_set(tile) / 2 ** 30, budget / 2 ** 30)
-    logging.info("%s: tile_size auto -> %d (%dx%d frame, %.1f GiB of %.1f GiB)", label, tile, width, height,
-                 working_set(tile) / 2 ** 30, budget / 2 ** 30)
-    return tile
+                        label, tile, square_set(tile) / 2 ** 30, budget / 2 ** 30)
+    logging.info("%s: tile_size auto -> %d (no tiling keeping the overlap %d fits; %dx%d frame, %.1f GiB of %.1f GiB)", label,
+                 tile, overlap, width, height, square_set(tile) / 2 ** 30, budget / 2 ** 30)
+    square = axis(tile, overlap)
+    return square, square
 
 
 def make_room_for_vae(vae, needed):

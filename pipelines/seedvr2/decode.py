@@ -25,7 +25,7 @@ import logging
 
 import torch
 
-from ...models.seedvr2.tiling import tile_plan, tile_weight
+from ...models.seedvr2.tiling import decode_axis, tile_plan, tile_weight
 from ...models.seedvr2.vae import DECODER_BYTES_PER_PIXEL, DECODER_FIXED_BYTES, LATENT_CHANNELS, make_room_for_vae, tile_for, vae_model
 from . import FRAMES_PER_CHUNK, TRIM_EVERY
 from .progress import Progress
@@ -43,14 +43,12 @@ def decode(samples, vae, tile_size, overlap, keep=None):
     b, _, t_latent, h, w = z.shape
     t_pixel = max(1, t_latent * 4 - 3)  # comfy/sd.py upscale_ratio for this VAE
     out_t = t_pixel if keep is None else min(t_pixel, keep[0])
-    tile_size = tile_for(tile_size, h * 8, w * 8, DECODER_FIXED_BYTES, DECODER_BYTES_PER_PIXEL, vae.device, "SeedVR2 VAE Decode")
-    if tile_size < overlap * 4:  # nodes.py VAEDecodeTiled
-        overlap = tile_size // 4
-    tile_lat = max(1, tile_size // 8)  # vae.py decode_tiled -> tiled_vae(encode=False): latent tile and overlap
-    ov_lat = min(max(0, (min(overlap, max(0, tile_size - 8))) // 8), tile_lat - 1)
-    single_tile = h <= tile_lat and w <= tile_lat
-    tile_px_h, tile_px_w = (h * 8, w * 8) if single_tile else (min(h, tile_lat) * 8, min(w, tile_lat) * 8)
-    make_room_for_vae(vae, DECODER_FIXED_BYTES + DECODER_BYTES_PER_PIXEL * tile_px_h * tile_px_w)
+    # (rows, overlap) and (columns, overlap) in latent cells: a typed tile_size as VAEDecodeTiled and
+    # vae.py decode_tiled cut its overlap
+    (lat_h, ov_h), (lat_w, ov_w) = tile_for(tile_size, h * 8, w * 8, overlap, decode_axis, 8, DECODER_FIXED_BYTES,
+                                            DECODER_BYTES_PER_PIXEL, vae.device, "SeedVR2 VAE Decode")
+    single_tile = h <= lat_h and w <= lat_w
+    make_room_for_vae(vae, DECODER_FIXED_BYTES + DECODER_BYTES_PER_PIXEL * min(h, lat_h) * 8 * min(w, lat_w) * 8)
     device = vae.device
     out = None
 
@@ -116,8 +114,8 @@ def decode(samples, vae, tile_size, overlap, keep=None):
             # float32 was 22 GB for 30 s at 1080p). Interior pixels get one term with weight 1, so
             # they are exact; on the overlap bands the float16 sum of up to four already-float16
             # terms is within ~1.5e-3, a fifth of an 8-bit step after (x + 1) / 2.
-            ranges, ramp = tile_plan(h, w, tile_lat, ov_lat, device)
-            edge_h = edge_w = ov_lat * 8  # tiled_vae decode: fades `ov_lat * 8` pixels wide
+            ranges, ramp = tile_plan(h, w, (lat_h, lat_w), (ov_h, ov_w), device)
+            edge_h, edge_w = ov_h * 8, ov_w * 8  # tiled_vae decode: fades `ov_lat * 8` pixels wide, per axis
             out_h, out_w = (h * 8, w * 8) if keep is None else (min(h * 8, keep[1]), min(w * 8, keep[2]))
             out = torch.zeros((b, out_t, out_h, out_w, 3), dtype=torch.float16)
             count = torch.zeros((1, 1, 1, h * 8, w * 8), dtype=torch.float32)

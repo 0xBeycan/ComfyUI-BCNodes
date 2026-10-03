@@ -55,7 +55,8 @@ models/depth_anything_v2/     Depth Anything V2 Small: weights, loader, inferenc
 models/depth_anything_3/      Depth Anything 3 over core (comfy.ldm.depth_anything_3, nothing vendored): weights
                               (Comfy-Org/Depth-Anything-3 into models/geometry_estimation), loader, inference; registered
                               as v3-small, v3-base, v3-mono-large, v3-metric-large in the depth family
-models/seedvr2/               VAE adapter, tiling (tile_for: the auto tile), frame-shape rules; dit (the sampler's
+models/seedvr2/               VAE adapter (tile_for: the auto tile, rows and columns apart), tiling (the tile plan per
+                              axis), frame-shape rules; dit (the sampler's
                               VRAM law and safety margin, from measurements) (no registry)
 models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 3)
 libs/image.py                 is_half, float_frame, output_dtype (half-precision inputs), tensor_to_u8, tensor_to_pil_u8,

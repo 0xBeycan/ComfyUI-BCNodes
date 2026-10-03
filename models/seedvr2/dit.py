@@ -20,6 +20,16 @@ So the part per frame is budgeted at (1 + safety_margin) x the line. SAFETY_MARG
 over the worst of those two (1.64 / 1.44) and picks 41 frames on the 5090 and 161 on the PRO 6000
 at 2.09 Mpx: the largest chunk measured to run on each card's long clip or, on the 5090, the next
 4n+1 below the 49 that failed. The 3B is narrower than the 7B, so the law over-asks for it (safe).
+
+All of the above ran with the Process Monitor on, which kept the running node's frames alive and
+inflated every figure (the 1.42x and 1.44x included). With it off, on the 5090 at 2.09 Mpx: 41 frames
+over the 23 chunks of a 901-frame clip, allocated 10.4-11.6 GiB, the allocator's reserve 13.5 at most,
+the driver 22.7 throughout; 57 frames (81-frame clip), 15.84 / 18.44 / 23.63; 61 frames, 16.89 / 19.72 /
+23.50. The line's part per frame is that reserve to within 3% (1.269 against 1.23 GiB per latent frame)
+and its fixed part the resident weights (7.9 GB staged) and the context; the driver stays below the line
+because dynamic VRAM evicts weights when the activations need the room. The law stands. The margin
+stands too: on the 5090, 0.2 would pick 57 and 0.1 61 (measured, on the short clip), but the same
+margin moves the 96 GB card to 221 and 245, which nothing measured with the monitor off supports yet.
 """
 
 FIXED_GIB = 8.36

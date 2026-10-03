@@ -15,7 +15,7 @@ a time) and the scaling run on it in place.
 
 import torch
 
-from ...models.seedvr2.tiling import tile_plan, tile_weight
+from ...models.seedvr2.tiling import encode_axis, tile_plan, tile_weight
 from ...models.seedvr2.vae import ENCODER_BYTES_PER_PIXEL, ENCODER_FIXED_BYTES, LATENT_CHANNELS, make_room_for_vae, tile_for, vae_model
 from . import FRAMES_PER_CHUNK, TRIM_EVERY, require_image_batch
 from .progress import Progress
@@ -31,11 +31,11 @@ def encode(pixels, vae, tile_size, overlap):
     pixels = pixels[..., :3]  # comfy/sd.py vae_encode_crop_pixels: output_channels = 3
     n, height, width = pixels.shape[0], pixels.shape[1], pixels.shape[2]
     target_t, target_h, target_w = (n + 3) // 4, (height + 7) // 8, (width + 7) // 8  # vae.py tiled_vae encode targets
-    tile_size = tile_for(tile_size, height, width, ENCODER_FIXED_BYTES, ENCODER_BYTES_PER_PIXEL, vae.device, "SeedVR2 VAE Encode")
-    overlap = min(overlap, max(0, tile_size - 8))  # vae.py encode_tiled
-    single_tile = height <= tile_size and width <= tile_size
-    tile_pixels = height * width if single_tile else min(height, tile_size) * min(width, tile_size)
-    working_set = ENCODER_FIXED_BYTES + ENCODER_BYTES_PER_PIXEL * tile_pixels
+    # (rows, overlap) and (columns, overlap) in pixels: a typed tile_size as vae.py encode_tiled cuts its overlap
+    (tile_h, ov_h), (tile_w, ov_w) = tile_for(tile_size, height, width, overlap, encode_axis, 1, ENCODER_FIXED_BYTES,
+                                              ENCODER_BYTES_PER_PIXEL, vae.device, "SeedVR2 VAE Encode")
+    single_tile = height <= tile_h and width <= tile_w
+    working_set = ENCODER_FIXED_BYTES + ENCODER_BYTES_PER_PIXEL * min(height, tile_h) * min(width, tile_w)
     make_room_for_vae(vae, working_set)
     device = vae.device
 
@@ -93,8 +93,8 @@ def encode(pixels, vae, tile_size, overlap):
             encode_tile(0, height, 0, width, sink, progress)
             z = result[:, :, :sum(offsets)]
         else:
-            ranges, ramp = tile_plan(height, width, tile_size, overlap, device)
-            edge_h = edge_w = overlap // 8  # tiled_vae encode: fades `overlap // 8` latent cells wide
+            ranges, ramp = tile_plan(height, width, (tile_h, tile_w), (ov_h, ov_w), device)
+            edge_h, edge_w = ov_h // 8, ov_w // 8  # tiled_vae encode: fades `overlap // 8` latent cells wide, per axis
             count = None
             progress = Progress("SeedVR2 VAE Encode", len(ranges), len(slices), n, device)
             for y0, y1, x0, x1 in ranges:
