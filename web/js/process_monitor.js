@@ -6,9 +6,9 @@ import { callJson } from "./bcnodes_api.js";
 //
 // One ComfyUI setting turns it on and off, live. The top bar shows RAM against its limit, VRAM
 // and the GPU load while it is on; next to them the Full clear button (RAM and VRAM back to the
-// reading taken when ComfyUI started, no restart), its outcome in a short status with the details
-// in a tooltip, and a button that opens the modal. Both buttons are always there: the full clear,
-// Emulate and the crash report work with the monitor off. The modal button turns red when the last
+// reading taken when ComfyUI started, no restart; its outcome in a ComfyUI toast, the details in
+// the button's tooltip), and a button that opens the modal. Both buttons are always there: the full
+// clear, Emulate and the crash report work with the monitor off. The modal button turns red when the last
 // run was killed. Modal tabs: Live, Emulate, Last run (a row click selects and centres the node),
 // Crash, Settings.
 
@@ -20,7 +20,6 @@ const BACKING = { ram: "RAM", file: "file (page cache)", unknown: "unknown" };
 const CLEAR_TITLE = "Full clear: RAM and VRAM back to where they were right after ComfyUI started, without a restart "
 	+ "(every model unloaded, every cached node output dropped, the freed memory given back to the system). "
 	+ "Refused while a prompt runs or waits. The next run loads its models again, so it starts slower.";
-const CLEAR_STATUS_S = 30; // a success fades from the bar after this; the button's tooltip keeps it
 
 const state = { status: null, sample: null, tab: "Live", modal: null, bar: null };
 
@@ -74,8 +73,6 @@ function ensureStyle() {
 .bcpm-btn{cursor:pointer;border:1px solid var(--border-color,#555);border-radius:4px;padding:1px 6px;background:var(--comfy-input-bg,#333);color:inherit}
 .bcpm-btn.bcpm-red{background:#b91c1c;border-color:#ef4444;color:#fff}
 .bcpm-btn:disabled{opacity:.6;cursor:default}
-.bcpm-status{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.bcpm-status:empty{display:none}
 .bcpm-overlay{position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center}
 .bcpm-panel{width:min(1100px,94vw);height:min(760px,90vh);display:flex;flex-direction:column;background:var(--comfy-menu-bg,#222);color:var(--fg-color,#ddd);border:1px solid var(--border-color,#555);border-radius:8px;font:12px sans-serif}
 .bcpm-tabs{display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--border-color,#555)}
@@ -107,11 +104,10 @@ function buildBar() {
 	const meters = el("div", { class: "bcpm-bar" }, ram.root, vram.root, gpu.root);
 	const clear = el("button", { class: "bcpm-btn", title: CLEAR_TITLE }, "Full clear");
 	clear.onclick = fullClear;
-	const clearStatus = el("span", { class: "bcpm-status" });
 	const button = el("button", { class: "bcpm-btn", title: "Process Monitor" }, "PM");
 	button.onclick = openModal;
-	const root = el("div", { class: "bcpm-bar" }, meters, clear, clearStatus, button);
-	state.bar = { root, meters, button, clear, clearStatus, clearTimer: null, ram, vram, gpu };
+	const root = el("div", { class: "bcpm-bar" }, meters, clear, button);
+	state.bar = { root, meters, button, clear, ram, vram, gpu };
 	// The frontend rebuilds the top menu, action bar included, whenever its layout changes (the
 	// right side panel opened or closed, focus mode, the app builder), so an element put into the
 	// action bar is dropped with it. The legacy top-menu element (app.menu.element) is the place the
@@ -151,20 +147,18 @@ function clearChange(r, label, key, withBaseline) {
 	return `${label} ${gb(r.before[key])} → ${gb(r.after[key])}${base}`;
 }
 
-function setClearStatus(text, cls, details) {
-	const { clear, clearStatus } = state.bar;
-	clearStatus.textContent = text;
-	clearStatus.className = cls ? `bcpm-status ${cls}` : "bcpm-status";
-	clearStatus.title = details;
-	clear.title = details ? `${CLEAR_TITLE}\n\nLast: ${details}` : CLEAR_TITLE;
+// The outcome as a ComfyUI toast; a frontend without the toast API gets a console line instead
+function clearToast(severity, detail) {
+	const toast = app.extensionManager?.toast;
+	if (toast?.add) toast.add({ severity, summary: "Full clear", detail, life: severity === "success" ? 5000 : 15000 });
+	else if (severity === "success") console.info(`[BCNodes] Full clear: ${detail}`);
+	else console.warn(`[BCNodes] Full clear: ${detail}`);
 }
 
 async function fullClear() {
 	const bar = state.bar;
-	clearTimeout(bar.clearTimer);
 	bar.clear.disabled = true;
 	bar.clear.textContent = "Clearing…";
-	setClearStatus("", null, "");
 	try {
 		const r = await call("clear", {});
 		const failed = (r.steps.find((s) => s.name === "pack_models")?.detail ?? []).filter((h) => h.error);
@@ -177,13 +171,12 @@ async function fullClear() {
 			...r.steps.map((s) => `${s.name}: ${s.found}`),
 			`Tensors still referenced after the clear: ${gb(r.remaining.total_bytes)}`,
 		].filter(Boolean).join("\n");
-		setClearStatus(`Cleared: ${short}${failed.length ? ` · ${failed.length} hook(s) failed` : ""}`,
-			failed.length ? "bcpm-warn" : "bcpm-ok", details);
-		// a success fades from the bar, the button's tooltip keeps it; a failed hook stays until the next clear
-		if (!failed.length) bar.clearTimer = setTimeout(() => (bar.clearStatus.textContent = ""), CLEAR_STATUS_S * 1000);
+		clearToast(failed.length ? "warn" : "success", `Cleared: ${short}${failed.length ? ` · ${failed.length} hook(s) failed` : ""}`);
+		bar.clear.title = `${CLEAR_TITLE}\n\nLast: ${details}`;
 	} catch (e) {
 		const message = String(e.message ?? e);
-		setClearStatus(`Not cleared: ${message}`, "bcpm-bad", message);
+		clearToast("error", `Not cleared: ${message}`);
+		bar.clear.title = `${CLEAR_TITLE}\n\nLast: ${message}`;
 	} finally {
 		bar.clear.disabled = false;
 		bar.clear.textContent = "Full clear";
