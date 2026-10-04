@@ -40,6 +40,8 @@ pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop;
                               caption extension check, save loop
 pipelines/depth_anything.py   Depth Anything: output size (short side, or cover + centre crop), per-frame
                               normalisation, one depth-family predict per frame
+pipelines/lora.py             apply_lora: a LoRA file through core's conversion, libs/lora_keys' renames and core's
+                              loader; Lora Loader (Key Fix) and each Power Lora Loader row
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/seedvr2/            resize, encode, decode, postprocess, compact flows; framing (Resize's downscale factor
                               from the SAM 3 face size); chunk_size (SeedVR2 Chunk Size: frames per chunk for the

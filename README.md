@@ -22,7 +22,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_Seed` | [Seed](docs/logic.md#bc_seed--seed) | Seed widget; `-1` draws a new random seed on every run |
 | `BC_ShowText` | [Show Text](docs/text.md#bc_showtext--show-text) | Shows incoming text on the node, passes it on |
 | `BC_ImageComparer` | [Image Comparer](docs/workflow.md#bc_imagecomparer--image-comparer) | Two images on the node, compared with a sliding divider |
-| `BC_PowerLoraLoader` | [Power Lora Loader](docs/loaders.md#bc_powerloraloader--power-lora-loader) | `MODEL` + any number of LoRA rows → `MODEL`, no CLIP |
+| `BC_PowerLoraLoader` | [Power Lora Loader](docs/loaders.md#bc_powerloraloader--power-lora-loader) | `MODEL` + any number of LoRA rows → `MODEL`, no CLIP; each LoRA with the key fix of Lora Loader (Key Fix) |
 | `BC_LoraLoaderKeyFix` | [Lora Loader (Key Fix)](docs/loaders.md#bc_loraloaderkeyfix--lora-loader-key-fix) | `MODEL` + one LoRA → `MODEL`, with the keys ComfyUI's own loader leaves out renamed first (lightx2v `.diff_m`, PEFT keys without the `diffusion_model.` prefix); the console says how many were renamed and how many match no module |
 | `BC_AnythingEverywhere` | [Anything Everywhere](docs/workflow.md#bc_anythingeverywhere--anything-everywhere) | Feeds unconnected inputs of a type at prompt time |
 | `BC_FastGroupsBypasser` | [Fast Groups Bypasser](docs/workflow.md#bc_fastgroupsbypasser--fast-groups-bypasser) | One bypass toggle per group |

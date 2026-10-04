@@ -6,6 +6,8 @@
 
 Each row is one line on the node: a toggle dot, the LoRA file (click to pick from `models/loras` — the list has a filter box), and one strength (`◀ ▶` steps by 0.05, click the number to type). `➕ Add LoRA` appends a row; a right click on a row opens its menu: *Toggle On/Off*, *Move Up*, *Move Down*, *Remove*. Rows are saved with the workflow as `{on, lora, strength}` and reach the backend as `lora_N` in row order; a row that is off, at strength 0, or whose file is missing is skipped (missing files are reported in the console).
 
+Each row goes through the key fix of [Lora Loader (Key Fix)](#bc_loraloaderkeyfix--lora-loader-key-fix): the keys ComfyUI's own loader would leave out are renamed first, and a LoRA it already loads whole reaches it unchanged. A row gets that node's console line (with `Power Lora Loader` and the row's LoRA) only when a key was renamed or still matches no module of the model; unlike that node, no LoRA metadata is attached to the model, as before.
+
 ## `BC_LoraLoaderKeyFix` — Lora Loader (Key Fix)
 
 `model` (`MODEL`) + `lora_name` (a file in `models/loras`) + `strength` → `MODEL`. No `CLIP`: the LoRA is applied to the model only, through ComfyUI's own loader (`load_lora_for_models(model, None, …)`), so the node chains like *LoraLoaderModelOnly*. Strength 0 returns the model untouched.

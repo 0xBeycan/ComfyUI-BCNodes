@@ -44,6 +44,7 @@ ComfyUI-BCNodes/
     save_image.py          Save Image name grammar, job JSON, save loop; Save Image With Caption's folder,
                            caption extension check, save loop
     depth_anything.py      Depth Anything: output size (short side or cover + crop), per-frame normalisation
+    lora.py                a LoRA file through core's conversion, the key fix and core's loader (both LoRA loaders)
     caption_audit/
       audit.py             audit plumbing: package guard, allowed roots, run_audit, reports
       card.py              the fixed-size card

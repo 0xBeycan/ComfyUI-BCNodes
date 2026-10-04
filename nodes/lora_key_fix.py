@@ -2,12 +2,11 @@
 
 MODEL + one LoRA file -> MODEL, applied through core's own loader (`load_lora_for_models`, no CLIP)
 after the keys core would leave out are renamed (libs/lora_keys.py: lightx2v's `.diff_m`
-modulation differences, PEFT keys without the `diffusion_model.` prefix). The LoRA goes through
-core's format conversion first, so the renames see the keys core's loader sees. One console line
-says how many keys were renamed and how many still match no module of the model.
+modulation differences, PEFT keys without the `diffusion_model.` prefix), by pipelines/lora.py, the
+path Power Lora Loader's rows take too. The LoRA goes through core's format conversion first, so
+the renames see the keys core's loader sees. One console line says how many keys were renamed and
+how many still match no module of the model.
 """
-
-import logging
 
 
 class LoraLoaderKeyFix:
@@ -39,28 +38,12 @@ class LoraLoaderKeyFix:
         # as core's LoRA loader and Power Lora Loader: nothing to apply to, or nothing to apply
         if model is None or strength == 0:
             return (model,)
-        import comfy.lora
-        import comfy.lora_convert
-        import comfy.sd
-        import comfy.utils
         import folder_paths
 
-        from ..libs.lora_keys import fix_keys
+        from ..pipelines.lora import apply_lora
 
         path = folder_paths.get_full_path_or_raise("loras", lora_name)
-        lora, metadata = comfy.utils.load_torch_file(path, safe_load=True, return_metadata=True)
-        lora = comfy.lora_convert.convert_lora(lora)
-        fix = fix_keys(lora.keys(), comfy.lora.model_lora_keys_unet(model.model, {}))
-        lora = {fix.renamed.get(k, k): v for k, v in lora.items()}
-        line = (f"[BCNodes] Lora Loader (Key Fix): {lora_name}: {len(lora)} keys, {len(fix.renamed)} renamed "
-                f"({fix.modulation} .diff_m -> .modulation.diff, {fix.prefixed} given the diffusion_model. prefix), "
-                f"{len(fix.unmapped)} match no module of this model")
-        if fix.unmapped:
-            shown = ", ".join(fix.unmapped[:5]) + (", ..." if len(fix.unmapped) > 5 else "")
-            logging.warning("%s and are not applied: %s", line, shown)
-        else:
-            logging.info(line)
-        model, _ = comfy.sd.load_lora_for_models(model, None, lora, strength, 0, lora_metadata=metadata)
+        model = apply_lora(model, path, strength, "Lora Loader (Key Fix)", lora_name, log_clean=True, with_metadata=True)
         return (model,)
 
 

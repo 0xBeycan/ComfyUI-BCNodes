@@ -770,16 +770,22 @@ async def lora_key_fix():
     key patterns core leaves out: lightx2v's distill `.diff_m` (two blocks and the head, next to a plain
     LoRA pair core maps) and DiffSynth's PEFT keys without the `diffusion_model.` prefix (SVI 2.0's
     `blocks.N.<module>.lora_A.default.weight`). As they are, core loads none of those keys; renamed,
-    every key; through the node each lands on its weight with the strength given."""
+    every key; through the node each lands on its weight with the strength given.
+
+    Power Lora Loader applies its rows through the same path: a LoRA with nothing to rename gives
+    exactly the patches its code before the key fix gave (core's load_lora_for_models on the file as
+    loaded, no metadata attached), and the two LoRAs above give the key-fix node's patches."""
     import importlib
 
     import comfy.lora
+    import comfy.lora_convert
     import comfy.ops
     import comfy.sd
     import comfy.utils
     import folder_paths
     import torch
     from comfy.ldm.wan.model import WanModel
+    from comfy.weight_adapter import WeightAdapterBase
     from safetensors.torch import save_file
 
     root = tempfile.mkdtemp(prefix="bcnodes_lora_")
@@ -847,6 +853,72 @@ async def lora_key_fix():
                              base(f"diffusion_model.blocks.{i}.cross_attn.k.weight")
                              + 0.5 * peft[f"blocks.{i}.cross_attn.k.lora_B.default.weight"] @ peft[f"blocks.{i}.cross_attn.k.lora_A.default.weight"],
                              atol=1e-5) for i in range(2)))
+
+    def same(a, b):
+        """Equal patch structures: tensors of one dtype and shape with every value equal, adapters of
+        one type with equal fields, dicts with the same keys in the same order."""
+        if isinstance(a, torch.Tensor):
+            return isinstance(b, torch.Tensor) and a.dtype == b.dtype and a.shape == b.shape and torch.equal(a, b)
+        if isinstance(a, dict):
+            return isinstance(b, dict) and list(a) == list(b) and all(same(a[k], b[k]) for k in a)
+        if isinstance(a, (list, tuple)):
+            return type(a) is type(b) and len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+        if isinstance(a, WeightAdapterBase):
+            return type(a) is type(b) and same(vars(a), vars(b))
+        return a == b
+
+    def logged(fn):
+        """fn()'s result and the console lines it logged, INFO and up."""
+        lines, root_logger = Lines(), logging.getLogger()
+        level = root_logger.level
+        root_logger.addHandler(lines)
+        root_logger.setLevel(logging.INFO)
+        try:
+            return fn(), lines.lines
+        finally:
+            root_logger.removeHandler(lines)
+            root_logger.setLevel(level)
+
+    # A LoRA core loads whole as it is (Wan Fun's lora_unet__ keys, which core's conversion renames, a
+    # PEFT pair, a .diff and a .diff_b), saved with metadata. Before the key fix Power Lora Loader
+    # handed core the loaded file and no metadata; its patches now are exactly those.
+    head, head_bias = base("diffusion_model.head.head.weight"), base("diffusion_model.head.head.bias")
+    clean = {
+        "lora_unet__blocks_0_cross_attn_k.lora_down.weight": torch.randn(4, 128),
+        "lora_unet__blocks_0_cross_attn_k.lora_up.weight": torch.randn(128, 4),
+        "lora_unet__blocks_0_cross_attn_k.alpha": torch.tensor(2.0),
+        "diffusion_model.blocks.1.self_attn.q.lora_A.weight": torch.randn(4, 128),
+        "diffusion_model.blocks.1.self_attn.q.lora_B.weight": torch.randn(128, 4),
+        "diffusion_model.head.head.diff": torch.randn(head.shape),
+        "diffusion_model.head.head.diff_b": torch.randn(head_bias.shape),
+    }
+    clean_path = os.path.join(root, "loras", "clean.safetensors")
+    save_file(clean, clean_path, metadata={"ss_network_dim": "4"})
+    check("PowerLoraLoader: core loads every key of the clean LoRA as it is, nothing to rename",
+          not_loaded(comfy.lora_convert.convert_lora(dict(clean))) == [] and fix_keys(comfy.lora_convert.convert_lora(dict(clean)), key_map).renamed == {})
+    before, _ = comfy.sd.load_lora_for_models(patcher, None, comfy.utils.load_torch_file(clean_path, safe_load=True), 0.5, 0)
+    power = nodes.NODE_CLASS_MAPPINGS["BC_PowerLoraLoader"]()
+    (after,), printed = logged(lambda: power.load_loras(model=patcher, lora_1={"on": True, "lora": "clean.safetensors", "strength": 0.5}))
+    check("PowerLoraLoader: a LoRA with nothing to rename gives the patches of the code before the key fix, no metadata, no line",
+          len(before.patches) == 4 and same(before.patches, after.patches) and "lora_metadata" not in after.attachments
+          and before.attachments.keys() == after.attachments.keys() and not any("Power Lora Loader" in line for line in printed),
+          f"{sorted(before.patches)} {sorted(after.patches)} {list(after.attachments)} {printed}")
+    (keyfix_clean,) = node.load(patcher, "clean.safetensors", 0.5)
+    check("LoraLoaderKeyFix: the same patches for the clean LoRA, with the file's metadata attached",
+          same(before.patches, keyfix_clean.patches) and keyfix_clean.get_attachment("lora_metadata") == {"ss_network_dim": "4"})
+
+    # The two LoRAs core loads in part, as two rows: the key-fix node's patches, one line per row.
+    (power_fixed,), printed = logged(lambda: power.load_loras(model=patcher, lora_1={"on": True, "lora": "distill.safetensors", "strength": 0.5},
+                                                              lora_2={"on": True, "lora": "peft.safetensors", "strength": 0.5}))
+    check("PowerLoraLoader: the .diff_m and prefix-less PEFT rows renamed and applied, the key-fix node's patches",
+          same(power_fixed.patches, patched.patches), f"{sorted(power_fixed.patches)}")
+    check("PowerLoraLoader: one console line per row with renames, nothing left out by core",
+          [line for line in printed if line.startswith("[BCNodes] Power Lora Loader")]
+          == ["[BCNodes] Power Lora Loader: distill.safetensors: 6 keys, 3 renamed (3 .diff_m -> .modulation.diff, "
+              "0 given the diffusion_model. prefix), 0 match no module of this model",
+              "[BCNodes] Power Lora Loader: peft.safetensors: 4 keys, 4 renamed (0 .diff_m -> .modulation.diff, "
+              "4 given the diffusion_model. prefix), 0 match no module of this model"]
+          and not any(line.startswith("lora key not loaded") for line in printed), f"{printed}")
 
     # Through the executor: core's UNETLoader, then two key-fix loaders chained; the console lines
     # count the renames, core reports no key left out, and the second queue is served from the cache.

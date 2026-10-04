@@ -5,7 +5,12 @@ A MODEL in, any number of LoRA rows, a MODEL out. Each row is
 the node (web/js/power_lora_loader.js) and arrive as inputs lora_N through
 the flexible optional mapping, in row order (the prompt keeps the widget
 order and the numbers may have gaps). There is no CLIP in or out: LoRAs are
-applied to the model only.
+applied to the model only, each through pipelines/lora.py, the path of Lora
+Loader (Key Fix): the keys core's loader would leave out are renamed first. A
+console line names a row's LoRA only when a key was renamed or matches no
+module of the model. Unlike Lora Loader (Key Fix), the node attaches no LoRA
+metadata to the model, as it never did: core's Get IC-LoRA Parameters reads
+that attachment, and a row's file would replace what an earlier loader set.
 """
 
 import re
@@ -58,11 +63,9 @@ class PowerLoraLoader:
             if path is None:
                 print(f"[BCNodes] Power Lora Loader: LoRA not found, skipping: {row['lora']}")
                 continue
-            import comfy.sd
-            import comfy.utils
+            from ..pipelines.lora import apply_lora
 
-            lora = comfy.utils.load_torch_file(path, safe_load=True)
-            model, _ = comfy.sd.load_lora_for_models(model, None, lora, strength, 0)
+            model = apply_lora(model, path, strength, "Power Lora Loader", row["lora"], log_clean=False, with_metadata=False)
         return (model,)
 
 
