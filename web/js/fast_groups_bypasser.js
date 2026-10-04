@@ -187,6 +187,7 @@ function setRow(row, on, skipRestriction) {
 	setGroup(row.group, value);
 	row.value = value;
 	row.node.setDirtyCanvas(true, false);
+	row.triggerDraw?.();
 }
 
 class GroupRow {
@@ -301,15 +302,14 @@ function refreshUnsafe(node) {
 	let dirty = false;
 	for (const w of current) {
 		const active = isActive(w.group);
-		if (w.value !== active) {
-			w.value = active;
-			dirty = true;
-		}
 		const label = groupLabel(w.group);
-		if (w.name !== label) {
-			w.name = label;
-			dirty = true;
-		}
+		if (w.value === active && w.name === label) continue;
+		if (w.value !== active) w.value = active;
+		if (w.name !== label) w.name = label;
+		dirty = true;
+		// The Vue renderer paints each row in a canvas of its own, only on
+		// triggerDraw; the node canvas repaints them all on setDirtyCanvas.
+		w.triggerDraw?.();
 	}
 	if (dirty) node.setDirtyCanvas(true, false);
 }

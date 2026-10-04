@@ -4,6 +4,11 @@ import { api } from "../../../scripts/api.js";
 // Image Comparer — drawn straight onto the node canvas, so it moves with the
 // node and never lags behind it.
 //
+// The Vue renderer draws the widget in a canvas of its own instead: there the
+// widget is as tall as the media at the widget's width, it is painted again
+// only on triggerDraw, and the hover divider follows pointer events on that
+// canvas (the node's onMouse* callbacks are not called there).
+//
 // Slide mode: A fills the node; while the pointer is over the node, B is
 // painted from the left edge up to the pointer, with a divider line and A/B
 // tags. Leave the node and A is shown alone. The node keeps whatever size
@@ -38,14 +43,14 @@ function storedOutput(node) {
 
 // A source that fails to load (a temp file gone after a restart, typically)
 // is marked and drawn as "not available" instead of loading forever.
-function loadMedia(entry, node) {
+function loadMedia(entry, widget) {
 	if (entry.el) return entry.el;
 	const img = new Image();
 	img.src = entry.url;
-	img.onload = () => node.setDirtyCanvas(true, false);
+	img.onload = () => widget.redraw();
 	img.onerror = () => {
 		entry.failed = true;
-		node.setDirtyCanvas(true, false);
+		widget.redraw();
 	};
 	entry.el = img;
 	return entry.el;
@@ -104,8 +109,18 @@ class ComparerWidget {
 	select(a, b) {
 		this.a = a ?? null;
 		this.b = b ?? null;
-		for (const e of [this.a, this.b]) if (e) loadMedia(e, this.node);
+		for (const e of [this.a, this.b]) if (e) loadMedia(e, this);
+		this.redraw();
+	}
+
+	// The node canvas repaints on setDirtyCanvas. The Vue renderer sizes its
+	// canvas from the arranged height and paints it only on triggerDraw.
+	redraw() {
 		this.node.setDirtyCanvas(true, false);
+		if (LiteGraph.vueNodesMode && this.node.graph) {
+			this.node.arrange();
+			this.triggerDraw?.();
+		}
 	}
 
 	fromExecuted(message) {
@@ -120,28 +135,36 @@ class ComparerWidget {
 
 	// ---- layout -------------------------------------------------------------
 
+	// On the node canvas the widget is a 20 px row and draws down to the node's
+	// bottom. In the Vue renderer its height is its own: the selector row plus
+	// the media at the widget's width (4:3 until an image has loaded).
 	computeSize(width) {
-		return [width, 20];
+		if (!LiteGraph.vueNodesMode) return [width, 20];
+		const w = this.vueCanvas?.clientWidth || this.node.size[0];
+		const src = this.source(this.a) ?? this.source(this.b);
+		const ratio = src ? src.h / src.w : 0.75;
+		return [width, this.selectorHeight() + Math.round((w - 8) * ratio) + 4];
+	}
+
+	selectorHeight() {
+		return this.value.entries.length > 2 ? 22 : 0;
 	}
 
 	inBox(pos) {
 		if (typeof this.y !== "number") return false;
-		const [bx, by, bw, bh] = this.box(this.y);
-		return pos[0] >= bx && pos[0] <= bx + bw && pos[1] >= by && pos[1] <= by + bh;
+		return within(this.box(this.y, this.node.size[0], this.node.size[1] - 4), pos[0], pos[1]);
 	}
 
 	// The media box: below the selector row when there is one.
-	box(y) {
-		const [w, h] = this.node.size;
-		const top = y + (this.value.entries.length > 2 ? 22 : 0);
-		const bottom = h - 4;
-		return [4, top, w - 8, Math.max(20, bottom - top)];
+	box(y, width, bottom) {
+		const top = y + this.selectorHeight();
+		return [4, top, width - 8, Math.max(20, bottom - top)];
 	}
 
 	// What to paint for one side: the element and its size.
 	source(entry) {
 		if (!entry) return null;
-		const el = loadMedia(entry, this.node);
+		const el = loadMedia(entry, this);
 		const [w, h] = mediaSize(el, entry);
 		if (!w || !h) return null;
 		return { el, w, h };
@@ -151,16 +174,19 @@ class ComparerWidget {
 		ctx.drawImage(src.el, 0, 0, src.w, src.h, rect[0], rect[1], rect[2], rect[3]);
 	}
 
-	draw(ctx, node, width, y) {
+	draw(ctx, node, width, y, height) {
 		// On the node canvas the widget spans the node. The Vue-nodes legacy renderer
 		// leaves its own width on the widget (`widget.width || nodeWidth`), which
 		// would otherwise stick after switching back to the classic canvas.
-		if (ctx.canvas === app.canvas?.canvas) width = node.size[0];
+		const onNodeCanvas = ctx.canvas === app.canvas?.canvas;
+		if (onNodeCanvas) width = node.size[0];
+		else this.watchVueCanvas(ctx.canvas, width);
 		guard(() => this.sync());
 		this.hits = [];
 		ctx.save();
 		if (this.value.entries.length > 2) this.drawSelector(ctx, width, y);
-		const [bx, by, bw, bh] = this.box(y);
+		const [bx, by, bw, bh] = this.box(y, width, onNodeCanvas ? node.size[1] - 4 : y + height);
+		this.vueBox = onNodeCanvas ? null : [bx, by, bw, bh];
 		ctx.fillStyle = "#111";
 		ctx.fillRect(bx, by, bw, bh);
 
@@ -237,6 +263,28 @@ class ComparerWidget {
 
 	// ---- pointer ------------------------------------------------------------
 
+	// Vue renderer: the divider follows the pointer over the widget's own
+	// canvas. Event offsets are CSS pixels of the element; the drawing uses
+	// the width the renderer passed to draw().
+	watchVueCanvas(canvas, width) {
+		this.vueWidth = width;
+		if (this.vueCanvas === canvas) return;
+		this.vueCanvas = canvas;
+		canvas.addEventListener("pointermove", (e) => {
+			const k = this.vueWidth / (canvas.clientWidth || this.vueWidth);
+			const x = e.offsetX * k;
+			const hover = this.vueBox && within(this.vueBox, x, e.offsetY * k) ? x : null;
+			if (hover === this.hover) return;
+			this.hover = hover;
+			this.triggerDraw?.();
+		});
+		canvas.addEventListener("pointerleave", () => {
+			if (this.hover == null) return;
+			this.hover = null;
+			this.triggerDraw?.();
+		});
+	}
+
 	// The selector row's hit areas are routed from the node's onMouseDown,
 	// not from the widget row litegraph would limit `mouse` to.
 	click(pos) {
@@ -256,6 +304,10 @@ class ComparerWidget {
 // ---------------------------------------------------------------------------
 // Node wiring
 // ---------------------------------------------------------------------------
+
+function within([x, y, w, h], px, py) {
+	return px >= x && px <= x + w && py >= y && py <= y + h;
+}
 
 function guard(fn) {
 	try {
@@ -277,6 +329,14 @@ function install(nodeType) {
 
 	// The divider follows the pointer only while it is over the media box;
 	// over the title or the selector row the node shows A alone.
+	// A new run: the Vue renderer does not repaint the widget by itself.
+	const onExecuted = nodeType.prototype.onExecuted;
+	nodeType.prototype.onExecuted = function (...args) {
+		const r = onExecuted?.apply(this, args);
+		if (LiteGraph.vueNodesMode) guard(() => this.bcComparer?.sync());
+		return r;
+	};
+
 	const onMouseMove = nodeType.prototype.onMouseMove;
 	nodeType.prototype.onMouseMove = function (event, pos, ...rest) {
 		const r = onMouseMove?.apply(this, [event, pos, ...rest]);

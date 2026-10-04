@@ -26,6 +26,8 @@ function populate(node, text) {
 		// and re-run everything below it once more.
 		w.options = w.options ?? {};
 		w.options.serialize = false;
+		// The Vue renderer draws its own textarea, read-only through this option.
+		w.options.read_only = true;
 		if (w.inputEl) {
 			w.inputEl.readOnly = true;
 			w.inputEl.style.opacity = 0.6;

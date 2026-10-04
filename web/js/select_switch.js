@@ -85,6 +85,12 @@ function refresh(node) {
 	const computed = node.computeSize();
 	node.setSize([Math.max(width, computed[0]), computed[1]]);
 	node.setDirtyCanvas?.(true, true);
+	// The Vue renderer paints the rows in a canvas of their own, sized from the
+	// widget's arranged height and painted only on triggerDraw.
+	if (LiteGraph.vueNodesMode && node.graph) {
+		node.arrange();
+		node.widgets?.find((w) => w.type === ROWS_TYPE)?.triggerDraw?.();
+	}
 }
 
 function addOption(node, event) {
@@ -143,6 +149,10 @@ class OptionRows {
 		const right = width - 15;
 		const slots = optionSlots(node);
 		const selected = selectedWidget(node)?.value;
+		// Where the rows were drawn, for mouse(): the Vue renderer draws them in
+		// a canvas of their own, at its own y and width.
+		this.top = y;
+		this.right = right;
 
 		ctx.save();
 		ctx.font = "12px sans-serif";
@@ -187,12 +197,10 @@ class OptionRows {
 		if (event.type !== "pointerdown" && event.type !== "mousedown") return false;
 		if (event.button === 2) return false;
 		const h = LiteGraph.NODE_WIDGET_HEIGHT;
-		const top = this.last_y ?? this.y ?? 0;
-		const k = Math.floor((pos[1] - top) / (h + ROW_GAP));
+		const k = Math.floor((pos[1] - (this.top ?? 0)) / (h + ROW_GAP));
 		const slots = optionSlots(node);
 		if (k < 0 || k >= slots.length) return false;
-		const right = node.size[0] - 15;
-		if (pos[0] >= right - 28) removeOption(node, slots[k]);
+		if (pos[0] >= this.right - 28) removeOption(node, slots[k]);
 		else renameOption(node, slots[k], event);
 		return true;
 	}

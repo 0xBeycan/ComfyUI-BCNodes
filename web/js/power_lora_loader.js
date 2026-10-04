@@ -5,7 +5,8 @@ import { api } from "../../../scripts/api.js";
 //   [●] lora file name ............ [◀ 1.00 ▶]
 // Click the dot to toggle, the name to pick a file, the arrows to step the
 // strength by 0.05, the number to type it. "+ Add LoRA" appends a row; a
-// right click on a row toggles, moves or removes it. Each row is serialized
+// right click on a row (or the node menu's "LoRA N" entries) toggles, moves
+// or removes it. Each row is serialized
 // as {on, lora, strength} and reaches the backend as lora_N in row order. A
 // row keeps the name it was created with (numbers may have gaps): current
 // frontends route widget renames through a store that silently refuses a
@@ -43,6 +44,13 @@ class LoraRow {
 		this.options = { serialize: true };
 		this.serialize = true;
 		this.zones = {};
+	}
+
+	// The node canvas repaints on setDirtyCanvas; the Vue renderer paints the
+	// row in a canvas of its own, only on triggerDraw.
+	redraw() {
+		this.node.setDirtyCanvas(true, false);
+		this.triggerDraw?.();
 	}
 
 	serializeValue() {
@@ -120,7 +128,7 @@ class LoraRow {
 			app.canvas.prompt("Strength", this.value.strength, (v) => {
 				const n = Number(v);
 				if (!Number.isNaN(n)) this.value.strength = n;
-				node.setDirtyCanvas(true, false);
+				this.redraw();
 			}, event);
 		} else if (within(this.zones.name)) {
 			getLoraList().then((list) => {
@@ -133,14 +141,14 @@ class LoraRow {
 					scale: Math.max(1, app.canvas.ds?.scale ?? 1),
 					callback: (v) => {
 						this.value.lora = v;
-						node.setDirtyCanvas(true, false);
+						this.redraw();
 					},
 				});
 			});
 		} else {
 			return false;
 		}
-		node.setDirtyCanvas(true, false);
+		this.redraw();
 		return true;
 	}
 }
@@ -185,6 +193,23 @@ function moveRow(node, w, dir) {
 	const b = node.widgets.indexOf(list[j]);
 	[node.widgets[a], node.widgets[b]] = [node.widgets[b], node.widgets[a]];
 	relayout(node);
+}
+
+function toggleRow(w) {
+	w.value.on = !w.value.on;
+	w.redraw();
+}
+
+// Toggle / move / remove for one row.
+function rowMenu(node, row) {
+	const list = rows(node);
+	const i = list.indexOf(row);
+	return [
+		{ content: `${row.value.on ? "⚫" : "🟢"} Toggle ${row.value.on ? "Off" : "On"}`, callback: () => toggleRow(row) },
+		{ content: "⬆️ Move Up", disabled: i <= 0, callback: () => moveRow(node, row, -1) },
+		{ content: "⬇️ Move Down", disabled: i >= list.length - 1, callback: () => moveRow(node, row, 1) },
+		{ content: "🗑️ Remove", callback: () => removeRow(node, row) },
+	];
 }
 
 function removeRow(node, w) {
@@ -256,18 +281,29 @@ app.registerExtension({
 		nodeType.prototype.getSlotMenuOptions = function (slot) {
 			const row = slot?.widget;
 			if (row?.type !== ROW_TYPE) return defaultSlotMenu(slot);
-			const list = rows(this);
-			const i = list.indexOf(row);
-			new LiteGraph.ContextMenu(
-				[
-					{ content: `${row.value.on ? "⚫" : "🟢"} Toggle ${row.value.on ? "Off" : "On"}`, callback: () => { row.value.on = !row.value.on; this.setDirtyCanvas(true, false); } },
-					{ content: "⬆️ Move Up", disabled: i <= 0, callback: () => moveRow(this, row, -1) },
-					{ content: "⬇️ Move Down", disabled: i >= list.length - 1, callback: () => moveRow(this, row, 1) },
-					{ content: "🗑️ Remove", callback: () => removeRow(this, row) },
-				],
-				{ title: row.value.lora || NONE, event: lastPointerEvent, scale: Math.max(1, app.canvas.ds?.scale ?? 1) },
-			);
+			new LiteGraph.ContextMenu(rowMenu(this, row), {
+				title: row.value.lora || NONE,
+				event: lastPointerEvent,
+				scale: Math.max(1, app.canvas.ds?.scale ?? 1),
+			});
 			return undefined;
+		};
+
+		// The same row menus on the node's own menu: the Vue renderer never asks
+		// getSlotInPosition, so this is where its rows are moved and removed.
+		const getExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
+		nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+			const r = getExtraMenuOptions?.apply(this, [canvas, options]);
+			const list = rows(this);
+			if (list.length) options.push(null);
+			list.forEach((row, i) => {
+				options.push({
+					content: `LoRA ${i + 1}: ${row.value.lora || NONE}`,
+					has_submenu: true,
+					submenu: { options: rowMenu(this, row) },
+				});
+			});
+			return r;
 		};
 	},
 });
