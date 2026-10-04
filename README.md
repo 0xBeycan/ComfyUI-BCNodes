@@ -17,6 +17,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_JoinImageLists` | [Join Image Lists](docs/image.md#bc_joinimagelists--join-image-lists) | Concatenates image lists, unlimited inputs |
 | `BC_MathExpression` | [Math Expression](docs/logic.md#bc_mathexpression--math-expression) | Arithmetic over `a`, `b`, `c` without `eval()` |
 | `BC_PromptList` | [Prompt List](docs/text.md#bc_promptlist--prompt-list) | One prompt per line, as a list |
+| `BC_AspectPromptList` | [Aspect Prompt List](docs/text.md#bc_aspectpromptlist--aspect-prompt-list) | Prompts grouped under `[WxH]` headers, as prompt / width / height lists |
 | `BC_AnySwitch` | [Any Switch](docs/logic.md#bc_anyswitch--any-switch) | First connected non-None input, any type, unlimited inputs |
 | `BC_SelectSwitch` | [Select Switch](docs/logic.md#bc_selectswitch--select-switch) | Input of the selected named option, any type; only the selected branch runs |
 | `BC_Seed` | [Seed](docs/logic.md#bc_seed--seed) | Seed widget; `-1` draws a new random seed on every run |

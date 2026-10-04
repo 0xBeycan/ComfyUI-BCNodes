@@ -23,6 +23,7 @@ Nodes:
     BC_AutoModelDownloader       fetch a workflow's models into models/
     BC_MathExpression            arithmetic over a, b, c without eval()
     BC_PromptList                one prompt per line, as a list
+    BC_AspectPromptList          prompts under [WxH] headers -> prompt / width / height lists
     BC_AnySwitch                 first connected non-None input, any type
     BC_SelectSwitch              input of the selected named option, only that branch runs
     BC_Seed                      seed widget; -1 = new random seed every run

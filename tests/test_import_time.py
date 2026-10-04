@@ -149,7 +149,7 @@ def main():
         "BC_LogicBoolean", "BC_IsMaskEmpty", "BC_MaskFillHoles", "BC_MaskGrow", "BC_DrawMaskOnImage", "BC_BlockifyMask",
         "BC_RepeatMaskBatch", "BC_ImageScaleByAspectRatio", "BC_ImageResize",
         "BC_JoinImageLists", "BC_BiRefNetRemoveBackground", "BC_DepthAnythingV2", "BC_AutoModelDownloader",
-        "BC_MathExpression", "BC_PromptList", "BC_AnySwitch", "BC_SelectSwitch", "BC_Seed", "BC_ShowText",
+        "BC_MathExpression", "BC_PromptList", "BC_AspectPromptList", "BC_AnySwitch", "BC_SelectSwitch", "BC_Seed", "BC_ShowText",
         "BC_ImageComparer", "BC_PowerLoraLoader", "BC_LoraLoaderKeyFix", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
         "BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode", "BC_SeedVR2PostProcess",
         "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact", "BC_SeedVR2FramingDownscale", "BC_SeedVR2ChunkSize",

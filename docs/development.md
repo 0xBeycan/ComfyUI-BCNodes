@@ -9,7 +9,7 @@ ComfyUI-BCNodes/
     image_scale.py         BC_ImageScaleByAspectRatio, BC_ImageResize
     lists.py               BC_JoinImageLists
     math_expression.py     BC_MathExpression
-    prompt_list.py         BC_PromptList
+    prompt_list.py         BC_PromptList, BC_AspectPromptList
     any_switch.py          BC_AnySwitch
     select_switch.py       BC_SelectSwitch
     seed.py                BC_Seed

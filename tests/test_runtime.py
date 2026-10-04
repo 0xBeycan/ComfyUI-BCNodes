@@ -367,6 +367,16 @@ async def main():
     check("PromptList: body_text list", out and out["3"]["text"] == ["two", "three"])
     check("PromptList: show_help is one string", out and len(out["4"]["text"]) == 1)
 
+    # Aspect Prompt List: width / height lists drive a latent node once per prompt, each at its own size.
+    out, _ = await run({
+        "1": N("BC_AspectPromptList", prepend_text="[", multiline_text="[64x32]\none\ntwo\n\n[32x48]\nthree", append_text="]"),
+        "2": N("PreviewAny", source=["1", 0]),
+        "3": N("EmptyLatentImage", width=["1", 2], height=["1", 3], batch_size=1),
+        "4": N("BC_MathExpression", expression="a.width * 1000 + a.height", a=["3", 0]),
+    }, "aspectpromptlist")
+    check("AspectPromptList: prompt list fans out", out and out["2"]["text"] == ["[one]", "[two]", "[three]"])
+    check("AspectPromptList: one latent per prompt at its section's size", out and out["4"]["value"] == [64032, 64032, 32048])
+
     # Logic and mask nodes end to end.
     out, _ = await run({
         "1": N("BC_MathExpression", expression="0.7"),
@@ -511,6 +521,7 @@ async def main():
         "JoinImageLists": {"1": image, "2": image, "3": N("BC_JoinImageLists", In1=["1", 0], In2=["2", 0]), "4": N("BC_MathExpression", expression="b", b=["3", 1])},
         "MathExpression": {"1": N("BC_MathExpression", expression="2 + 3")},
         "PromptList": {"1": N("BC_PromptList", prepend_text="", multiline_text="x\ny", append_text="", start_index=0, max_rows=10), "2": N("PreviewAny", source=["1", 0])},
+        "AspectPromptList": {"1": N("BC_AspectPromptList", prepend_text="", multiline_text="[8x8]\nx\ny", append_text=""), "2": N("PreviewAny", source=["1", 0])},
         "AnySwitch": {"1": N("BC_MathExpression", expression="7"), "2": N("BC_AnySwitch", any_01=["1", 0]), "3": N("PreviewAny", source=["2", 0])},
         "SelectSwitch": {"1": N("BC_MathExpression", expression="7"), "2": N("BC_SelectSwitch", selected="option_a", option_a=["1", 0]), "3": N("PreviewAny", source=["2", 0])},
         "ShowText": {"1": N("BC_PromptList", prepend_text="", multiline_text="x\ny", append_text="", start_index=0, max_rows=10), "2": N("BC_ShowText", text=["1", 0]), "3": N("PreviewAny", source=["2", 0])},

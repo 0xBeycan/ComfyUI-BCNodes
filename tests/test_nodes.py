@@ -111,6 +111,11 @@ def main():
     check("PromptList None text", lambda: pl.make_list(None)[0] == [""] or _fail())
     check("PromptList start beyond end", lambda: pl.make_list("a\nb", start_index=99, max_rows=5)[0] == ["b"] or _fail())
 
+    apl = m["prompt_list"].AspectPromptList()
+    check("AspectPromptList empty text -> ValueError", lambda: _raises(ValueError, lambda: apl.make_list("")))
+    check("AspectPromptList None text -> ValueError", lambda: _raises(ValueError, lambda: apl.make_list(None)))
+    check("AspectPromptList two sections", lambda: apl.make_list("[8x16]\na\n[24x8]\nb") == (["a", "b"], ["a", "b"], [8, 24], [16, 8]) or _fail())
+
     sw = m["any_switch"].AnySwitch()
     check("AnySwitch no inputs", lambda: sw.switch() == (None,) or _fail())
     check("AnySwitch all None", lambda: sw.switch(any_01=None, any_02=None) == (None,) or _fail())
