@@ -29,7 +29,7 @@ Monitor's HTTP routes and, when the monitor's saved setting is on, starts it (se
 nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, compute_device (the device widgets),
                               the unused-heavy-outputs helper (LinkStamp, register_link_stamp, stamps_last,
                               heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (25); social_specs.json is the user-editable platform table
+nodes/<domain>.py             one per domain (26); social_specs.json is the user-editable platform table
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
@@ -73,6 +73,8 @@ libs/memory_sources.py        RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, 
                               of (cgroup anon / file, RssAnon / RssFile), glibc's free blocks and malloc_trim
 libs/tensor_census.py         tensor bytes, each byte counted once by address range, file-backed memory told apart; the live tensor census
 libs/safetensors_info.py      weights from a safetensors header, no load
+libs/lora_keys.py             LoRA keys core's loader leaves out (.diff_m, PEFT keys without the diffusion_model.
+                              prefix), renamed to the names its key map holds; strings only
 ```
 
 ## Process Monitor

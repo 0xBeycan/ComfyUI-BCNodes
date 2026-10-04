@@ -6,6 +6,21 @@
 
 Each row is one line on the node: a toggle dot, the LoRA file (click to pick from `models/loras` — the list has a filter box), and one strength (`◀ ▶` steps by 0.05, click the number to type). `➕ Add LoRA` appends a row; a right click on a row opens its menu: *Toggle On/Off*, *Move Up*, *Move Down*, *Remove*. Rows are saved with the workflow as `{on, lora, strength}` and reach the backend as `lora_N` in row order; a row that is off, at strength 0, or whose file is missing is skipped (missing files are reported in the console).
 
+## `BC_LoraLoaderKeyFix` — Lora Loader (Key Fix)
+
+`model` (`MODEL`) + `lora_name` (a file in `models/loras`) + `strength` → `MODEL`. No `CLIP`: the LoRA is applied to the model only, through ComfyUI's own loader (`load_lora_for_models(model, None, …)`), so the node chains like *LoraLoaderModelOnly*. Strength 0 returns the model untouched.
+
+ComfyUI's loader applies a LoRA tensor only when its key names a module it maps for the model; any other key is left out, with a `lora key not loaded` line in the console and nothing else. Two kinds of LoRA lose tensors that way, and this node renames their keys before it hands the LoRA to ComfyUI:
+
+| Key in the file | Renamed to | Where it comes from |
+| --- | --- | --- |
+| `<block>.diff_m` | `<block>.modulation.diff` | lightx2v's Wan 2.2 distill LoRAs keep each block's (and the head's) modulation difference under this name; ComfyUI reads one only as `.modulation.diff` |
+| `blocks.N.<module>.lora_A.default.weight`, no prefix | `diffusion_model.blocks.N.<module>.…` | PEFT files saved outside ComfyUI (DiffSynth's, e.g. the official SVI 2.0 files): ComfyUI maps no key of a Wan model without the `diffusion_model.` prefix, so none of their tensors loads |
+
+A key ComfyUI already maps is never touched, and a key is renamed only when ComfyUI maps the new name and no other tensor of the file holds it. The LoRA goes through ComfyUI's own format conversion first, so the renames see the keys its loader sees.
+
+Each run prints one console line: the keys, the renames per kind and the keys that still match no module of the model, e.g. `my_lora.safetensors: 1500 keys, 41 renamed (41 .diff_m -> .modulation.diff, 0 given the diffusion_model. prefix), 0 match no module of this model`. When some keys match no module (a LoRA made for another model, the image branch of a Wan 2.1 I2V LoRA on Wan 2.2, a LoRA's text-encoder keys) the line is a warning naming the first five, and ComfyUI's own `lora key not loaded` lines name each one. A key of a mapped module in a format ComfyUI does not read counts as matched; ComfyUI's line names it.
+
 ## `BC_AutoModelDownloader` — Auto Model Downloader
 
 One line per model: a URL, a directory under `ComfyUI/models` and two switches, *HF token needed?* and *Civitai token needed?*. `Add line` adds a line, `Remove last line` drops the last one. Two boxes at the top take a Hugging Face token and a Civitai token.

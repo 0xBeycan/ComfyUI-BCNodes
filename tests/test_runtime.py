@@ -750,6 +750,7 @@ async def main():
     out, executed = await run_twice({"1": N("BC_AutoModelDownloader", entries="[]")}, "cache-downloader")
     check("AutoModelDownloader: runs every queue by design", out is not None and executed == ["1"], f"{executed}")
 
+    await lora_key_fix()
     await unused_outputs()
     await process_monitor_hook()
     await process_monitor_clear()
@@ -761,6 +762,118 @@ async def main():
 def pack_module(suffix):
     """A pack module as ComfyUI's loader named it (the pack directory's path is the package name)."""
     return next(m for name, m in sys.modules.items() if name.endswith(suffix))
+
+
+async def lora_key_fix():
+    """Lora Loader (Key Fix) against core's own LoRA loader, on a real Wan 2.1 T2V model (2 blocks, dim
+    128, random weights) built by core from a synthetic file, with two synthetic LoRA files holding the
+    key patterns core leaves out: lightx2v's distill `.diff_m` (two blocks and the head, next to a plain
+    LoRA pair core maps) and DiffSynth's PEFT keys without the `diffusion_model.` prefix (SVI 2.0's
+    `blocks.N.<module>.lora_A.default.weight`). As they are, core loads none of those keys; renamed,
+    every key; through the node each lands on its weight with the strength given."""
+    import importlib
+
+    import comfy.lora
+    import comfy.ops
+    import comfy.sd
+    import comfy.utils
+    import folder_paths
+    import torch
+    from comfy.ldm.wan.model import WanModel
+    from safetensors.torch import save_file
+
+    root = tempfile.mkdtemp(prefix="bcnodes_lora_")
+    for folder in ("diffusion_models", "loras"):
+        os.makedirs(os.path.join(root, folder))
+        folder_paths.add_model_folder_path(folder, os.path.join(root, folder))
+    torch.manual_seed(0)
+    net = WanModel(model_type="t2v", dim=128, ffn_dim=256, num_heads=1, num_layers=2, operations=comfy.ops.disable_weight_init)
+    unet = os.path.join(root, "diffusion_models", "tiny_wan.safetensors")
+    save_file({k: torch.randn(v.shape) * 0.02 for k, v in net.state_dict().items()}, unet)
+    distill = {f"diffusion_model.blocks.{i}.diff_m": torch.randn(1, 6, 128) for i in range(2)}
+    distill["diffusion_model.head.diff_m"] = torch.randn(1, 2, 128)
+    distill["diffusion_model.blocks.0.self_attn.q.lora_down.weight"] = torch.randn(4, 128)
+    distill["diffusion_model.blocks.0.self_attn.q.lora_up.weight"] = torch.randn(128, 4)
+    distill["diffusion_model.blocks.0.self_attn.q.alpha"] = torch.tensor(4.0)
+    peft = {}
+    for i in range(2):
+        peft[f"blocks.{i}.cross_attn.k.lora_A.default.weight"] = torch.randn(4, 128)
+        peft[f"blocks.{i}.cross_attn.k.lora_B.default.weight"] = torch.randn(128, 4)
+    save_file(distill, os.path.join(root, "loras", "distill.safetensors"))
+    save_file(peft, os.path.join(root, "loras", "peft.safetensors"))
+
+    patcher = comfy.sd.load_diffusion_model(unet)
+    key_map = comfy.lora.model_lora_keys_unet(patcher.model, {})
+    node_class = nodes.NODE_CLASS_MAPPINGS["BC_LoraLoaderKeyFix"]
+    fix_keys = importlib.import_module(node_class.__module__.rsplit(".", 2)[0] + ".libs.lora_keys").fix_keys
+
+    def not_loaded(lora):
+        """The keys core's load_lora reports as not loaded."""
+        lines = Lines()
+        logging.getLogger().addHandler(lines)
+        try:
+            comfy.lora.load_lora(lora, key_map)
+        finally:
+            logging.getLogger().removeHandler(lines)
+        return sorted(line.split(": ", 1)[1] for line in lines.lines if line.startswith("lora key not loaded: "))
+
+    for name, lora, dropped in (("distill", distill, sorted(k for k in distill if k.endswith(".diff_m"))), ("peft", peft, sorted(peft))):
+        fix = fix_keys(lora, key_map)
+        renamed = {fix.renamed.get(k, k): v for k, v in lora.items()}
+        check(f"LoraLoaderKeyFix: core leaves out the {len(dropped)} {name} keys as they are, none once renamed",
+              not_loaded(lora) == dropped and not_loaded(renamed) == [] and sorted(fix.renamed) == dropped and fix.unmapped == [],
+              f"{not_loaded(lora)} {not_loaded(renamed)} {fix}")
+
+    node = node_class()
+    (patched,) = node.load(patcher, "distill.safetensors", 0.5)
+    (patched,) = node.load(patched, "peft.safetensors", 0.5)
+
+    def base(key):
+        return comfy.utils.get_attr(patcher.model, key).float()
+
+    def merged(key):
+        """The weight core's calculate_weight makes from the base weight and the patches on `key`."""
+        return comfy.lora.calculate_weight(patched.patches[key], base(key).clone(), key)
+
+    blocks = ("diffusion_model.blocks.0", "diffusion_model.blocks.1")
+    check("LoraLoaderKeyFix: patches on every modulation, the plain pair's weight and both k weights",
+          set(patched.patches) == {f"{b}.modulation" for b in blocks} | {f"{b}.cross_attn.k.weight" for b in blocks}
+          | {"diffusion_model.head.modulation", "diffusion_model.blocks.0.self_attn.q.weight"}, f"{sorted(patched.patches)}")
+    check("LoraLoaderKeyFix: a modulation is the base + 0.5 x its .diff_m (blocks and head)",
+          all(torch.allclose(merged(f"{b}.modulation"), base(f"{b}.modulation") + 0.5 * distill[f"{b}.diff_m"], atol=1e-6)
+              for b in blocks + ("diffusion_model.head",)))
+    check("LoraLoaderKeyFix: a PEFT k weight is the base + 0.5 x B @ A",
+          all(torch.allclose(merged(f"diffusion_model.blocks.{i}.cross_attn.k.weight"),
+                             base(f"diffusion_model.blocks.{i}.cross_attn.k.weight")
+                             + 0.5 * peft[f"blocks.{i}.cross_attn.k.lora_B.default.weight"] @ peft[f"blocks.{i}.cross_attn.k.lora_A.default.weight"],
+                             atol=1e-5) for i in range(2)))
+
+    # Through the executor: core's UNETLoader, then two key-fix loaders chained; the console lines
+    # count the renames, core reports no key left out, and the second queue is served from the cache.
+    lines = Lines()
+    root_logger = logging.getLogger()
+    level = root_logger.level
+    root_logger.addHandler(lines)
+    root_logger.setLevel(logging.INFO)
+    try:
+        out, executed = await run_twice({
+            "1": N("UNETLoader", unet_name="tiny_wan.safetensors", weight_dtype="default"),
+            "2": N("BC_LoraLoaderKeyFix", model=["1", 0], lora_name="distill.safetensors", strength=1.0),
+            "3": N("BC_LoraLoaderKeyFix", model=["2", 0], lora_name="peft.safetensors", strength=1.0),
+            "4": N("PreviewAny", source=["3", 0]),
+        }, "lora-key-fix")
+    finally:
+        root_logger.removeHandler(lines)
+        root_logger.setLevel(level)
+    ours = [line for line in lines.lines if line.startswith("[BCNodes] Lora Loader (Key Fix)")]
+    check("LoraLoaderKeyFix: UNETLoader -> two loaders validates, runs, and is cached on the second queue",
+          out is not None and executed == [], f"{executed}")
+    check("LoraLoaderKeyFix: one console line per LoRA with its renames, nothing left out by core",
+          ours == ["[BCNodes] Lora Loader (Key Fix): distill.safetensors: 6 keys, 3 renamed (3 .diff_m -> .modulation.diff, "
+                   "0 given the diffusion_model. prefix), 0 match no module of this model",
+                   "[BCNodes] Lora Loader (Key Fix): peft.safetensors: 4 keys, 4 renamed (0 .diff_m -> .modulation.diff, "
+                   "4 given the diffusion_model. prefix), 0 match no module of this model"]
+          and not any(line.startswith("lora key not loaded") for line in lines.lines), f"{lines.lines}")
 
 
 def process_monitor_default():

@@ -38,7 +38,7 @@ BUDGET_S = 0.1
 LAYERS = ("nodes", "pipelines", "models", "libs")
 # Node modules the walk must find (the registered nodes live in them).
 NODE_MODULES = ["logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
-                "image_comparer", "power_lora_loader", "everywhere", "seedvr2",
+                "image_comparer", "power_lora_loader", "lora_key_fix", "everywhere", "seedvr2",
                 "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption", "skin_texture",
                 "frequency_merge"]
 HEAVY = [
@@ -150,7 +150,7 @@ def main():
         "BC_RepeatMaskBatch", "BC_ImageScaleByAspectRatio", "BC_ImageResize",
         "BC_JoinImageLists", "BC_BiRefNetRemoveBackground", "BC_DepthAnythingV2", "BC_AutoModelDownloader",
         "BC_MathExpression", "BC_PromptList", "BC_AnySwitch", "BC_SelectSwitch", "BC_Seed", "BC_ShowText",
-        "BC_ImageComparer", "BC_PowerLoraLoader", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
+        "BC_ImageComparer", "BC_PowerLoraLoader", "BC_LoraLoaderKeyFix", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
         "BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode", "BC_SeedVR2PostProcess",
         "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact", "BC_SeedVR2FramingDownscale", "BC_SeedVR2ChunkSize",
         "BC_PostFxApply", "BC_PostFxTheme", "BC_PostFxCustomLook", "BC_PostFxLut", "BC_PostFxSignatureSheet",

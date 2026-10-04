@@ -16,6 +16,7 @@ ComfyUI-BCNodes/
     show_text.py           BC_ShowText
     image_comparer.py      BC_ImageComparer
     power_lora_loader.py   BC_PowerLoraLoader
+    lora_key_fix.py        BC_LoraLoaderKeyFix
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
     seedvr2.py             BC_SeedVR2FramingDownscale, BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2ChunkSize,
                            BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess, BC_SeedVR2PreprocessCompact, BC_SeedVR2PostProcessCompact
@@ -110,6 +111,8 @@ ComfyUI-BCNodes/
                            made of (anon / file, RssAnon / RssFile), glibc's free blocks and malloc_trim
     tensor_census.py       tensor bytes, each byte counted once by address range, file-backed memory told apart; the live tensor census
     safetensors_info.py    weights from a safetensors header
+    lora_keys.py           LoRA keys core's loader leaves out (.diff_m, PEFT keys without the prefix), renamed to the
+                           names it maps; the keys still unmapped
   docs/                    the node documentation, one page per menu category; README.md links them
   luts/                    drop .cube LUTs here for PostFx LUT (gitignored)
   web/js/
@@ -154,6 +157,6 @@ python tests/parity_seedvr2_video.py --comfy ../ComfyUI --vae ../ComfyUI/models/
 
 The tests need `postfx` and `caption-audit` importable: `pip install -r requirements.txt`, or `PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts.
 
-The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, Select Switch running only the selected lazy branch, and that a genuine type mismatch is still rejected.
+The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, Select Switch running only the selected lazy branch, that a genuine type mismatch is still rejected, and Lora Loader (Key Fix) against core's own LoRA loader on a tiny real Wan model (the keys core leaves out as they are, and loads once renamed).
 
 Every module in `nodes/`, `pipelines/`, `models/` and `libs/` imports only `torch`, `numpy` and the standard library at module level; `scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*` and the pip packages `postfx` / `caption_audit` are imported inside the functions that use them (the downloader also touches `server` / `aiohttp`, which ComfyUI has loaded already), so the pack adds nothing to ComfyUI's startup. A node module also imports its pipeline, model and lib modules inside the methods that use them (a widget list such as the model names inside `INPUT_TYPES`), so the package import reads and compiles little more than `nodes/`; the Process Monitor's own modules load at import, where it registers and starts. `python tests/test_import_time.py` checks both.

@@ -176,6 +176,11 @@ def main():
     check("PowerLoraLoader rows all off / missing file -> model untouched", lambda: pl2.load_loras(model="M", lora_1={"on": False, "lora": "x", "strength": 1}, lora_2={"on": True, "lora": "missing.safetensors", "strength": 1}) == ("M",) or _fail())
     check("PowerLoraLoader None row ignored", lambda: pl2.load_loras(model="M", lora_1=None) == ("M",) or _fail())
 
+    lkf = m["lora_key_fix"].LoraLoaderKeyFix()
+    check("LoraLoaderKeyFix no model -> None", lambda: lkf.load(None, "missing.safetensors", 1.0) == (None,) or _fail())
+    check("LoraLoaderKeyFix strength 0 -> model untouched, no file read", lambda: lkf.load("M", "missing.safetensors", 0.0) == ("M",) or _fail())
+    check("LoraLoaderKeyFix INPUT_TYPES with no LoRA on disk", lambda: lkf.INPUT_TYPES()["required"]["lora_name"][0] == [] or _fail())
+
     ae = m["everywhere"].AnythingEverywhere()
     check("AnythingEverywhere noop", lambda: ae.noop(anything=None) == () or _fail())
     check("FastGroupsBypasser noop", lambda: m["everywhere"].FastGroupsBypasser().noop() == () or _fail())
