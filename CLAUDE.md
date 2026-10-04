@@ -234,6 +234,13 @@ where it is.
   list -> stack/cat, no clones of read-only inputs, no leaks. Read the original first and never
   reproduce its bugs. Take the logic only: no import of, dependency on or reference to the
   original.
+- Three sources, never mixed up in code, docs, reports or commit messages:
+  - **Core**: ComfyUI itself (`comfy/`, `comfy_extras/` and its built-in nodes). It is a port of each
+    model, with its own bugs; it is never the reference for how a model behaves.
+  - **Official**: the code and configs of the team that made the model (e.g. `Wan-Video/Wan2.2`,
+    `vita-epfl/Stable-Video-Infinity`). The reference: defaults reproduce it, and where core departs
+    from it, core is the bug.
+  - **Community**: third-party custom nodes and workflows (e.g. Kijai, rzgar). Read for logic only.
 - Precision is decided per tensor, by measurement, never globally.
 - A half-precision input (float16 or bfloat16) is read a frame (or a few frames) at a time through
   `libs/image.float_frame`; the work runs in float32 and the IMAGE / MASK output keeps the input's
