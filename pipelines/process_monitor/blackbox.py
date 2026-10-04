@@ -284,6 +284,15 @@ def crash_report(records, oom_kills_now, platform):
     }
 
 
+def _timeline(start, node_starts, end):
+    """The black box's node starts with how long each ran: until the next node starts, the last one
+    until the run ends (the executor runs one node at a time)."""
+    ends = [r["t"] for r in node_starts[1:]] + [end["t"] if end.get("type") == "end" else None]
+    return [{k: r.get(k) for k in ("node", "display", "class_type", "ram", "cache")}
+            | {"at": round(r["t"] - start["t"], 2), "seconds": None if t is None else round(t - r["t"], 2)}
+            for r, t in zip(node_starts, ends)]
+
+
 def _node_rows(records):
     """The armed run's node_end records, preceded by the nodes that were in the cache when it started
     and never ran (ComfyUI does not call execute for them): "from cache, not measured", never 0."""
@@ -314,9 +323,9 @@ def run_report(records):
         "ram_source": start.get("ram_source"), "ram_limit": start.get("ram_limit"),
         "ram_peak": max((s["ram"] for s in samples if s.get("ram") is not None), default=None),
         "vram_peak": max((s["vram"] for s in samples if s.get("vram") is not None), default=None),
+        "vram_device_peak": max((s["vram_device"] for s in samples if s.get("vram_device") is not None), default=None),
         "nodes": _node_rows(records),
-        "timeline": [{k: r.get(k) for k in ("node", "display", "class_type", "ram", "cache")} | {"at": round(r["t"] - start["t"], 2)}
-                     for r in _of(records, "node")],
+        "timeline": _timeline(start, _of(records, "node"), end),
         "snapshot": snaps[-1] if snaps else None,
         "swap": _swap_note(samples) if start.get("platform") == "darwin" else None,
     }

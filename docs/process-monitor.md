@@ -10,7 +10,7 @@ Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_moni
 | --- | --- |
 | Live | The current values in detail, and the sources: the RAM source (the container's cgroup, or the process RSS outside a container), the VRAM source, and whether per-node measurement is available |
 | Emulate | An estimate of the current workflow, labelled *rough estimate; a real measurement exists only after the workflow has run once* (below) |
-| Last run | The last finished run: status, run time, the monitor's own time (`run 2.9 s, monitor 4.9 ms (0.17%)`), RAM / VRAM peaks, and the per-node table of an armed run. A row click selects and centres the node; a node inside a subgraph centres its subgraph node |
+| Last run | The last finished run: status, run time, the monitor's own time (`run 2.9 s, monitor 4.9 ms (0.17%)`), the RAM peak, two VRAM peaks (device: the whole card as nvidia-smi sees it, NVML or `cudaMemGetInfo`, weights ComfyUI keeps on the card included; torch allocated: the work's own tensors, without weights loaded outside torch's allocator), and the per-node table of an armed run; without one, the node starts the black box logged, each with its time until the next node starts (the last until the run ends). A row click selects and centres the node; a node inside a subgraph centres its subgraph node |
 | Crash | The report of a run that ended without an end record (below) |
 | Settings | Black box on / off, the snapshot threshold, the experimental stop, how many run logs are kept |
 

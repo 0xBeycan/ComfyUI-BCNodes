@@ -144,8 +144,8 @@ def test_macos_says_fell_into_swap(bb):
 
 
 def test_run_report(bb):
-    recs = [start(loaded=[{"name": "WanModel", "bytes": 10 * GIB}], armed=True), sample(100.1, GIB, vram=3 * GIB),
-            sample(100.2, int(1.5 * GIB), vram=4 * GIB),
+    recs = [start(loaded=[{"name": "WanModel", "bytes": 10 * GIB}], armed=True), sample(100.1, GIB, vram=3 * GIB, vram_device=9 * GIB),
+            sample(100.2, int(1.5 * GIB), vram=4 * GIB, vram_device=8 * GIB),
             {"type": "cached", "t": 100.12, "nodes": [{"node": "4", "class_type": "W", "output_bytes": 8},
                                                       {"node": "6", "class_type": "Y", "output_bytes": 9}]},
             {"type": "node", "t": 100.15, "node": "5", "display": "5", "class_type": "X", "ram": GIB, "cache": 0, "inputs": []},
@@ -155,12 +155,24 @@ def test_run_report(bb):
              "monitor": {"hook_s": 0.001, "sampler_s": 0.002, "snapshot_s": 0.0, "total_s": 0.003}}]
     r = bb.run_report(recs)
     assert r["status"] == "success" and r["armed"] and r["overhead_pct"] == pytest.approx(0.15)
-    assert r["ram_peak"] == int(1.5 * GIB) and r["vram_peak"] == 4 * GIB
+    assert r["ram_peak"] == int(1.5 * GIB) and r["vram_peak"] == 4 * GIB and r["vram_device_peak"] == 9 * GIB
     # node 4 never ran (in the cache at the start), node 6 was staged and found cached: one row each
     assert [(n["node"], n["state"]) for n in r["nodes"]] == [("4", "cached"), ("5", "executed"), ("6", "cached")]
     assert r["profile"].startswith("repeat run: 1 model(s)") and "WanModel" in r["profile"]
-    assert r["timeline"] == [{"node": "5", "display": "5", "class_type": "X", "ram": GIB, "cache": 0, "at": 0.15}]
+    # the last node runs until the run ends
+    assert r["timeline"] == [{"node": "5", "display": "5", "class_type": "X", "ram": GIB, "cache": 0, "at": 0.15, "seconds": 1.85}]
     assert bb.run_report([start(), recs[-1]])["profile"].startswith("first run")
+    assert bb.run_report([start(), recs[-1]])["vram_device_peak"] is None
+
+
+def test_run_report_timeline_seconds(bb):
+    node = lambda t, n: {"type": "node", "t": t, "node": n, "display": n, "class_type": "X", "ram": GIB, "cache": 0, "inputs": []}
+    end = {"type": "end", "t": 110.0, "status": "success", "seconds": 10.0, "monitor": {}}
+    r = bb.run_report([start(), node(100.5, "1"), node(101.0, "2"), node(106.0, "3"), end])
+    # each node until the next one starts
+    assert [(t["node"], t["at"], t["seconds"]) for t in r["timeline"]] == [("1", 0.5, 0.5), ("2", 1.0, 5.0), ("3", 6.0, 4.0)]
+    # a run cut off before its end record: the last node's time is unknown, never a guess
+    assert bb.run_report([start(), node(100.5, "1"), node(101.0, "2")])["timeline"][-1]["seconds"] is None
 
 
 def test_settings_validate_load_and_save(bcnodes, tmp_path):

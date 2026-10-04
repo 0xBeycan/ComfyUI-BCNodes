@@ -342,10 +342,10 @@ async function lastRunTab() {
 		el("div", {}, `Prompt ${r.prompt_id}: ${r.status}. Run ${secs(r.seconds)}, monitor ${secs(m.total_s)}`,
 			r.overhead_pct == null ? "" : ` (${r.overhead_pct.toFixed(2)}%: hook ${secs(m.hook_s)}, sampler ${secs(m.sampler_s)}, snapshot ${secs(m.snapshot_s)})`),
 		el("div", { class: "bcpm-note" }, r.profile),
-		el("div", {}, `RAM peak ${gb(r.ram_peak)} of ${gb(r.ram_limit)} (${r.ram_source}); VRAM peak ${gb(r.vram_peak)}`),
+		el("div", {}, `RAM peak ${gb(r.ram_peak)} of ${gb(r.ram_limit)} (${r.ram_source}); VRAM device peak ${r.vram_device_peak == null ? "–" : gb(r.vram_device_peak)} · torch allocated peak ${gb(r.vram_peak)}`),
 		r.swap ? el("div", { class: "bcpm-warn" }, r.swap.text) : null);
 	if (r.armed) {
-		parts.push(table(["Node", "State", "Time", "RAM start → peak", "VRAM peak", "Outputs", "Cache", "Models"], r.nodes.map((n) => ({
+		parts.push(table(["Node", "State", "Time", "RAM start → peak", "torch VRAM peak", "Outputs", "Cache", "Models"], r.nodes.map((n) => ({
 			key: n.display ?? n.node,
 			cells: [`${n.display ?? n.node} ${n.class_type}`, n.state === "cached" ? "from cache, not measured" : n.state,
 				n.state === "cached" ? "–" : secs(n.seconds),
@@ -354,9 +354,9 @@ async function lastRunTab() {
 				gb(n.cache), [...(n.models_loaded ?? []).map((x) => `+${x.name}`), ...(n.models_unloaded ?? []).map((x) => `−${x.name}`)].join(" ")],
 		})), focusNode));
 	} else {
-		parts.push(el("div", { class: "bcpm-note" }, "Not measured per node: press \"Measure next run\". Node starts the black box logged:"));
-		parts.push(table(["At", "Node", "RAM", "Cache"], r.timeline.map((t) => ({
-			key: t.display ?? t.node, cells: [secs(t.at), `${t.display ?? t.node} ${t.class_type}`, gb(t.ram), gb(t.cache)],
+		parts.push(el("div", { class: "bcpm-note" }, "Not measured per node: press \"Measure next run\". Node starts the black box logged (Time = until the next node starts):"));
+		parts.push(table(["At", "Time", "Node", "RAM", "Cache"], r.timeline.map((t) => ({
+			key: t.display ?? t.node, cells: [secs(t.at), t.seconds == null ? "–" : secs(t.seconds), `${t.display ?? t.node} ${t.class_type}`, gb(t.ram), gb(t.cache)],
 		})), focusNode));
 	}
 	return el("div", {}, parts);
