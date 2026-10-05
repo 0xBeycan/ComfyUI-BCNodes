@@ -89,7 +89,7 @@ def test_slices_of_a_growing_host_buffer_count_once(tc):
     # each slice holds its own part of the buffer
     assert (groups[4 * MB]["count"], groups[4 * MB]["bytes"]) == (2, 8 * MB)
     assert (groups[6 * MB]["count"], groups[6 * MB]["bytes"]) == (2, 12 * MB)
-    assert c["total_bytes"] == 20 * MB
+    assert c["by_device"] == {"cpu": 20 * MB}
 
 
 def test_weights_over_one_memory_map_and_slices_of_one_storage(tc, tmp_path):
@@ -138,7 +138,7 @@ def test_file_backed_memory_is_told_apart_by_the_mappings(tc, tmp_path, monkeypa
     c = census_of(tc, weight, anonymous, shared)
     backing = {g["shape"][0]: g["backing"] for g in c["groups"]}
     assert backing == {2 * MB: "file", 3 * MB: "ram", 5 * MB: "ram"}
-    assert c["file_bytes"] == 4 * MB and c["total_bytes"] == 12 * MB
+    assert c["file_bytes"] == 4 * MB and c["by_device"] == {"cpu": 12 * MB}
     del weight, ranges
     mv.release()
     m.close()
@@ -212,8 +212,78 @@ def test_census_holds_no_tensor_while_it_describes_the_others(tc, monkeypatch):
 def test_census_puts_small_tensors_aside(tc):
     tiny = torch.ones(3)
     c = tc.census(min_bytes=1 << 40)
-    assert c["groups"] == [] and c["small_bytes"] >= 12 and c["total_bytes"] == c["small_bytes"]
+    assert c["groups"] == [] and c["small_bytes"] >= 12 and sum(c["by_device"].values()) == c["small_bytes"]
     del tiny
+
+
+class Wrapped(torch.Tensor):
+    """A wrapper subclass as comfy_kitchen's QuantizedTensor is one: the logical shape and dtype
+    (bfloat16) over inner tensors that hold the memory (int8 data and a float32 scale)."""
+
+    @staticmethod
+    def __new__(cls, qdata, scale):
+        return torch.Tensor._make_wrapper_subclass(cls, qdata.shape, dtype=torch.bfloat16, device=qdata.device)
+
+    def __init__(self, qdata, scale):
+        self._qdata, self._scale = qdata, scale
+
+    def __tensor_flatten__(self):
+        return ["_qdata", "_scale"], None
+
+    @classmethod
+    def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
+        raise NotImplementedError(func)
+
+
+def test_a_wrapper_subclass_is_its_inner_tensors(tc):
+    qdata, scale = torch.ones(4 * MB, dtype=torch.int8), torch.ones(1)
+    weight = Wrapped(qdata, scale)
+    assert tc.storage_bytes(weight) == 4 * MB + 4  # not the 8 MB of 4M bfloat16 values
+    assert tc.storage_bytes([weight, qdata]) == 4 * MB + 4
+    _, parts = tc.sized(weight)
+    assert [(p["dtype"], p["bytes"]) for p in parts] == [("int8", 4 * MB), ("float32", 4)]
+    module = torch.nn.Module()
+    module.register_buffer("weight", weight)
+    assert tc.module_bytes(module) == 4 * MB + 4
+    c = census_of(tc, weight)
+    assert c["by_device"] == {"cpu": 4 * MB + 4} and {g["dtype"] for g in c["groups"]} == {"int8", "float32"}
+    # through the garbage collector: the wrapper and its inner tensors are all found, each byte once
+    c = tc.census(min_bytes=1, top=10_000)
+    assert not [g for g in c["groups"] if g["dtype"] == "bfloat16" and g["shape"] == [4 * MB]]
+    mine = [g for g in c["groups"] if g["shape"] == [4 * MB] and g["dtype"] == "int8"]
+    assert [(g["count"], g["bytes"]) for g in mine] == [(1, 4 * MB)]
+    del weight, module
+
+
+def test_sparse_and_nested_tensors_are_their_parts(tc):
+    sparse = torch.eye(1000).to_sparse()  # 1000 values and 2 x 1000 int64 indices, not 1000 x 1000
+    assert tc.storage_bytes(sparse) == 1000 * 4 + 2 * 1000 * 8
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # sparse CSR is in beta
+        csr = torch.eye(1000).to_sparse_csr()
+    parts = (csr.crow_indices(), csr.col_indices(), csr.values())
+    assert tc.storage_bytes(csr) == sum(p.untyped_storage().nbytes() for p in parts) < 1000 * 1000
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # nested tensors are a prototype
+        nested = torch.nested.nested_tensor([torch.ones(3, 2), torch.ones(5, 2)])
+        jagged = torch.nested.nested_tensor([torch.ones(3, 2), torch.ones(5, 2)], layout=torch.jagged)
+    assert tc.storage_bytes(nested) == 16 * 4  # one buffer
+    assert tc.storage_bytes(jagged) >= 16 * 4
+    c = census_of(tc, sparse, csr, nested, jagged)
+    assert c["unsized"] == 0 and c["by_device"]["cpu"] == tc.storage_bytes([sparse, csr, nested, jagged])
+    held = [sparse, nested, jagged]
+    tc.census(min_bytes=1, top=10_000)  # through the garbage collector: no tensor kind raises
+    del held
+
+
+def test_census_counts_each_device_apart(tc):
+    cpu = torch.ones(3 * MB, dtype=torch.uint8)
+    arr = np.ones(2 * MB, dtype=np.uint8)
+    meta = torch.ones(5 * MB, dtype=torch.uint8, device="meta")
+    assert census_of(tc, cpu, arr, meta)["by_device"] == {"cpu": 5 * MB}
+    if torch.backends.mps.is_available():
+        gpu = torch.ones(MB, dtype=torch.uint8, device="mps")
+        assert census_of(tc, cpu, gpu)["by_device"] == {"cpu": 3 * MB, str(gpu.device): MB}
 
 
 def test_safetensors_header(bcnodes, tmp_path):

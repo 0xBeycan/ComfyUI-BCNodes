@@ -138,11 +138,39 @@ def test_peak_window_reset_writes_to_memory_peak(ms, tmp_path):
         assert f.read().startswith("reset")  # a plain file keeps the write; the kernel resets instead
 
 
-def test_process_reader_runs_for_real(ms):
-    source = ms.ProcessMemory()
+def test_process_reader_runs_for_real(ms, tmp_path):
+    source = ms.ProcessMemory(str(tmp_path / "missing"))  # macOS, Windows: the RSS
     r = source.read()
-    assert 0 < r["ram"] < r["ram_limit"] and r["swap"] >= 0
-    assert source.oom_kills() is None and source.open_peak_window() is None
+    assert 0 < r["ram"] < r["ram_limit"] and r["swap"] >= 0 and "ram_raw" not in r
+    assert source.oom_kills() is None and source.open_peak_window() is None and source.identity() is None
+    assert source.describe().startswith("process RSS (psutil)")
+
+
+def test_process_reader_on_linux_leaves_file_pages_out(ms, tmp_path):
+    """Without a memory-limited cgroup, Linux reads RssAnon + RssShmem: the pages mapped from files
+    (weights read through mmap) are page cache and would cross the threshold on their own."""
+    status = tmp_path / "status"
+    status.write_text("VmRSS:\t  9000 kB\nRssAnon:\t  2000 kB\nRssFile:\t  6900 kB\nRssShmem:\t 100 kB\n")
+    source = ms.ProcessMemory(str(status))
+    r = source.read()
+    assert (r["ram"], r["ram_raw"]) == (2100 * 1024, 9000 * 1024)
+    assert "RssAnon + RssShmem" in source.describe()
+
+
+def test_cgroup_identity_changes_with_a_recreated_cgroup(ms, tmp_path):
+    """The oom_kill counter belongs to one cgroup: the identity is the boot id and the inode of the
+    cgroup's directory, which a recreated container (a new cgroup) does not share."""
+    boot = tmp_path / "boot_id"
+    boot.write_text("b0\n")
+    root, proc = tree(tmp_path / "a", "0::/", V2_FILES)
+    cg = ms.find_cgroup(16 * GIB, root, proc)
+    first = cg.identity(str(boot))
+    assert first == cg.identity(str(boot)) == f"b0:{os.stat(root).st_ino}"
+    os.rename(root, root + ".old")  # keep the old inode alive, so the new directory cannot reuse it
+    root, proc = tree(tmp_path / "a", "0::/", V2_FILES)  # the same path, a new cgroup
+    assert ms.find_cgroup(16 * GIB, root, proc).identity(str(boot)) != first
+    boot.write_text("b1\n")
+    assert not ms.find_cgroup(16 * GIB, root, proc).identity(str(boot)).startswith("b0:")
 
 
 class FakeCuda:

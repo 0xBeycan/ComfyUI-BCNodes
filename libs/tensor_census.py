@@ -5,7 +5,7 @@
     tensors found through lists, tuples and dicts only (a model object is not walked: its weights
     are reported as loaded models, not as node outputs);
   - census: the live torch tensors of the process grouped by shape / dtype / device, found through
-    the garbage collector (or the tensors and numpy arrays of given values).
+    the garbage collector (or the tensors and numpy arrays of given values), bytes per device.
 
 Bytes are memory, counted once: a tensor's storage is a range of addresses [start, end) on its device,
 and the ranges are merged. Views, the same tensor reached twice and storages that start at different
@@ -57,10 +57,29 @@ def _span(ptr, shape, strides, itemsize):
     return ptr + low, ptr + high + itemsize
 
 
+def _plain(t):
+    """The plain tensors whose storages hold t's memory: t itself, or the parts of a tensor without a
+    storage of its own. A wrapper subclass (__tensor_flatten__: a comfy_kitchen QuantizedTensor's int8 data
+    and scale, a jagged nested tensor's values and offsets) is only its inner tensors: its own size is that
+    of the logical dtype (bfloat16 for an int8 weight), memory it does not hold. A sparse tensor is its
+    indices and values, a strided nested tensor its components (views into its one buffer)."""
+    if hasattr(type(t), "__tensor_flatten__"):
+        return [p for name in t.__tensor_flatten__()[0] for p in _plain(getattr(t, name))]
+    if t.is_nested:
+        return list(t.unbind())
+    if t.layout == torch.sparse_coo:
+        return [t._indices(), t._values()]
+    if t.layout in (torch.sparse_csr, torch.sparse_bsr):
+        return [t.crow_indices(), t.col_indices(), t.values()]
+    if t.layout in (torch.sparse_csc, torch.sparse_bsc):
+        return [t.ccol_indices(), t.row_indices(), t.values()]
+    return [t]
+
+
 def _memory(t):
-    """(device, storage, view) of t: the address ranges of the memory it lives in (its storage, or a
-    numpy array's owning array) and of its own elements. A tensor without a plain storage (sparse,
-    nested, a wrapper subclass) is a range of its own size, keyed by the object."""
+    """(device, storage, view) of a plain tensor (see _plain) or numpy array: the address ranges of the
+    memory it lives in (its storage, or a numpy array's owning array) and of its own elements; None for a
+    tensor whose storage torch does not expose (a kind _plain does not split)."""
     if isinstance(t, np.ndarray):
         view = _span(t.__array_interface__["data"][0], t.shape, t.strides, t.itemsize)
         owner = t.base if isinstance(t.base, np.ndarray) else None
@@ -70,15 +89,14 @@ def _memory(t):
         return "cpu", (start, start + owner.nbytes), view
     try:
         s = t.untyped_storage()
-        size, ptr = t.element_size(), t.data_ptr()
-        if t.is_contiguous():  # most tensors: no walk over the strides
-            view = (ptr, ptr + t.numel() * size)
-        else:
-            view = _span(ptr, t.shape, [st * size for st in t.stride()], size)
-        return str(t.device), (s.data_ptr(), s.data_ptr() + s.nbytes()), view
+        start, size, ptr = s.data_ptr(), t.element_size(), t.data_ptr()
     except (RuntimeError, NotImplementedError):
-        own = (0, t.numel() * t.element_size())
-        return ("object", id(t)), own, own
+        return None
+    if t.is_contiguous():  # most tensors: no walk over the strides
+        view = (ptr, ptr + t.numel() * size)
+    else:
+        view = _span(ptr, t.shape, [st * size for st in t.stride()], size)
+    return str(t.device), (start, start + s.nbytes()), view
 
 
 def describe(t):
@@ -90,8 +108,11 @@ def describe(t):
 
 
 def tensors_in(value, depth=6):
-    """Every tensor and numpy array reachable from value through lists, tuples and dicts."""
-    if isinstance(value, (torch.Tensor, np.ndarray)):
+    """Every plain tensor (see _plain) and numpy array reachable from value through lists, tuples and
+    dicts."""
+    if isinstance(value, torch.Tensor):
+        yield from _plain(value)
+    elif isinstance(value, np.ndarray):
         yield value
     elif depth > 0 and isinstance(value, (list, tuple)):
         for v in value:
@@ -107,8 +128,9 @@ def storage_bytes(value, covered=None):
     covered = Covered() if covered is None else covered
     total = 0
     for t in tensors_in(value):
-        device, storage, _ = _memory(t)
-        total += covered.claim(device, *storage)
+        memory = _memory(t)
+        if memory is not None:
+            total += covered.claim(memory[0], *memory[1])
     return total
 
 
@@ -160,19 +182,29 @@ def _backing(maps, device, address):
     return "file" if files[i] else "ram"
 
 
-def _row(t, maps):
-    """A census row of t, or None for a meta tensor or a tensor freed since the pass (None)."""
-    if t is None or (isinstance(t, torch.Tensor) and t.device.type == "meta"):
-        return None
-    device, storage, view = _memory(t)
-    return {"d": describe(t), "device": device, "storage": storage, "view": view,
-            "backing": _backing(maps, device, storage[0]), "bytes": 0}
+def _rows(t, maps):
+    """The census rows of t: one per plain tensor of t (see _plain), each {"d", "device", "storage",
+    "view", "backing", "bytes"}, or None for a tensor whose storage torch does not expose. [] for a meta
+    tensor, a tensor freed since the pass (None), and a wrapper subclass: its inner tensors are tensors
+    of their own, which the pass finds as well."""
+    if t is None or hasattr(type(t), "__tensor_flatten__") or (isinstance(t, torch.Tensor) and t.device.type == "meta"):
+        return []
+    rows = []
+    for p in (_plain(t) if isinstance(t, torch.Tensor) else [t]):
+        memory = _memory(p)
+        if memory is None:
+            rows.append(None)
+            continue
+        device, storage, view = memory
+        rows.append({"d": describe(p), "device": device, "storage": storage, "view": view,
+                     "backing": _backing(maps, device, storage[0]), "bytes": 0})
+    return rows
 
 
 def census(values=None, min_bytes=1 << 20, top=20):
     """The live tensors grouped by (shape, dtype, device, backing), largest first:
     {"groups": [{"count", "shape", "dtype", "device", "backing", "bytes_each", "bytes"}], "small_bytes",
-    "total_bytes", "file_bytes"}.
+    "by_device", "file_bytes", "unsized"}.
 
     "bytes" counts memory once: each byte goes to the first tensor that claims it, the tensors in the
     order of their own elements' size, largest first, and the rest of each storage (what no live view
@@ -181,6 +213,11 @@ def census(values=None, min_bytes=1 << 20, top=20):
     "backing" is "file" for memory mapped from a file (page cache, not the process's own RAM), "ram"
     for the rest of the cpu memory, "unknown" without /proc/self/maps (macOS), None on a GPU;
     "file_bytes" sums the file-backed bytes, None when unknown.
+    "by_device" is {device: bytes} ("cpu", "cuda:0", "mps:0", as str(tensor.device); numpy arrays under
+    "cpu"): RAM and each GPU's memory apart, never one sum. "unsized" counts the tensors whose memory torch
+    does not expose (no storage), which no byte count includes.
+    A wrapper subclass (a comfy_kitchen QuantizedTensor) is counted by its inner tensors, a sparse or
+    nested tensor by its parts (_plain): what the memory holds, not the logical dtype's size.
     The tensors are those reachable from `values` through lists, tuples and dicts (numpy arrays too),
     or, with None, every torch tensor of the process, found through the garbage collector: a pass over
     all of the process's objects, the slow part. Any thread may call it."""
@@ -221,7 +258,8 @@ def census(values=None, min_bytes=1 << 20, top=20):
                 gc.enable()
         tensors = map(weakref.ref.__call__, refs)
     maps = _maps()
-    rows = [row for row in map(_row, tensors, repeat(maps)) if row is not None]
+    found = list(chain.from_iterable(map(_rows, tensors, repeat(maps))))
+    rows = [row for row in found if row is not None]
     rows.sort(key=lambda r: r["view"][1] - r["view"][0], reverse=True)
     covered = Covered()
     for part in ("view", "storage"):
@@ -240,5 +278,8 @@ def census(values=None, min_bytes=1 << 20, top=20):
         g["bytes"] += r["bytes"]
     ordered = sorted(groups.values(), key=lambda g: g["bytes"] or g["bytes_each"], reverse=True)
     file_bytes = None if maps is None else sum(r["bytes"] for r in rows if r["backing"] == "file")
-    return {"groups": ordered[:top], "small_bytes": small,
-            "total_bytes": small + sum(g["bytes"] for g in groups.values()), "file_bytes": file_bytes}
+    by_device = {}
+    for r in rows:
+        by_device[r["device"]] = by_device.get(r["device"], 0) + r["bytes"]
+    return {"groups": ordered[:top], "small_bytes": small, "by_device": by_device, "file_bytes": file_bytes,
+            "unsized": len(found) - len(rows)}

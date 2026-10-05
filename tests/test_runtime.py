@@ -15,6 +15,7 @@ import math
 import os
 import sys
 import tempfile
+import types
 import uuid
 
 PACK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1127,6 +1128,17 @@ async def process_monitor_clear():
     status_handler = handlers[("GET", "/bcnodes/monitor/status")]
     body = json.loads((await status_handler(make_mocked_request("GET", "/bcnodes/monitor/status"))).text)
     check("ProcessMonitor clear: the status route carries the baseline", body.get("baseline") == report.get("baseline"))
+
+    # the pack's MONITOR was stopped by process_monitor_default: off, it keeps its hook and its last sample
+    arm = handlers[("POST", "/bcnodes/monitor/arm")]
+    response = await arm(types.SimpleNamespace(json=lambda: asyncio.sleep(0, {"armed": True})))  # the route reads only its body
+    monitor = pack_module(".nodes.process_monitor").MONITOR
+    check("ProcessMonitor: arming is refused while the monitor is off, saying to turn it on",
+          response.status == 409 and "The monitor is off" in json.loads(response.text).get("error", "")
+          and not monitor.armed_next, f"{response.status} {response.text}")
+    live = handlers[("GET", "/bcnodes/monitor/live")]
+    body = json.loads((await live(make_mocked_request("GET", "/bcnodes/monitor/live"))).text)
+    check("ProcessMonitor: the live route has no sample while the monitor is off", body == {"enabled": False, "sample": None}, f"{body}")
 
 
 if __name__ == "__main__":

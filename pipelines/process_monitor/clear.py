@@ -20,6 +20,11 @@ The steps, in order, each measured on its own (a reading before and after it):
                 prompt worker is a thread); malloc_trim(0) gives every whole free page back. Linux with
                 glibc only.
 
+ComfyUI's free runs on its prompt worker, so the queue is open until it ends; the steps after it run
+with the prompt queue held (its lock, which the worker's q.get needs to take a prompt): no prompt starts
+while ComfyUI's cast buffers and torch's caches are reset, which ComfyUI itself does only between nodes
+on that worker. A POST /prompt meanwhile waits until the steps end (seconds).
+
 Then one census of the live tensors (libs/tensor_census.census): what something still references
 after the clear. What a restart would free and the clear cannot: memory held by another pack's own
 cache (it shows in the census), libraries and kernels loaded during the run (the CUDA context grows on
@@ -27,7 +32,8 @@ first use). Page cache (files read or mapped, the cgroup's `file`) is reported, 
 kernel reclaims it under pressure, and a restart of the process does not free it either.
 
 The probe is the node layer's adapter over ComfyUI's server: busy() -> message or None,
-request_free(), free_done() -> bool, full_clear_hooks() -> [(name, hook)].
+request_free(), free_done() -> bool, hold() -> the prompt queue's lock (a context manager, re-entrant:
+busy() works while it is held), full_clear_hooks() -> [(name, hook)].
 """
 
 import gc
@@ -77,7 +83,7 @@ class Report(TypedDict):
 
 
 def _gb(n):
-    return f"{n / 2 ** 30:.2f} GB"
+    return f"{n / 2 ** 30:.2f} GiB"
 
 
 def reading(ram, gpu):
@@ -162,7 +168,8 @@ def _torch_caches(clear):
     if cuda:
         found.append(f"the CUDA allocator kept {_gb(torch.cuda.memory_reserved() - torch.cuda.memory_allocated())} unused")
     if hasattr(mm, "reset_cast_buffers"):  # newer ComfyUI
-        held = sum(t.nbytes for t in list(getattr(mm, "STREAM_CAST_BUFFERS", {}).values()))
+        held = sum(t.nbytes for t in list(getattr(mm, "STREAM_CAST_BUFFERS", {}).values())) + \
+            sum(b.size() for b in list(getattr(mm, "STREAM_AIMDO_CAST_BUFFERS", {}).values()))  # VRAMBuffer: committed bytes
         mm.reset_cast_buffers()  # ends with soft_empty_cache
         found.append(f"ComfyUI's cast buffers held {_gb(held)}")
     else:
@@ -214,7 +221,8 @@ class FullClear:
         self.baseline = reading(*self.sources())
 
     def run(self):
-        """-> Report. Raises Busy (nothing done) while a prompt runs or waits, or another clear runs."""
+        """-> Report. Raises Busy (nothing done) while a prompt runs or waits, or another clear runs; Busy
+        after ComfyUI's free when a prompt was queued before the queue was held."""
         message = self.probe.busy()
         if message:
             raise Busy(message)
@@ -224,13 +232,24 @@ class FullClear:
             ram, gpu = self.sources()
             before = reading(ram, gpu)
             steps, last = [], before
-            for name, text, fn in STEPS:
+
+            def step(name, text, fn):
+                nonlocal last
                 t0 = time.perf_counter()
                 found, detail = fn(self)
                 now = reading(ram, gpu)
                 steps.append(Step(name=name, text=text, found=found, seconds=round(time.perf_counter() - t0, 3),
                                   freed=_freed(last, now), detail=detail))
                 last = now
+
+            free, *rest = STEPS
+            step(*free)
+            with self.probe.hold():  # the worker cannot take a prompt until these steps end
+                message = self.probe.busy()
+                if message:
+                    raise Busy(f"a prompt was queued during ComfyUI's free; the clear stopped after it. {message}")
+                for s in rest:
+                    step(*s)
             return Report(baseline=self.baseline, before=before, after=last, steps=steps, remaining=census(top=12))
         finally:
             self._lock.release()

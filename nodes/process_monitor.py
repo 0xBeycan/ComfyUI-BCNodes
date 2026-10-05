@@ -45,11 +45,17 @@ class ServerProbe:
     def running(self):
         """(prompt_id, extra_data) of the running prompt, or None. The queue item is
         (number, prompt_id, prompt, extra_data, outputs, ...) on every ComfyUI version."""
-        items = list(self.server.prompt_queue.currently_running.values())
+        queue = self.server.prompt_queue
+        with queue.mutex:
+            items = list(queue.currently_running.values())
         return (items[0][1], items[0][3]) if items else None
 
     def status(self, prompt_id):
-        entry = self.server.prompt_queue.history.get(prompt_id) or {}
+        """Read under the queue's mutex: task_done drops the running prompt and writes its history in one
+        hold of it, so a prompt seen as not running has its history here."""
+        queue = self.server.prompt_queue
+        with queue.mutex:
+            entry = queue.history.get(prompt_id) or {}
         status = entry.get("status") or {}
         if any(m[0] == "execution_interrupted" for m in status.get("messages", [])):
             return "interrupted"
@@ -90,9 +96,21 @@ class ServerProbe:
     def free_done(self):
         """True once the prompt worker has taken the flags and waits in the queue again, so its free
         (models unloaded, the executor's caches reset, gc.collect, empty_cache) has finished. Read from
-        the code objects on its stack, never from a frame's locals."""
+        the code objects on its stack, never from a frame's locals. While the flags wait, each call
+        wakes the worker again: set_flag's notify is lost when the worker is between its get_flags()
+        and its next q.get() (its gc.collect and empty_cache after a prompt), and it would then sleep
+        in q.get(timeout=1000) with the flags set."""
         queue = self.server.prompt_queue
-        return not queue.get_flags(reset=False) and type(queue).get.__code__ in self._worker_stack()
+        with queue.mutex:
+            if queue.flags:
+                queue.not_empty.notify()
+                return False
+        return type(queue).get.__code__ in self._worker_stack()
+
+    def hold(self):
+        """The prompt queue's lock: while it is held the worker cannot take a prompt (q.get waits for
+        it) and a POST /prompt waits. Re-entrant (an RLock), so busy() reads the queue under it."""
+        return self.server.prompt_queue.mutex
 
     def full_clear_hooks(self):
         """[(name, hook)] of the packs' full-clear hooks, in their order; a name is the pack and the
@@ -224,8 +242,11 @@ def _register():
     @routes.post("/bcnodes/monitor/arm")
     async def _arm(request):
         body = await request.json()
+        armed = bool(body.get("armed", True))
+        if armed and not monitor.enabled:  # stop() keeps the hook: an arm now would measure a later run
+            return fail("The monitor is off: turn it on in Settings > BCNodes > Process Monitor, then arm the next run.", 409)
         try:
-            monitor.arm(bool(body.get("armed", True)))
+            monitor.arm(armed)
         except RuntimeError as e:
             return fail(e, 409)
         return web.json_response(await off_loop(status))
@@ -241,7 +262,8 @@ def _register():
 
     @routes.get("/bcnodes/monitor/live")
     async def _live(request):
-        return web.json_response({"enabled": monitor.enabled, "sample": monitor.last})
+        # off: no sample (monitor.last is the last one taken before it stopped)
+        return web.json_response({"enabled": monitor.enabled, "sample": monitor.last if monitor.enabled else None})
 
     @routes.get("/bcnodes/monitor/last_run")
     async def _last_run(request):

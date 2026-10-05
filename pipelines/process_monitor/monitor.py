@@ -170,6 +170,7 @@ class Run:
         self.node = None
         self.class_type = None
         self.node_peak = 0
+        self.vram_peak = 0  # torch's peak over the run, folded in before every per-node reset
         self.snapshot_done = False
         self.cached_listed = False
         self.pending = {}  # node id -> seconds of its PENDING execute calls
@@ -275,6 +276,11 @@ class Monitor:
             except Exception as e:  # keep the workflow running; the status shows the error
                 self.error = f"the sampler stopped after an error: {e!r}"
                 logging.exception("[BCNodes] Process Monitor: %s", self.error)
+                if self.hook is not None:
+                    self.hook.uninstall()  # no run starts without the sampler that ends it
+                with self._lock:
+                    if self.run is not None:  # its end record: the run did not crash, the monitor did
+                        self._end_run(f"monitor stopped during the run: {self.error}")
                 return
             spent = time.thread_time() - t0
             run = self.run
@@ -377,10 +383,13 @@ class Monitor:
         run = Run(prompt_id, extra_data, armed, log, self.hook.seconds if self.hook else 0.0)
         self.run = run
         self.exec_thread = None
+        if self.gpu is not None:
+            self.gpu.reset_peak()
         if log is not None:
             log.write({"type": "start", "v": blackbox.FORMAT, "session": self.session, "prompt_id": prompt_id,
                        "workflow_id": run.workflow_id, "t": run.t0, "pid": os.getpid(), "platform": self.platform,
                        "ram_source": self.ram.describe(), "ram_limit": self.ram.limit, "oom_kills": self.ram.oom_kills(),
+                       "container": self.ram.identity(),
                        "models_loaded": [{"name": m["name"], "bytes": m["bytes"]} for m in loaded_models()],
                        "armed": armed, "threshold": self.settings.threshold})
         return run
@@ -393,10 +402,20 @@ class Monitor:
                    "total_s": round(hook_s + run.sampler_s + run.snapshot_s, 4)}
         if run.log is None:
             return
-        run.log.write({"type": "end", "t": time.time(), "status": status, "seconds": round(seconds, 3), "monitor": monitor})
-        run.log.close()
+        end = {"type": "end", "t": time.time(), "status": status, "seconds": round(seconds, 3), "monitor": monitor}
+        if self._fold_vram_peak(run):
+            end["vram_peak"] = run.vram_peak
+        run.log.finish(end)
         if run.armed:
             self._keep_measurement(run, hook_s)
+
+    def _fold_vram_peak(self, run):
+        """Folds torch's peak since its last reset into the run's; False when the device keeps none (MPS)."""
+        peak = self.gpu.peak().get("vram_peak") if self.gpu is not None else None
+        if peak is None:
+            return False
+        run.vram_peak = max(run.vram_peak, peak)
+        return True
 
     def _ensure_run(self, prompt_id, extra_data):
         with self._lock:
@@ -446,6 +465,7 @@ class Monitor:
         if not run.armed:
             return None
         if self.gpu is not None:
+            self._fold_vram_peak(run)  # the reset below starts the node's peak: the run's keeps what came before
             self.gpu.reset_peak()
         run.node_peak = ram or 0
         return {"run": run, "record": record, "window": self.ram.open_peak_window(), "models": loaded_models()}
@@ -473,13 +493,16 @@ class Monitor:
             run.log.write(record)
             return
         ram_end = self.ram.read()["ram"]
-        peak = window.close() if window is not None else None
+        # ram_start, ram_end and the sampled ram are the working set; memory.peak also counts page cache
+        # (files read meanwhile), so it is kept apart as ram_peak_raw
         record.update(state="executed" if state == "SUCCESS" else "failed", seconds=round(seconds, 4), ram_end=ram_end,
-                      ram_peak=peak if peak is not None else max(run.node_peak, ram_end or 0),
-                      peak_source="cgroup memory.peak" if peak is not None else f"sampler maximum ({int(PERIOD * 1000)} ms)",
+                      ram_peak=max(run.node_peak, ram_end or 0), peak_source=f"sampler maximum ({int(PERIOD * 1000)} ms)",
                       cache=output_cache_bytes(call.caches.outputs))
+        if window is not None:
+            record["ram_peak_raw"] = window.close()
         if self.gpu is not None:
             record.update(self.gpu.peak())
+            self._fold_vram_peak(run)
         after = loaded_models()
         before_ids = {m["id"] for m in token["models"]}
         after_ids = {m["id"] for m in after}
@@ -490,7 +513,8 @@ class Monitor:
     # -- reports for the routes ------------------------------------------------------------------
 
     def crash_flag(self):
-        """The prompt id of the newest run when it ended without an end record, else None."""
+        """The prompt id of the newest run of an earlier process when it ended without an end record, else
+        None (blackbox.latest_crash)."""
         path = blackbox.latest_crash(self.runs_dir, self.session)
         return blackbox.read_records(path)[0]["prompt_id"] if path else None
 
@@ -499,7 +523,7 @@ class Monitor:
         if path is None:
             return None
         ram = self.ram or memory_sources.ram_source()
-        return blackbox.crash_report(blackbox.read_records(path), ram.oom_kills(), self.platform)
+        return blackbox.crash_report(blackbox.read_records(path), ram.oom_kills(), ram.identity(), self.platform)
 
     def last_run(self):
         records = blackbox.latest_finished(self.runs_dir)

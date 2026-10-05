@@ -2,8 +2,10 @@
 
 RAM comes from the container's cgroup when one limits this process at or below the RAM the
 process sees (v2 `memory.current` / `memory.max` / `memory.peak` / `memory.events`, or the v1 files of
-the same counters), otherwise from the process RSS through psutil. Host RAM is never used inside a
-container: it hides the limit the kernel kills at.
+the same counters), otherwise from the process's own memory (on Linux RssAnon + RssShmem, without
+the file pages of the RSS; the RSS through psutil elsewhere). Host RAM is never used inside a
+container: it hides the limit the kernel kills at. A cgroup's identity (boot id, the inode of its
+directory) tells whether its oom_kill counter is the one a run started with.
 
 VRAM comes from torch's allocator counters (CUDA, or MPS on Apple silicon); NVML adds the
 device-wide use (every process) and the GPU load when a binding (`pynvml`) is importable.
@@ -24,6 +26,7 @@ import torch
 CGROUP_ROOT = "/sys/fs/cgroup"
 PROC_SELF_CGROUP = "/proc/self/cgroup"
 PROC_SELF_STATUS = "/proc/self/status"
+BOOT_ID = "/proc/sys/kernel/random/boot_id"
 
 # The same counters under cgroup v2 and v1. v1's oom_kill line lives in memory.oom_control
 # (kernel 4.13+).
@@ -120,6 +123,13 @@ class CgroupMemory:
     def oom_kills(self):
         return _keyed(_read(self._files["events"])).get("oom_kill")
 
+    def identity(self, boot_id=BOOT_ID):
+        """Which cgroup the oom_kill counter belongs to: the boot's id and the inode of the cgroup's
+        directory. The kernel gives each cgroup it creates a new inode, so a container recreated (after an
+        OOM kill, a pod restart) has another one, and its counter starts again at 0; a process restarted
+        inside the same container keeps it. The boot id tells two boots apart."""
+        return f"{(_read(boot_id) or '').strip()}:{os.stat(self.directory).st_ino}"
+
     def open_peak_window(self):
         """A PeakWindow over memory.peak reset to the current usage, or None when the kernel does not
         allow a per-reader reset (cgroup v1, kernels before 6.12, a read-only cgroup mount)."""
@@ -168,27 +178,41 @@ def find_cgroup(host_total, root=CGROUP_ROOT, proc_self_cgroup=PROC_SELF_CGROUP)
 
 
 class ProcessMemory:
-    """The process RSS against the host's RAM (no container limit applies)."""
+    """The process's own memory against the host's RAM (no container limit applies)."""
 
     kind = "process"
     version = None
 
-    def __init__(self):
+    def __init__(self, proc_self_status=PROC_SELF_STATUS):
         import psutil
 
         self._psutil = psutil
         self._process = psutil.Process()
         self.limit = psutil.virtual_memory().total
+        self._status = proc_self_status if os.path.isfile(proc_self_status) else None  # Linux
 
     def describe(self):
-        return "process RSS (psutil), no container memory limit found"
+        own = "RssAnon + RssShmem (/proc/self/status)" if self._status else "RSS (psutil)"
+        return f"process {own}, no container memory limit found"
 
     def read(self):
-        """{"ram": RSS, "ram_limit": host RAM, "swap": host swap in use}. macOS has no OOM kill: a run
+        """{"ram", "ram_limit": host RAM, "swap": host swap in use}, on Linux also "ram_raw" (the whole
+        RSS). "ram" is on Linux RssAnon + RssShmem: the RSS without RssFile, the pages mapped from files
+        (weights read through mmap), which are page cache the kernel takes back under pressure, so RAM is
+        not short when they grow. macOS and Windows have no split: the RSS. macOS has no OOM kill: a run
         past the RAM limit falls into swap, so swap is part of the reading."""
-        return {"ram": self._process.memory_info().rss, "ram_limit": self.limit, "swap": self._psutil.swap_memory().used}
+        out = {"ram_limit": self.limit, "swap": self._psutil.swap_memory().used}
+        if self._status is not None:
+            rss = process_memory(self._status)
+            out.update(ram=rss["rss_anon"] + rss["rss_shmem"], ram_raw=rss["rss"])
+        else:
+            out["ram"] = self._process.memory_info().rss
+        return out
 
     def oom_kills(self):
+        return None
+
+    def identity(self):
         return None
 
     def open_peak_window(self):

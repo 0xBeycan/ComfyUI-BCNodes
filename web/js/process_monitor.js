@@ -8,7 +8,8 @@ import { callJson } from "./bcnodes_api.js";
 // and the GPU load while it is on; next to them the Full clear button (RAM and VRAM back to the
 // reading taken when ComfyUI started, no restart; its outcome in a ComfyUI toast, the details in
 // the button's tooltip), and a button that opens the modal. Both buttons are always there: the full
-// clear, Emulate and the crash report work with the monitor off. The modal button turns red when the last
+// clear, Emulate and the crash report work with the monitor off; the full clear is disabled while a prompt
+// runs or waits in the queue (ComfyUI's status event). The modal button turns red when the last
 // run was killed. Modal tabs: Live, Emulate, Last run (a row click selects and centres the node),
 // Crash, Settings.
 
@@ -20,8 +21,11 @@ const BACKING = { ram: "RAM", file: "file (page cache)", unknown: "unknown" };
 const CLEAR_TITLE = "Full clear: RAM and VRAM back to where they were right after ComfyUI started, without a restart "
 	+ "(every model unloaded, every cached node output dropped, the freed memory given back to the system). "
 	+ "Refused while a prompt runs or waits. The next run loads its models again, so it starts slower.";
+const CLEAR_BUSY_TITLE = "Full clear: a prompt is running or queued; the full clear is available when the queue is empty.";
 
-const state = { status: null, sample: null, tab: "Live", modal: null, bar: null };
+// queueBusy: ComfyUI's queue_remaining (running and pending prompts) > 0; clearing: a clear is under way;
+// clearLast: the last clear's details for the tooltip
+const state = { status: null, sample: null, tab: "Live", modal: null, bar: null, queueBusy: false, clearing: false, clearLast: null };
 
 const call = (route, body) => callJson(`/bcnodes/monitor/${route}`, body);
 
@@ -30,7 +34,18 @@ const call = (route, body) => callJson(`/bcnodes/monitor/${route}`, body);
 // ---------------------------------------------------------------------------
 
 function gb(bytes) {
-	return bytes == null ? "–" : `${(bytes / 2 ** 30).toFixed(bytes >= 10 * 2 ** 30 ? 1 : 2)} GB`;
+	return bytes == null ? "–" : `${(bytes / 2 ** 30).toFixed(bytes >= 10 * 2 ** 30 ? 1 : 2)} GiB`;
+}
+
+// A census's totals per device: "cpu 12.3 GiB (4.10 GiB of it file-backed: page cache), cuda:0 18.2 GiB".
+// A run logged before the census counted per device has one total over every device.
+function censusTotals(c) {
+	// file_bytes: the cpu part mapped from files; absent in a run logged before the census told it apart
+	const file = c.file_bytes === undefined ? ""
+		: c.file_bytes === null ? " (file-backed part unknown: no /proc/self/maps on this system)"
+			: ` (${gb(c.file_bytes)} of it file-backed: page cache)`;
+	if (!c.by_device) return `${gb(c.total_bytes)} on all devices together${file}`;
+	return Object.entries(c.by_device).map(([device, bytes]) => `${device} ${gb(bytes)}${device === "cpu" ? file : ""}`).join(", ") || "none";
 }
 
 function secs(s) {
@@ -108,6 +123,7 @@ function buildBar() {
 	button.onclick = openModal;
 	const root = el("div", { class: "bcpm-bar" }, meters, clear, button);
 	state.bar = { root, meters, button, clear, ram, vram, gpu };
+	renderClear();
 	// The frontend rebuilds the top menu, action bar included, whenever its layout changes (the
 	// right side panel opened or closed, focus mode, the app builder), so an element put into the
 	// action bar is dropped with it. The legacy top-menu element (app.menu.element) is the place the
@@ -140,7 +156,17 @@ function renderBar() {
 	if (s.gpu_util != null) setMeter(bar.gpu, s.gpu_util, 100, `GPU ${s.gpu_util}%`);
 }
 
-// "RAM 12.4 GB → 3.10 GB", with " (baseline …)" when asked and known; null when the readings lack the counter
+// The Full clear button: disabled while a clear runs or a prompt runs or waits; the tooltip says why
+function renderClear() {
+	const b = state.bar?.clear;
+	if (!b) return;
+	b.disabled = state.clearing || state.queueBusy;
+	b.textContent = state.clearing ? "Clearing…" : "Full clear";
+	b.title = !state.clearing && state.queueBusy ? CLEAR_BUSY_TITLE
+		: state.clearLast ? `${CLEAR_TITLE}\n\nLast: ${state.clearLast}` : CLEAR_TITLE;
+}
+
+// "RAM 12.4 GiB → 3.10 GiB", with " (baseline …)" when asked and known; null when the readings lack the counter
 function clearChange(r, label, key, withBaseline) {
 	if (r.before[key] == null || r.after[key] == null) return null;
 	const base = withBaseline && r.baseline?.[key] != null ? ` (baseline ${gb(r.baseline[key])})` : "";
@@ -148,38 +174,40 @@ function clearChange(r, label, key, withBaseline) {
 }
 
 // The outcome as a ComfyUI toast; a frontend without the toast API gets a console line instead
-function clearToast(severity, detail) {
+function clearToast(severity, detail, summary = "Full clear") {
 	const toast = app.extensionManager?.toast;
-	if (toast?.add) toast.add({ severity, summary: "Full clear", detail, life: severity === "success" ? 5000 : 15000 });
+	if (toast?.add) toast.add({ severity, summary, detail, life: severity === "success" ? 5000 : 15000 });
 	else if (severity === "success") console.info(`[BCNodes] Full clear: ${detail}`);
 	else console.warn(`[BCNodes] Full clear: ${detail}`);
 }
 
 async function fullClear() {
-	const bar = state.bar;
-	bar.clear.disabled = true;
-	bar.clear.textContent = "Clearing…";
+	state.clearing = true;
+	renderClear();
 	try {
 		const r = await call("clear", {});
 		const failed = (r.steps.find((s) => s.name === "pack_models")?.detail ?? []).filter((h) => h.error);
-		const short = [clearChange(r, "RAM", "ram"), clearChange(r, "VRAM", "vram_reserved")].filter(Boolean).join(", ");
-		const details = [
+		// the device-wide VRAM (weights under dynamic VRAM are outside torch's reserved); reserved without NVML
+		const [vramLabel, vramKey] = r.before.vram_device != null ? ["VRAM (device)", "vram_device"] : ["VRAM reserved", "vram_reserved"];
+		const short = [clearChange(r, "RAM", "ram"), clearChange(r, vramLabel, vramKey)].filter(Boolean).join(", ");
+		state.clearLast = [
 			`full clear at ${new Date().toLocaleTimeString()}`,
 			clearChange(r, "RAM", "ram", true),
-			clearChange(r, "VRAM reserved", "vram_reserved", true),
+			clearChange(r, vramLabel, vramKey, true),
 			r.baseline ? null : "No baseline: the server's startup was not seen.",
 			...r.steps.map((s) => `${s.name}: ${s.found}`),
-			`Tensors still referenced after the clear: ${gb(r.remaining.total_bytes)}`,
+			`Tensors still referenced after the clear: ${censusTotals(r.remaining)}`,
 		].filter(Boolean).join("\n");
 		clearToast(failed.length ? "warn" : "success", `Cleared: ${short}${failed.length ? ` · ${failed.length} hook(s) failed` : ""}`);
-		bar.clear.title = `${CLEAR_TITLE}\n\nLast: ${details}`;
 	} catch (e) {
 		const message = String(e.message ?? e);
-		clearToast("error", `Not cleared: ${message}`);
-		bar.clear.title = `${CLEAR_TITLE}\n\nLast: ${message}`;
+		// 409: refused (a prompt runs or waits, another clear runs), a warning with the server's reason
+		if (e.status === 409) clearToast("warn", message, "Full clear refused");
+		else clearToast("error", `Not cleared: ${message}`);
+		state.clearLast = message;
 	} finally {
-		bar.clear.disabled = false;
-		bar.clear.textContent = "Full clear";
+		state.clearing = false;
+		renderClear();
 	}
 	refreshStatus();
 }
@@ -252,7 +280,7 @@ function liveTab() {
 		["Per-node measurement", st.hook?.available ? "available" : st.hook?.message ?? "–"],
 	];
 	if (st.error) rows.push(["Monitor error", st.error]);
-	if (s) {
+	if (s && st.enabled) {
 		rows.push(["RAM", `${gb(s.ram)} of ${gb(s.ram_limit)}${s.ram_raw != null ? ` (with file cache ${gb(s.ram_raw)})` : ""}`]);
 		if (s.swap != null) rows.push(["Host swap in use", gb(s.swap)]);
 		rows.push(["VRAM (torch)", `${gb(s.vram)} allocated, ${gb(s.vram_reserved)} reserved`]);
@@ -325,7 +353,12 @@ function renderEstimate(r) {
 
 async function lastRunTab() {
 	const st = state.status ?? {};
-	const arm = el("button", { class: "bcpm-btn" }, st.armed ? "Armed: the next run is measured" : "Measure next run");
+	const arm = el("button", { class: "bcpm-btn" }, st.armed ? "Armed: the next run is measured"
+		: st.enabled ? "Measure next run" : "Measure next run (the monitor is off)");
+	if (!st.enabled && !st.armed) {
+		arm.disabled = true;
+		arm.title = "Turn the monitor on in Settings > BCNodes > Process Monitor to measure a run.";
+	}
 	arm.onclick = async () => {
 		try {
 			state.status = await call("arm", { armed: !state.status?.armed });
@@ -342,14 +375,15 @@ async function lastRunTab() {
 		el("div", {}, `Prompt ${r.prompt_id}: ${r.status}. Run ${secs(r.seconds)}, monitor ${secs(m.total_s)}`,
 			r.overhead_pct == null ? "" : ` (${r.overhead_pct.toFixed(2)}%: hook ${secs(m.hook_s)}, sampler ${secs(m.sampler_s)}, snapshot ${secs(m.snapshot_s)})`),
 		el("div", { class: "bcpm-note" }, r.profile),
-		el("div", {}, `RAM peak ${gb(r.ram_peak)} of ${gb(r.ram_limit)} (${r.ram_source}); VRAM device peak ${r.vram_device_peak == null ? "–" : gb(r.vram_device_peak)} · torch allocated peak ${gb(r.vram_peak)}`),
+		el("div", {}, `RAM peak ${gb(r.ram_peak)} of ${gb(r.ram_limit)} (${r.ram_source}, sampled every 100 ms); VRAM device peak ${r.vram_device_peak == null ? "–" : gb(r.vram_device_peak)} · torch allocated peak ${gb(r.vram_peak)}`),
 		r.swap ? el("div", { class: "bcpm-warn" }, r.swap.text) : null);
 	if (r.armed) {
 		parts.push(table(["Node", "State", "Time", "RAM start → peak", "torch VRAM peak", "Outputs", "Cache", "Models"], r.nodes.map((n) => ({
 			key: n.display ?? n.node,
 			cells: [`${n.display ?? n.node} ${n.class_type}`, n.state === "cached" ? "from cache, not measured" : n.state,
 				n.state === "cached" ? "–" : secs(n.seconds),
-				n.state === "cached" ? "–" : `${gb(n.ram_start)} → ${gb(n.ram_peak)} (${n.peak_source})`,
+				n.state === "cached" ? "–" : `${gb(n.ram_start)} → ${gb(n.ram_peak)} (${n.peak_source})`
+					+ (n.ram_peak_raw != null ? `; incl. page cache ${gb(n.ram_peak_raw)}` : ""),
 				gb(n.vram_peak), `${gb(n.output_bytes)} ${(n.outputs ?? []).slice(0, 2).map((o) => `[${o.shape}] ${o.dtype}`).join(" ")}`,
 				gb(n.cache), [...(n.models_loaded ?? []).map((x) => `+${x.name}`), ...(n.models_unloaded ?? []).map((x) => `−${x.name}`)].join(" ")],
 		})), focusNode));
@@ -417,10 +451,7 @@ async function crashTab() {
 		parts.push(el("h4", {}, `Tensors alive at the threshold (${gb(snap.ram)}, node ${snap.node} ${snap.class_type ?? ""}; ${snap.scope ?? "whole process"})`));
 		// no census: the run died while it was taken; the stack record was written before it
 		if (!c) parts.push(el("div", { class: "bcpm-note" }, "The run ended before the tensor census finished; the stack below was written at the threshold."));
-		// file_bytes: absent in a run logged before the census told file-backed memory apart
-		if (c?.file_bytes !== undefined) parts.push(el("div", { class: "bcpm-note" }, `${gb(c.total_bytes)} of memory in all, each byte once; `,
-			c.file_bytes === null ? "file-backed part unknown (no /proc/self/maps on this system)"
-				: `${gb(c.file_bytes)} of it file-backed (mapped from files: page cache, not the process's own RAM)`));
+		if (c) parts.push(el("div", { class: "bcpm-note" }, `Each byte once: ${censusTotals(c)}`));
 		if (c) parts.push(censusTable(c));
 		parts.push(el("details", {}, el("summary", {}, "Stack of the execution thread"), el("pre", {}, snap.stack.join(""))));
 	} else {
@@ -474,7 +505,7 @@ async function refreshStatus() {
 	try {
 		state.status = await call("status");
 		const live = await call("live");
-		state.sample = live.sample;
+		state.sample = state.status?.enabled ? live.sample : null;  // off: no stale numbers
 	} catch (e) {
 		console.warn("[BCNodes] Process Monitor status failed:", e);
 	}
@@ -505,6 +536,12 @@ app.registerExtension({
 
 	setup() {
 		buildBar();
+		// ComfyUI's queue state: queue_remaining counts the running prompt and the pending ones; null
+		// while the server is unreachable (the clear's own request then fails anyway)
+		api.addEventListener("status", (e) => {
+			state.queueBusy = (e.detail?.exec_info?.queue_remaining ?? 0) > 0;
+			renderClear();
+		});
 		api.addEventListener(EVENT, (e) => {
 			state.sample = e.detail;
 			renderBar();

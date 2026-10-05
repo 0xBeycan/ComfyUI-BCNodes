@@ -28,8 +28,8 @@ class Result(enum.Enum):
 class FakeRam:
     kind, version, limit = "fake", None, 1000
 
-    def __init__(self, value=100, kills=0):
-        self.value, self.kills = value, kills
+    def __init__(self, value=100, kills=0, container="boot:1"):
+        self.value, self.kills, self.container = value, kills, container
 
     def describe(self):
         return "fake RAM"
@@ -40,8 +40,41 @@ class FakeRam:
     def oom_kills(self):
         return self.kills
 
+    def identity(self):
+        return self.container
+
     def open_peak_window(self):
         return None
+
+
+class RawPeak:
+    """memory.peak through a descriptor: usage with page cache, above the working set."""
+
+    def __init__(self, raw):
+        self.raw = raw
+
+    def close(self):
+        return self.raw
+
+
+class FakeGpu:
+    """torch's CUDA peak counter: max since the last reset."""
+
+    def __init__(self):
+        self.now, self.top = 0, 0
+
+    def read(self):
+        return {"vram": self.now}
+
+    def alloc(self, n):
+        self.now = n
+        self.top = max(self.top, n)
+
+    def reset_peak(self):
+        self.top = self.now
+
+    def peak(self):
+        return {"vram_peak": self.top}
 
 
 class Probe:
@@ -236,6 +269,93 @@ def test_armed_run_records_nodes(mon, hk, bcnodes, tmp_path):
     assert not m.armed_next  # one run only
 
 
+def test_node_ram_peak_is_the_working_set_and_memory_peak_stays_apart(mon, hk, bcnodes, tmp_path):
+    """ram_start, ram_end and the sampled RAM are the working set; cgroup memory.peak also counts page cache,
+    so the node's ram_peak is the working set's peak and memory.peak is ram_peak_raw. Emulate's transient
+    (ram_peak - ram_start - outputs) then counts no page cache."""
+    ram = FakeRam(100)
+    ram.open_peak_window = lambda: RawPeak(5000)  # files read during the node filled the page cache
+    m = make_monitor(mon, tmp_path, ram)
+
+    def grows(uid, caches, executed, execution_list):
+        ram.value = 400
+        m._tick(live=False)  # a sample during the node
+        ram.value = 200
+        return produce(uid, caches, executed, execution_list)
+    module = fake_execution(grows)
+    m.hook = hk.Hook(module, m)
+    m.hook.install()
+    m.arm(True)
+    m.probe.prompt = "p1"
+    caches, executed, el = types.SimpleNamespace(outputs=Cache()), set(), types.SimpleNamespace(execution_cache={})
+    call_execute(module, "1", caches, executed, el)
+    with m._lock:
+        m._end_run("success")
+    end = [r for r in records(bcnodes, tmp_path) if r["type"] == "node_end"][0]
+    assert (end["ram_start"], end["ram_peak"], end["ram_end"], end["ram_peak_raw"]) == (100, 400, 200, 5000)
+    assert end["peak_source"].startswith("sampler maximum")
+
+
+def test_run_vram_peak_is_torchs_peak_across_the_node_resets(mon, hk, bcnodes, tmp_path):
+    """An armed run resets torch's peak at every node start for the node's own peak; the run's peak keeps
+    each node's and what came between."""
+    m = make_monitor(mon, tmp_path)
+    m.gpu = gpu = FakeGpu()
+    peaks = {"1": 700, "2": 300}
+
+    def spikes(uid, caches, executed, execution_list):
+        gpu.alloc(peaks[uid])
+        gpu.alloc(50)  # freed before the sampler saw it
+        return produce(uid, caches, executed, execution_list)
+    module = fake_execution(spikes)
+    m.hook = hk.Hook(module, m)
+    m.hook.install()
+    m.arm(True)
+    m.probe.prompt = "p1"
+    caches, executed, el = types.SimpleNamespace(outputs=Cache()), set(), types.SimpleNamespace(execution_cache={})
+    gpu.alloc(900)  # before the run: not the run's
+    gpu.alloc(10)
+    call_execute(module, "1", caches, executed, el)
+    gpu.alloc(800)  # between the nodes: before node 2's reset
+    gpu.alloc(50)
+    call_execute(module, "2", caches, executed, el)
+    with m._lock:
+        m._end_run("success")
+    recs = records(bcnodes, tmp_path)
+    assert [r["vram_peak"] for r in recs if r["type"] == "node_end"] == [700, 300]
+    assert recs[-1]["type"] == "end" and recs[-1]["vram_peak"] == 800
+    bb = bcnodes["pipelines.process_monitor.blackbox"]
+    assert bb.run_report(recs)["vram_peak"] == 800
+
+
+def test_a_sampler_error_ends_the_run_with_its_end_record(mon, hk, bcnodes, tmp_path, monkeypatch, caplog):
+    """The sampler thread that dies of an error writes the run's end record first: a run without one
+    reads as a crash at the next start. The hook stops too: no run starts without the sampler."""
+    module = fake_execution(produce)
+    ram = FakeRam(100)
+    monkeypatch.setattr(mon, "PERIOD", 0.001)
+    monkeypatch.setattr(mon, "find", lambda: (module, None))
+    monkeypatch.setattr(mon.memory_sources, "ram_source", lambda: ram)
+    monkeypatch.setattr(mon.memory_sources, "gpu_source", lambda: None)
+    m = mon.Monitor(str(tmp_path), TickingProbe(), platform="linux")
+    m.start()
+    try:
+        m.probe.prompt = "p1"
+        m.probe.sampled()
+        assert m.run is not None
+
+        def broken():
+            raise OSError("cgroup file gone")
+        ram.read = broken
+        m._thread.join(5)
+        assert not m._thread.is_alive() and "cgroup file gone" in m.error
+    finally:
+        m.stop()
+    end = records(bcnodes, tmp_path)[-1]
+    assert end["type"] == "end" and end["status"].startswith("monitor stopped during the run")
+    assert module.execute is not m.hook.wrapper and m.run is None
+
+
 def test_cached_and_pending_nodes(mon, hk, bcnodes, tmp_path):
     m = make_monitor(mon, tmp_path)
     calls = {"n": 0}
@@ -369,7 +489,8 @@ def run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, node, ram, hooked
     hook, the run armed (hooked; else as on a ComfyUI without the hook point: the sampler looks for the
     execution thread on every thread's stack at every tick), the black box on, the sampler thread
     ticking every millisecond. The garbage collector is paused, as it practically is in a GPU loop that
-    allocates as much as it frees: only reference counting frees. Returns the run's records."""
+    allocates as much as it frees: only reference counting frees. ram is a FakeRam or its value. Returns
+    the run's records."""
     def behaviour(uid, caches, executed, execution_list):
         node(probe)
         executed.add(uid)
@@ -378,7 +499,8 @@ def run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, node, ram, hooked
     module, probe = fake_execution(behaviour), TickingProbe()
     monkeypatch.setattr(mon, "PERIOD", 0.001)
     monkeypatch.setattr(mon, "find", lambda: (module, None) if hooked else (None, "no hook point"))
-    monkeypatch.setattr(mon.memory_sources, "ram_source", lambda: FakeRam(ram))
+    ram = ram if isinstance(ram, FakeRam) else FakeRam(ram)
+    monkeypatch.setattr(mon.memory_sources, "ram_source", lambda: ram)
     monkeypatch.setattr(mon.memory_sources, "gpu_source", lambda: None)
     m = mon.Monitor(str(tmp_path), probe, platform="linux")
     m.start()
@@ -397,13 +519,16 @@ def run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, node, ram, hooked
     return records(bcnodes, tmp_path)
 
 
-def slice_loop(survived, slices=20):
+def slice_loop(survived, slices=20, ram=None):
     """A node's loop over time slices, as SeedVR2's encode: each iteration makes its tensors in a call of
     its own (the model's encode) while the monitor's sampler reads the stack, then appends to survived
-    how many of them are still alive when the iteration ends."""
+    how many of them are still alive when the iteration ends. With ram (a FakeRam), the first encode
+    raises it past the threshold before the sampler reads the stack: the snapshot is taken inside encode."""
     def encode(x, refs, probe):  # the model call: its activations live in this frame
         h = x * 2
         refs.append(weakref.ref(h))
+        if ram is not None:
+            ram.value = 900
         probe.sampled()  # the sampler reads the stack while h is alive
         return h.sum(dim=0)
 
@@ -424,14 +549,20 @@ def test_a_node_loop_frees_every_iteration_under_the_monitor(mon, bcnodes, tmp_p
     reference cycle, and every call of the node that ended while kept kept its locals until the garbage
     collector ran. Under the whole monitor, with the RAM threshold's snapshot taken during the loop,
     every tensor of an iteration is freed when the iteration ends, as without the monitor; the records
-    are all there."""
-    survived = []
-    recs = run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, slice_loop(survived), ram=900)
+    are all there. RAM crosses the threshold inside the first encode: a RAM over it from the start would
+    take the snapshot at the run's first sample, wherever the execution thread is then (the hook's node
+    start, the loop between two encodes), and the stack would miss encode. A sample can also land before
+    the node's start and between its end and the run's end (all three made this test flaky)."""
+    survived, ram = [], FakeRam(100)
+    recs = run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, slice_loop(survived, ram=ram), ram=ram)
     assert survived == [0] * 20, f"tensors alive after each iteration: {survived}"
-    kinds = [r["type"] for r in recs]
-    assert kinds[:3] == ["start", "cached", "node"] and kinds[-2:] == ["node_end", "end"]
-    assert recs[-2]["state"] == "executed" and recs[-2]["node"] == "2"
-    samples = [r for r in recs if r["type"] == "sample"]
+    # the sampler may log a sample between the node's end and the run's end (the queue still runs it)
+    assert [r["type"] for r in recs if r["type"] not in ("sample", "snapshot")] == ["start", "cached", "node", "node_end", "end"]
+    end = [r for r in recs if r["type"] == "node_end"][0]
+    assert end["state"] == "executed" and end["node"] == "2"
+    # the sampler may start the run from the queue before the hook's node start: those samples name no node
+    node_t = [r for r in recs if r["type"] == "node"][0]["t"]
+    samples = [r for r in recs if r["type"] == "sample" and r["t"] >= node_t]
     assert len(samples) >= 40 and all(s["node"] == "2" and s["class_type"] == "Grow" for s in samples)
     assert any(s.get("line", "").endswith(" sampled") and "test_pipe_process_monitor_monitor.py" in s["line"] for s in samples)
     stack, full = [r for r in recs if r["type"] == "snapshot"]
@@ -534,6 +665,8 @@ def test_crash_after_restart(mon, bcnodes, tmp_path):
     report = second.crash()
     assert report["cause"]["kind"] == "oom_kill" and report["ram_last"] == 950 and report["snapshot"]["ram"] == 950
     assert second.last_run() is None
+    recreated = make_monitor(mon, tmp_path, FakeRam(kills=0, container="boot:2"))  # a new container: counter at 0 again
+    assert recreated.crash()["cause"]["kind"] == "recreated"
 
 
 def test_toggle_installs_and_removes_everything(mon, hk, tmp_path, monkeypatch):

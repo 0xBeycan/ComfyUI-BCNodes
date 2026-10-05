@@ -6,7 +6,8 @@ survives a process kill; only a machine crash loses it). One file per run, named
 so a name sort is a time sort; the last `keep` runs are kept.
 
 A run whose file has no end record and was written by another process (another `session`) did
-not end: crash_report explains it, with the cgroup's oom_kill counter as the confirmation.
+not end: crash_report explains it, with the cgroup's oom_kill counter as the confirmation when the
+cgroup is still the one the run started in (its identity in the start record).
 """
 
 import json
@@ -18,6 +19,7 @@ from typing import TypedDict
 FORMAT = 1
 _SWAP_STEP = 512 * 1024 * 1024  # host swap growth that counts as "fell into swap"
 _CURVE_POINTS = 150
+_AT_LIMIT = 0.97  # a last sample at this fraction of the RAM limit or above was at the limit
 
 
 class RunStart(TypedDict):
@@ -32,6 +34,7 @@ class RunStart(TypedDict):
     ram_source: str
     ram_limit: int
     oom_kills: int  # None outside a cgroup v2 / v1 with the counter
+    container: str  # the cgroup's identity (memory_sources.CgroupMemory.identity), None outside one
     models_loaded: list
     armed: bool
     threshold: float
@@ -76,8 +79,9 @@ class NodeEnd(TypedDict, total=False):
     seconds: float
     ram_start: int
     ram_end: int
-    ram_peak: int
+    ram_peak: int  # the working set's peak (as ram_start / ram_end), the sampler's maximum
     peak_source: str
+    ram_peak_raw: int  # cgroup memory.peak over the node, page cache included; absent without it
     vram_peak: int
     vram_reserved_peak: int
     outputs: list
@@ -115,11 +119,13 @@ class RunEnd(TypedDict):
     status: str
     seconds: float
     monitor: dict  # {"hook_s", "sampler_s", "snapshot_s", "total_s"}
+    vram_peak: int  # torch's peak allocated over the run (CUDA); absent without one
 
 
 class RunLog:
     """Appends records to one run file. Two threads write (the sampler and the hook on the execution
-    thread), so a line is written under a lock."""
+    thread), so a line is written under a lock, and the end record is the last line: it is written and
+    the file closed under one hold of the lock (finish)."""
 
     def __init__(self, path):
         self.path = path
@@ -136,6 +142,13 @@ class RunLog:
 
     def close(self):
         with self._lock:
+            self._file.close()
+
+    def finish(self, record):
+        """Writes the end record and closes the file: no line of the other thread lands after it."""
+        line = json.dumps(record, separators=(",", ":"), default=str) + "\n"
+        with self._lock:
+            self._file.write(line)
             self._file.close()
 
 
@@ -199,15 +212,15 @@ def _head_and_tail(path):
 
 
 def latest_crash(runs_dir, session):
-    """Path of the newest run when it has no end record and another process (another session) wrote
-    it, else None. Only the newest run counts: a later run that ended means the crash is history."""
-    files = run_files(runs_dir)
-    if not files:
-        return None
-    start, last_is_end = _head_and_tail(files[0])
-    if start is None or last_is_end or start.get("session") == session:
-        return None
-    return files[0]
+    """Path of the newest run of an earlier process (another session) when it has no end record, else
+    None. This session's runs are passed over, so the crash stays visible for the whole session; a
+    later run of an earlier session that ended means the crash is history."""
+    for path in run_files(runs_dir):
+        start, last_is_end = _head_and_tail(path)
+        if start is None or start.get("session") == session:
+            continue
+        return None if last_is_end else path
+    return None
 
 
 def latest_finished(runs_dir):
@@ -242,27 +255,40 @@ def _swap_note(samples):
     return None
 
 
-def _cause(start, oom_kills_now, platform):
-    before = start.get("oom_kills")
+def _cause(start, oom_kills_now, container_now, ram_last, platform):
+    """The verdict from the cgroup's oom_kill counter, compared only within one cgroup: a recreated
+    container (another identity) starts its counter again at 0."""
+    before, container = start.get("oom_kills"), start.get("container")
     if platform == "darwin":
         return {"kind": "no_oom_kill", "text": "macOS does not OOM-kill: the process ended for another reason "
                 "(crash, force quit, or a kill from outside). See the swap note for memory pressure."}
     if before is None or oom_kills_now is None:
         return {"kind": "unknown", "text": "no cgroup oom_kill counter to confirm an OOM kill (not in a memory-limited "
                 "container, or the kernel does not expose it)"}
+    if container is not None and container != container_now:
+        text = "the container was recreated after this run, so the oom_kill counter cannot confirm or rule out an OOM kill"
+        limit = start.get("ram_limit")
+        if ram_last is not None and limit and ram_last >= _AT_LIMIT * limit:
+            text += (f"; RAM was at the limit at the last sample ({ram_last / 2**30:.1f} of {limit / 2**30:.1f} GiB): "
+                     "an OOM kill is likely")
+        return {"kind": "recreated", "text": text}
     if oom_kills_now > before:
         return {"kind": "oom_kill", "text": f"OOM kill confirmed: the cgroup's oom_kill counter went from {before} to "
                 f"{oom_kills_now}"}
-    if oom_kills_now == before:
+    if oom_kills_now == before and container is not None:
         return {"kind": "not_oom", "text": f"not an OOM kill of this cgroup (oom_kill unchanged at {before}): another "
                 "crash, a kill from outside, or the host's own OOM killer"}
+    if oom_kills_now == before:
+        return {"kind": "unknown", "text": f"cannot confirm: the oom_kill counter is unchanged at {before}, but this run's "
+                "log has no container identity, and a container recreated since starts its counter again at 0"}
     return {"kind": "unknown", "text": f"cannot confirm: the oom_kill counter is lower than at the run's start "
             f"({oom_kills_now} < {before}), so the container was recreated"}
 
 
-def crash_report(records, oom_kills_now, platform):
+def crash_report(records, oom_kills_now, container_now, platform):
     """Why the run of `records` (no end record) died: cause, node, line, RAM at node start, the growth
-    curve, the tensors alive at the threshold snapshot and the cache total."""
+    curve, the tensors alive at the threshold snapshot and the cache total. oom_kills_now and
+    container_now are the RAM source's counter and identity now."""
     start = records[0]
     samples, nodes, snaps = _of(records, "sample"), _of(records, "node"), _of(records, "snapshot")
     last = samples[-1] if samples else {}
@@ -274,7 +300,7 @@ def crash_report(records, oom_kills_now, platform):
         growth = (recent[-1]["ram"] - recent[0]["ram"]) / (recent[-1]["t"] - recent[0]["t"])
     return {
         "prompt_id": start["prompt_id"], "workflow_id": start.get("workflow_id"), "started": start["t"],
-        "ran_s": round(t_last - start["t"], 2), "cause": _cause(start, oom_kills_now, platform),
+        "ran_s": round(t_last - start["t"], 2), "cause": _cause(start, oom_kills_now, container_now, last.get("ram"), platform),
         "ram_source": start.get("ram_source"), "ram_limit": start.get("ram_limit"),
         "node": last.get("node") or (node or {}).get("node"), "class_type": last.get("class_type") or (node or {}).get("class_type"),
         "line": last.get("line"), "top": last.get("top"), "ram_last": last.get("ram"),
@@ -322,7 +348,9 @@ def run_report(records):
         "armed": start.get("armed", False), "profile": profile,
         "ram_source": start.get("ram_source"), "ram_limit": start.get("ram_limit"),
         "ram_peak": max((s["ram"] for s in samples if s.get("ram") is not None), default=None),
-        "vram_peak": max((s["vram"] for s in samples if s.get("vram") is not None), default=None),
+        # torch's own peak over the run where it keeps one (CUDA), else the sampled maximum (MPS, older logs)
+        "vram_peak": max((v for v in [end.get("vram_peak")] + [s.get("vram") for s in samples] if v is not None),
+                         default=None),
         "vram_device_peak": max((s["vram_device"] for s in samples if s.get("vram_device") is not None), default=None),
         "nodes": _node_rows(records),
         "timeline": _timeline(start, _of(records, "node"), end),

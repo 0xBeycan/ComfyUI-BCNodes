@@ -115,6 +115,7 @@ def estimate(prompt, env, scenario=None, measured=None, weight_cache=None):
             # the measured node replaces the formula; downstream profiles keep the formula shapes
             added = m.get("new_bytes", m["output_bytes"])
             out_bytes = int(added * ratio)
+            # ram_peak and ram_start are the working set (page cache out: memory.peak is ram_peak_raw)
             transient = int(max(0, m["ram_peak"] - m["ram_start"] - added) * ratio)
             row["status"], row["note"] = "measured", f"measured run, scaled x{ratio:.2f}"
         row.update(output_bytes=out_bytes, transient=transient)

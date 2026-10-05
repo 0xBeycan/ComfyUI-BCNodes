@@ -16,10 +16,10 @@ def bb(bcnodes):
     return bcnodes["pipelines.process_monitor.blackbox"]
 
 
-def start(session="old", oom_kills=0, platform="linux", loaded=(), armed=False):
+def start(session="old", oom_kills=0, platform="linux", loaded=(), armed=False, container="boot:1"):
     return {"type": "start", "v": 1, "session": session, "prompt_id": "p-1", "workflow_id": "wf", "t": 100.0, "pid": 7,
             "platform": platform, "ram_source": "cgroup v2 at /sys/fs/cgroup", "ram_limit": 2 * GIB, "oom_kills": oom_kills,
-            "models_loaded": list(loaded), "armed": armed, "threshold": 0.85}
+            "container": container, "models_loaded": list(loaded), "armed": armed, "threshold": 0.85}
 
 
 def sample(t, ram, node="5", line="/x/custom_nodes/pack/nodes.py:120 load", **extra):
@@ -41,6 +41,28 @@ def test_writer_and_reader(bb, tmp_path):
     recs = [start(), sample(100.1, GIB), {"type": "end", "t": 101.0, "status": "success", "seconds": 1.0, "monitor": {}}]
     write(bb, path, recs)
     assert bb.read_records(str(path)) == recs and bb.ended(recs)
+
+
+def test_the_end_record_is_the_last_line(bb, tmp_path):
+    """finish writes the end record and closes under one hold of the lock: a line the other thread
+    writes after it is dropped, never written behind the end (the run would read as crashed)."""
+    path = tmp_path / "run.jsonl"
+    log = bb.RunLog(str(path))
+    log.write(start())
+    real = log._lock
+
+    class Interleaving:  # the other thread's write arrives the moment the end record's lock is let go
+        def __enter__(self):
+            return real.__enter__()
+
+        def __exit__(self, *exc):
+            real.__exit__(*exc)
+            log._lock = real
+            log.write(sample(2.0, 1))
+
+    log._lock = Interleaving()
+    log.finish({"type": "end", "t": 3.0, "status": "success", "seconds": 1.0, "monitor": {}})
+    assert [r["type"] for r in bb.read_records(str(path))] == ["start", "end"]
 
 
 def test_lines_reach_the_file_before_close(bb, tmp_path):
@@ -106,8 +128,24 @@ def test_crash_detected_only_for_another_session_without_end(bb, tmp_path):
     assert bb.latest_finished(str(runs))[0]["session"] == "new"
 
 
-def crashed_run(bb, oom_kills=0, platform="linux", swap=None):
-    recs = [start(oom_kills=oom_kills, platform=platform)]
+def test_a_crash_stays_visible_for_the_whole_next_session(bb, tmp_path):
+    """The crash of an earlier process stays shown while this session runs prompts, finished or running;
+    a finished run of an earlier session after it makes it history."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    end = {"type": "end", "t": 1, "status": "success", "seconds": 1, "monitor": {}}
+    write(bb, runs / "20260101-000001-000-p.jsonl", [start(session="old"), sample(100.1, GIB)])
+    write(bb, runs / "20260101-000002-000-q.jsonl", [start(session="now"), end])
+    write(bb, runs / "20260101-000003-000-r.jsonl", [start(session="now"), sample(100.1, GIB)])  # running
+    found = bb.latest_crash(str(runs), session="now")
+    assert found is not None and os.path.basename(found).startswith("20260101-000001")
+    assert bb.latest_crash(str(runs), session="later") is not None  # this session's running run, seen from the next
+    write(bb, runs / "20260101-000000-000-o.jsonl", [start(session="older"), end])  # older than the crash: no change
+    assert bb.latest_crash(str(runs), session="now") == found
+
+
+def crashed_run(bb, oom_kills=0, platform="linux", swap=None, container="boot:1", ram_last=None):
+    recs = [start(oom_kills=oom_kills, platform=platform, container=container)]
     recs.append({"type": "node", "t": 100.5, "node": "5", "display": "5", "class_type": "LoadThing", "ram": 300 << 20,
                  "cache": 0, "inputs": []})
     for i in range(30):
@@ -116,13 +154,16 @@ def crashed_run(bb, oom_kills=0, platform="linux", swap=None):
     recs.append({"type": "snapshot", "t": 103.5, "ram": int(1.75 * GIB), "ram_limit": 2 * GIB, "threshold": 0.85, "node": "5",
                  "class_type": "LoadThing", "line": "/x/custom_nodes/pack/nodes.py:120 load",
                  "census": {"groups": [{"count": 3, "shape": [609, 1280, 720, 3], "dtype": "float32", "device": "cpu",
-                                        "bytes_each": 6735052800, "bytes": 3 * 6735052800}], "small_bytes": 0, "total_bytes": 0},
+                                        "bytes_each": 6735052800, "bytes": 3 * 6735052800}], "small_bytes": 0,
+                                        "by_device": {"cpu": 3 * 6735052800}},
                  "stack": ["  File x, line 1\n"], "seconds": 0.4, "stopped": False})
+    if ram_last is not None:
+        recs.append(sample(103.6, ram_last))
     return recs
 
 
 def test_crash_report_names_node_line_tensors_and_confirms_the_oom_kill(bb):
-    r = bb.crash_report(crashed_run(bb, oom_kills=2), oom_kills_now=3, platform="linux")
+    r = bb.crash_report(crashed_run(bb, oom_kills=2), oom_kills_now=3, container_now="boot:1", platform="linux")
     assert r["cause"]["kind"] == "oom_kill" and "2 to 3" in r["cause"]["text"]
     assert (r["node"], r["class_type"], r["line"]) == ("5", "LoadThing", "/x/custom_nodes/pack/nodes.py:120 load")
     assert r["node_start"]["ram"] == 300 << 20 and r["cache"] == 0
@@ -133,14 +174,29 @@ def test_crash_report_names_node_line_tensors_and_confirms_the_oom_kill(bb):
 
 @pytest.mark.parametrize("before,now,kind", [(1, 1, "not_oom"), (5, 0, "unknown"), (None, 1, "unknown"), (1, None, "unknown")])
 def test_crash_cause_without_a_confirmed_oom_kill(bb, before, now, kind):
-    assert bb.crash_report(crashed_run(bb, oom_kills=before), now, "linux")["cause"]["kind"] == kind
+    assert bb.crash_report(crashed_run(bb, oom_kills=before), now, "boot:1", "linux")["cause"]["kind"] == kind
+
+
+def test_a_recreated_container_neither_confirms_nor_rules_out(bb):
+    """A container recreated after an OOM kill starts its oom_kill counter again at 0, equal to the run's
+    start: the counter is compared only within the cgroup the run started in."""
+    r = bb.crash_report(crashed_run(bb, oom_kills=0), 0, "boot:2", "linux")
+    assert r["cause"]["kind"] == "recreated" and "cannot confirm or rule out" in r["cause"]["text"]
+    assert "at the limit" not in r["cause"]["text"]  # the last sample was at 1.8 of 2 GiB
+    r = bb.crash_report(crashed_run(bb, oom_kills=0, ram_last=int(1.97 * GIB)), 0, "boot:2", "linux")
+    assert r["cause"]["kind"] == "recreated"
+    assert "RAM was at the limit at the last sample (2.0 of 2.0 GiB): an OOM kill is likely" in r["cause"]["text"]
+    # an older log without the identity: equal at 0 is never "not an OOM kill"
+    r = bb.crash_report(crashed_run(bb, oom_kills=0, container=None), 0, "boot:1", "linux")
+    assert r["cause"]["kind"] == "unknown" and "no container identity" in r["cause"]["text"]
+    assert bb.crash_report(crashed_run(bb, oom_kills=0, container=None), 1, "boot:1", "linux")["cause"]["kind"] == "oom_kill"
 
 
 def test_macos_says_fell_into_swap(bb):
-    r = bb.crash_report(crashed_run(bb, platform="darwin", swap=GIB), None, "darwin")
+    r = bb.crash_report(crashed_run(bb, platform="darwin", swap=GIB), None, None, "darwin")
     assert r["cause"]["kind"] == "no_oom_kill"
     assert r["swap"]["text"].startswith("fell into swap") and r["swap"]["node"] == "5"
-    assert bb.crash_report(crashed_run(bb, platform="darwin", swap=None), None, "darwin")["swap"] is None
+    assert bb.crash_report(crashed_run(bb, platform="darwin", swap=None), None, None, "darwin")["swap"] is None
 
 
 def test_run_report(bb):
@@ -163,6 +219,8 @@ def test_run_report(bb):
     assert r["timeline"] == [{"node": "5", "display": "5", "class_type": "X", "ram": GIB, "cache": 0, "at": 0.15, "seconds": 1.85}]
     assert bb.run_report([start(), recs[-1]])["profile"].startswith("first run")
     assert bb.run_report([start(), recs[-1]])["vram_device_peak"] is None
+    # torch's peak over the run (the end record) where the device keeps one: above every 100 ms sample
+    assert bb.run_report(recs[:-1] + [dict(recs[-1], vram_peak=5 * GIB)])["vram_peak"] == 5 * GIB
 
 
 def test_run_report_timeline_seconds(bb):
