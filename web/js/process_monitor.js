@@ -437,12 +437,15 @@ function settingsTab() {
 	const stop = el("input", { type: "checkbox" });
 	stop.checked = !!s.stop_at_threshold;
 	const keep = el("input", { type: "number", min: "1", max: "500", step: "1", value: s.keep_runs ?? 20 });
+	const dropStale = el("input", { type: "checkbox" });
+	dropStale.checked = !!s.drop_stale_outputs;
 	const msg = el("div", {});
 	const save = el("button", { class: "bcpm-btn" }, "Save");
 	save.onclick = async () => {
 		try {
 			state.status = await call("settings", { black_box: blackBox.checked, threshold: Number(threshold.value),
-				stop_at_threshold: stop.checked, keep_runs: Number(keep.value) });
+				stop_at_threshold: stop.checked, keep_runs: Number(keep.value),
+				drop_stale_outputs: dropStale.checked });
 			msg.replaceChildren(el("span", { class: "bcpm-ok" }, "Saved."));
 		} catch (e) {
 			msg.replaceChildren(el("span", { class: "bcpm-bad" }, String(e.message ?? e)));
@@ -455,7 +458,10 @@ function settingsTab() {
 		row("Threshold (fraction of the RAM limit) for the tensor snapshot", threshold),
 		row("Experimental: stop the prompt at the threshold", stop,
 			"Works only inside nodes that check ComfyUI's interrupt (e.g. between sampler steps); a running torch.stack or np.fromiter cannot be stopped."),
-		row("Run logs kept", keep), save, msg);
+		row("Run logs kept", keep),
+		row("Drop stale outputs: each new prompt frees the cached outputs it does not use", dropStale,
+			"Works with the monitor off. Like --cache-classic: going back to an earlier input recomputes it. Models stay loaded."),
+		save, msg);
 }
 
 const RENDER = { "Live": liveTab, "Emulate": emulateTab, "Last run": lastRunTab, "Crash": crashTab, "Settings": settingsTab };

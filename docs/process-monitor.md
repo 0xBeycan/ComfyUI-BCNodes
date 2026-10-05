@@ -12,7 +12,7 @@ Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_moni
 | Emulate | An estimate of the current workflow, labelled *rough estimate; a real measurement exists only after the workflow has run once* (below) |
 | Last run | The last finished run: status, run time, the monitor's own time (`run 2.9 s, monitor 4.9 ms (0.17%)`), the RAM peak, two VRAM peaks (device: the whole card as nvidia-smi sees it, NVML or `cudaMemGetInfo`, weights ComfyUI keeps on the card included; torch allocated: the work's own tensors, without weights loaded outside torch's allocator), and the per-node table of an armed run; without one, the node starts the black box logged, each with its time until the next node starts (the last until the run ends). A row click selects and centres the node; a node inside a subgraph centres its subgraph node |
 | Crash | The report of a run that ended without an end record (below) |
-| Settings | Black box on / off, the snapshot threshold, the experimental stop, how many run logs are kept |
+| Settings | Black box on / off, the snapshot threshold, the experimental stop, how many run logs are kept, and drop stale outputs (below) |
 
 **Sources.**
 
@@ -42,6 +42,10 @@ Not a node: server code (`nodes/process_monitor.py` over `pipelines/process_moni
 The outcome comes as a ComfyUI toast, *Full clear*, so the bar never widens: `Cleared: RAM 12.4 GB → 3.10 GB, VRAM …` (5 s), with `· 1 hook(s) failed` as a warning when a pack's hook raised, or `Not cleared: …` as an error with the reason (a prompt runs or waits, another clear runs, ComfyUI's free did not finish); both stay 15 s. A frontend without the toast API gets a console line instead. The button's tooltip has the details of the last clear: RAM and VRAM reserved before and after against the baseline, one line per step with what it found (each hook's models and weights, or its error), and the bytes of the tensors something still references after the clear. The route answers with the full report (every reading before and after against the baseline, what each step freed, the census of the remaining tensors), for a script that calls it.
 
 What the clear cannot free, and a restart would: a model or tensor a pack without a hook keeps in its own cache (it shows in that list), and the libraries and GPU kernels loaded during the run. The page cache (files read or mapped, the container's `file`) is shown, not dropped: the kernel takes it back when memory runs short, and a restart keeps it too. The next run loads its models again, so it starts slower.
+
+**Drop stale outputs** (off by default), in the Settings tab, gives ComfyUI's output cache the classic cache's behaviour: when a prompt starts, every cached node output it does not use is freed at once, so the tensors of an earlier input never wait for RAM pressure. Going back to an earlier input recomputes it. Models stay loaded (the full clear unloads them). It works with the monitor on or off: it applies when ComfyUI starts, from the saved settings, and live when changed. No ComfyUI file is edited; turning it off restores what was there.
+
+ComfyUI older than the upstream cgroup fix (#15927) does not see a container's RAM limit, so its RAM-pressure cache never frees old outputs there; in a container either update ComfyUI or start it with `--cache-classic` (or turn drop stale outputs on).
 
 **Stop at the threshold** (experimental, off by default) interrupts the prompt when the snapshot is taken. It only works inside nodes that check ComfyUI's interrupt (between sampler steps, for example); a running `torch.stack` or `np.fromiter` cannot be stopped.
 

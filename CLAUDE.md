@@ -48,7 +48,9 @@ pipelines/seedvr2/            resize, encode, decode, postprocess, compact flows
                               card); progress; shared constants
 pipelines/process_monitor/    monitor (sampler thread, runs, per-node records, snapshot), hook (the executor hook),
                               blackbox (run logs, reports), emulate + profiles (estimate, per-node-type costs), settings,
-                              clear (the full clear: its steps, each measured against the startup baseline)
+                              clear (the full clear: its steps, each measured against the startup baseline),
+                              drop_stale (drop stale outputs: a hook on ComfyUI's output cache, applied monitor
+                              on or off)
 models/common/                registry.py (families matting and depth; a depth entry is a loader returning
                               `predict`), download.py (fetch_with_progress)
 models/birefnet/              checkpoints (registered under MATTING), weights, loader, inference, arch/ (vendored, MIT)

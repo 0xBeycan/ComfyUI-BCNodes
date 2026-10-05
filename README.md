@@ -51,7 +51,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_SkinTexture` | [Skin Texture](docs/image.md#bc_skintexture--skin-texture) | Micro-texture on skin inside a SAM 3 mask: boosts the image's own detail and multiplies in a synthetic pore field, in linear light |
 | `BC_FrequencyMerge` | [Frequency Merge](docs/image.md#bc_frequencymerge--frequency-merge) | The low frequencies (structure, colour) of one image + the high frequencies (texture, fine detail) of another of the same size, split by a Gaussian |
 | — | [Align](docs/workflow.md#align) | Align / distribute buttons in the selection toolbox |
-| — | [Process Monitor](docs/process-monitor.md) | Not a node: live RAM / VRAM bars, an estimate before a run, per-node measurement, the reason a killed run died, and a full clear back to the startup memory without a restart (see [Process Monitor](docs/process-monitor.md)) |
+| — | [Process Monitor](docs/process-monitor.md) | Not a node: live RAM / VRAM bars, an estimate before a run, per-node measurement, the reason a killed run died, a full clear back to the startup memory without a restart, and a drop stale outputs setting (off) (see [Process Monitor](docs/process-monitor.md)) |
 
 Registration keys are BCNodes' own, so the packages above can be installed side by side without a clash. Type `BCNodes` in the node library to see them all; in the menu they sit in these groups:
 

@@ -65,6 +65,7 @@ ComfyUI-BCNodes/
       clear.py             the full clear: its steps, each measured against the startup baseline
       profiles.py          per-node-type cost profiles for Emulate
       settings.py          the monitor's settings file
+      drop_stale.py        the drop stale outputs setting (a hook on ComfyUI's output cache)
   models/                  one package per model; __init__.py imports those that register
     common/
       registry.py          model families (matting, depth): register / names / get

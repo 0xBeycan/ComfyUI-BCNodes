@@ -3,6 +3,7 @@
 `enabled` mirrors the ComfyUI setting "BCNodes.ProcessMonitor.Enabled": the frontend posts every
 change, and this copy lets the monitor start with ComfyUI when no browser is open (a pod queued
 through the API). On by default, like the ComfyUI setting. The rest are the modal's Settings tab.
+`drop_stale_outputs` (drop_stale.py) applies with the monitor on or off.
 """
 
 import json
@@ -17,6 +18,7 @@ class MonitorSettings:
     threshold: float = 0.85  # fraction of the RAM limit that triggers the snapshot (and the stop)
     stop_at_threshold: bool = False  # experimental: interrupt the prompt at the threshold
     keep_runs: int = 20  # run logs kept (pod disks are small)
+    drop_stale_outputs: bool = False  # each prompt frees the cached outputs it does not use (classic cache)
 
 
 _RANGES = {"threshold": (0.5, 0.99), "keep_runs": (1, 500)}

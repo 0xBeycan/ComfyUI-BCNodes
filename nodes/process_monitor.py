@@ -8,8 +8,10 @@ imported inside the functions that use them.
 
 At startup the monitor runs when its saved setting says so (user/BCNodes/process_monitor/
 settings.json, written by the ComfyUI setting "BCNodes.ProcessMonitor.Enabled"; on when there is no
-file), so a server queued through the API without a browser still gets the black box. Once every
-custom node has loaded (the server's startup), the full clear's baseline is read, monitor on or off.
+file), so a server queued through the API without a browser still gets the black box. Drop stale
+outputs (pipelines/process_monitor/drop_stale.py) applies from the same file at import, monitor on
+or off, and again on every settings change. Once every custom node has loaded (the server's
+startup), the full clear's baseline is read, monitor on or off.
 
 The full clear drops the packs' own model caches through `bc_full_clear_hooks`, a list on
 PromptServer.instance (a contract shared with ComfyUI-BCVideoNodes, locked): whichever pack registers
@@ -178,6 +180,13 @@ def _register():
         logging.error("[BCNodes] Process Monitor: cannot read %s (%s); the monitor stays off. Delete the file to reset it.",
                       user_file(os.path.join("process_monitor", "settings.json")), e)
         return None
+    from ..pipelines.process_monitor.drop_stale import DropStaleSetting
+
+    drop_stale = DropStaleSetting()
+    try:
+        drop_stale.apply(monitor.settings)
+    except Exception:  # never stop the pack's import; ComfyUI's own cache stays as it is
+        logging.exception("[BCNodes] drop stale outputs could not be applied")
     env = ComfyEnv()
     routes = server.routes
 
@@ -227,6 +236,7 @@ def _register():
             monitor.update_settings(await request.json())
         except ValueError as e:
             return fail(e)
+        drop_stale.apply(monitor.settings)
         return web.json_response(await off_loop(status))
 
     @routes.get("/bcnodes/monitor/live")
