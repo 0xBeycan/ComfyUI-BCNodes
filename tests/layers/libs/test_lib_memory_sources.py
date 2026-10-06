@@ -335,3 +335,32 @@ def test_cuda_pinned_host_cache(ms, monkeypatch):
     del fake.host_memory_stats
     assert ms.CudaMemory(None).pinned_cache() is None
     assert ms.MpsMemory().pinned_cache() is None
+
+
+def test_cuda_enter_thread_switches_the_calling_thread_to_relaxed_capture(ms, monkeypatch):
+    """The sampler thread's reads must not break a CUDA graph capture in another thread: the driver's
+    per-thread capture mode goes to relaxed (2), and a driver error is raised, never ignored."""
+    fake = FakeCuda()
+    monkeypatch.setattr(ms.torch, "cuda", fake)
+    opened, modes = [], []
+
+    def exchange(ref):
+        modes.append(ref._obj.value)
+        ref._obj.value = 0  # the previous mode, global
+        return status[0]
+
+    def cdll(name):
+        opened.append(name)
+        return types.SimpleNamespace(cuThreadExchangeStreamCaptureMode=exchange)
+
+    status = [0]
+    monkeypatch.setattr(ms.ctypes, "CDLL", cdll)
+    monkeypatch.setattr(ms.sys, "platform", "linux")
+    ms.CudaMemory(None).enter_thread()
+    assert opened == ["libcuda.so.1"] and modes == [2]
+    monkeypatch.setattr(ms.sys, "platform", "win32")
+    status[0] = 201  # CUDA_ERROR_INVALID_CONTEXT
+    with pytest.raises(RuntimeError, match="CUresult 201"):
+        ms.CudaMemory(None).enter_thread()
+    assert opened[-1] == "nvcuda.dll"
+    ms.MpsMemory().enter_thread()  # nothing to do

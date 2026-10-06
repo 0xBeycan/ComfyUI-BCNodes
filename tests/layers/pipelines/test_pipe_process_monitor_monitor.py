@@ -62,8 +62,13 @@ class FakeGpu:
 
     def __init__(self):
         self.now, self.top = 0, 0
+        self.entered, self.readers = [], set()
+
+    def enter_thread(self):
+        self.entered.append(threading.get_ident())
 
     def read(self):
+        self.readers.add(threading.get_ident())
         return {"vram": self.now}
 
     def alloc(self, n):
@@ -354,6 +359,25 @@ def test_a_sampler_error_ends_the_run_with_its_end_record(mon, hk, bcnodes, tmp_
     end = records(bcnodes, tmp_path)[-1]
     assert end["type"] == "end" and end["status"].startswith("monitor stopped during the run")
     assert module.execute is not m.hook.wrapper and m.run is None
+
+
+def test_the_sampler_thread_enters_the_gpu_source_before_its_first_read(mon, tmp_path, monkeypatch):
+    """A CUDA read from the sampler thread during another thread's graph capture aborts the process
+    unless the sampler thread switched itself to the relaxed capture mode first (CudaMemory.enter_thread)."""
+    gpu = FakeGpu()
+    monkeypatch.setattr(mon, "PERIOD", 0.001)
+    monkeypatch.setattr(mon, "LIVE_EVERY", 1)
+    monkeypatch.setattr(mon, "find", lambda: (None, "no hook in this test"))
+    monkeypatch.setattr(mon.memory_sources, "ram_source", lambda: FakeRam())
+    monkeypatch.setattr(mon.memory_sources, "gpu_source", lambda: gpu)
+    m = mon.Monitor(str(tmp_path), TickingProbe(), platform="linux")
+    m.start()
+    try:
+        m.probe.sampled()
+        sampler = m._thread.ident
+    finally:
+        m.stop()
+    assert gpu.entered == [sampler] and gpu.readers == {sampler}
 
 
 def test_cached_and_pending_nodes(mon, hk, bcnodes, tmp_path):

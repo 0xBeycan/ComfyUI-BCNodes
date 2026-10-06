@@ -20,6 +20,7 @@ The full clear reads more: what the RAM is made of (the cgroup's memory.stat, th
 
 import ctypes
 import os
+import sys
 
 import torch
 
@@ -27,6 +28,7 @@ CGROUP_ROOT = "/sys/fs/cgroup"
 PROC_SELF_CGROUP = "/proc/self/cgroup"
 PROC_SELF_STATUS = "/proc/self/status"
 BOOT_ID = "/proc/sys/kernel/random/boot_id"
+CU_STREAM_CAPTURE_MODE_RELAXED = 2  # CUstreamCaptureMode (cuda.h)
 
 # The same counters under cgroup v2 and v1. v1's oom_kill line lives in memory.oom_control
 # (kernel 4.13+).
@@ -302,6 +304,21 @@ class CudaMemory:
         extra = "NVML for device use and GPU load" if self.nvml else "NVML not installed (pip package nvidia-ml-py): no GPU load, device use from cudaMemGetInfo"
         return f"CUDA {name}: torch allocator counters; {extra}"
 
+    def enter_thread(self):
+        """Lets the calling thread read these counters while another thread captures a CUDA graph.
+        torch captures in CUDA's global mode by default: during a capture, a call CUDA counts as unsafe
+        from any thread in the default (global) mode fails and invalidates that capture, and the
+        process aborts. Under the cudaMallocAsync backend (ComfyUI's default) the allocator counters
+        are such calls (cudaMemPoolGetAttribute), so is cudaMemGetInfo. The relaxed mode, which torch's
+        own allocator takes for its cudaMalloc during a capture, lets this thread's calls through
+        without touching the capture. The mode belongs to the thread: the sampler thread calls this
+        once, never ComfyUI's prompt worker (the thread that captures)."""
+        lib = ctypes.CDLL("nvcuda.dll" if sys.platform == "win32" else "libcuda.so.1")
+        mode = ctypes.c_int(CU_STREAM_CAPTURE_MODE_RELAXED)
+        status = lib.cuThreadExchangeStreamCaptureMode(ctypes.byref(mode))
+        if status != 0:
+            raise RuntimeError(f"cuThreadExchangeStreamCaptureMode failed with CUresult {status}")
+
     def read(self):
         out = {"vram": torch.cuda.memory_allocated(self.device), "vram_reserved": torch.cuda.memory_reserved(self.device)}
         if self.nvml is not None:
@@ -330,6 +347,9 @@ class MpsMemory:
     maximum stands in for it."""
 
     kind = "mps"
+
+    def enter_thread(self):
+        pass  # no graph capture to keep out of
 
     def describe(self):
         return "MPS (unified memory): torch.mps allocator counters, no device-wide use or GPU load"

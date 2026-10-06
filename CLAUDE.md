@@ -115,6 +115,12 @@ Rules that keep it cheap and safe:
   name: it holds the caller's own frame, and a local holding it is a cycle that keeps the running
   node's frames and locals (its tensors) alive until the cyclic collector runs, which a GPU loop
   that frees what it allocates almost never triggers (owner, 2026-10-03: the SeedVR2 encode OOM).
+- The sampler thread never breaks a CUDA graph capture in another thread: torch captures in CUDA's
+  global mode, where an allocator counter under cudaMallocAsync (cudaMemPoolGetAttribute) or
+  cudaMemGetInfo from any thread invalidates the capture and the process aborts. The sampler thread
+  switches itself to the relaxed capture mode before its first read (`CudaMemory.enter_thread`, the
+  mode torch's own allocator takes during a capture); the numbers stay the same calls. Never call it
+  from ComfyUI's prompt worker.
 - The full clear frees each part with the call that owns it, each step measured on its own:
   ComfyUI's own free (the `/free` flags, run by its prompt worker and waited for), the packs' own
   model caches (every hook in `bc_full_clear_hooks`, this pack's `release_pack_models` among them),

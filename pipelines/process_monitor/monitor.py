@@ -272,6 +272,8 @@ class Monitor:
         while not self._stop.wait(PERIOD):
             t0 = time.thread_time()
             try:
+                if tick == 0 and self.gpu is not None:
+                    self.gpu.enter_thread()  # before this thread's first CUDA read
                 self._tick(tick % LIVE_EVERY == 0)
             except Exception as e:  # keep the workflow running; the status shows the error
                 self.error = f"the sampler stopped after an error: {e!r}"
