@@ -22,6 +22,8 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_SelectSwitch` | [Select Switch](docs/logic.md#bc_selectswitch--select-switch) | Input of the selected named option, any type; only the selected branch runs |
 | `BC_Seed` | [Seed](docs/logic.md#bc_seed--seed) | Seed widget; `-1` draws a new random seed on every run |
 | `BC_ShowText` | [Show Text](docs/text.md#bc_showtext--show-text) | Shows incoming text on the node, passes it on |
+| `BC_QwenLM` | [Qwen LM](docs/lm.md#bc_qwenlm--qwen-lm) | Runs a Qwen chat model (Qwen3.5-4B / 9B, Qwen3.8-27B, Qwen3-VL-8B, and abliterated builds of Qwen3.5-9B and Qwen3-VL-8B) through ComfyUI core: system / user / prefill and images in, `text` and `thinking` out, with the official chat templates and sampling defaults and one LoRA; the model file is found in `models/Qwen-LM` or `models/text_encoders`, or downloaded on first use |
+| `BC_LMConfig` | [LM Config](docs/lm.md#bc_lmconfig--lm-config) | Sampling settings for an LM node: only the fields you change or link replace the model's official defaults |
 | `BC_ImageComparer` | [Image Comparer](docs/workflow.md#bc_imagecomparer--image-comparer) | Two images on the node, compared with a sliding divider |
 | `BC_PowerLoraLoader` | [Power Lora Loader](docs/loaders.md#bc_powerloraloader--power-lora-loader) | `MODEL` + any number of LoRA rows → `MODEL`, no CLIP; each LoRA with the key fix of Lora Loader (Key Fix) |
 | `BC_LoraLoaderKeyFix` | [Lora Loader (Key Fix)](docs/loaders.md#bc_loraloaderkeyfix--lora-loader-key-fix) | `MODEL` + one LoRA → `MODEL`, with the keys ComfyUI's own loader leaves out renamed first (lightx2v `.diff_m`, PEFT keys without the `diffusion_model.` prefix); the console says how many were renamed and how many match no module |
@@ -63,6 +65,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | [`BCNodes/postfx`](docs/postfx.md) | PostFx Apply, Theme, Custom Look, LUT, Signature Sheet |
 | [`BCNodes/analysis`](docs/analysis.md) | Image Quality Gate, Caption Audit |
 | [`BCNodes/text`](docs/text.md) | Prompt List, Show Text |
+| [`BCNodes/lm`](docs/lm.md) | Qwen LM, LM Config |
 | [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Lora Loader (Key Fix), Auto Model Downloader |
 | [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, Chunk Size, VAE Decode, PostProcess; Compact: Preprocess (Compact), PostProcess (Compact) |
 | [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
@@ -90,6 +93,7 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [PostFx](docs/postfx.md) — film-emulation looks: themes, custom looks, LUTs, signature sheets
 - [Analysis](docs/analysis.md) — the caption set audit and the image quality gate
 - [Text](docs/text.md) — prompt lists and showing text
+- [LM](docs/lm.md) — chat models through ComfyUI core: Qwen LM, LM Config, the models and their files, sampling, LoRAs, `models.yaml`
 - [Loaders](docs/loaders.md) — LoRA loading (with the key fix for LoRAs core loads only in part) and the model downloader
 - [SeedVR2](docs/seedvr2.md) — the downscale factor from the framing, the SeedVR2 input stage, streaming VAE encode / decode, the chunk size and the VAE tile for the card, post-processing
 - [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, Auto Bypass, the Align buttons

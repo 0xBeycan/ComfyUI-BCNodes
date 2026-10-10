@@ -10,8 +10,9 @@ The steps, in order, each measured on its own (a reading before and after it):
   pack_models   every hook in `bc_full_clear_hooks` on ComfyUI's server: each pack that keeps models
                 between runs outside ComfyUI's caches (which its free cannot drop) registers one that
                 drops them and returns {model name: bytes}. This pack's (release_pack_models: BiRefNet,
-                Depth Anything V2 and 3, SAM 3) is one of them. Each model loads again on its node's
-                next run. A hook that raises is reported by name; the clear goes on.
+                Depth Anything V2 and 3, SAM 3, and the model every LM backend holds, Qwen LM's) is one
+                of them. Each model loads again on its node's next run. A hook that raises is reported
+                by name; the clear goes on.
   garbage       gc.collect(): what only reference cycles kept after the steps above.
   torch_caches  ComfyUI's cast buffers (the VRAM it keeps for weights cast on the fly), the free blocks
                 of torch's caching allocator (CUDA or MPS, through ComfyUI's soft_empty_cache) and
@@ -122,14 +123,20 @@ def _comfyui_free(clear):
 
 
 def release_pack_models():
-    """This pack's full-clear hook: drops its model slots (BiRefNet, Depth Anything V2 and 3, SAM 3);
-    {model name: bytes of its weights}."""
+    """This pack's full-clear hook: drops its model slots (BiRefNet, Depth Anything V2 and 3, SAM 3) and
+    unloads every registered LM backend (models/common/registry.py LM_BACKEND: the LM nodes' model file
+    and LoRA clone); {model name: bytes of its weights}."""
     from ...models.birefnet import loader as birefnet
+    from ...models.common import registry
+    from ...models.common.registry import LM_BACKEND
     from ...models.depth_anything_3 import loader as depth_anything_3
     from ...models.depth_anything_v2 import loader as depth_anything_v2
     from ...models.sam3 import loader as sam3
 
-    return {**birefnet.unload(), **depth_anything_v2.unload(), **depth_anything_3.unload(), **sam3.unload()}
+    freed = {**birefnet.unload(), **depth_anything_v2.unload(), **depth_anything_3.unload(), **sam3.unload()}
+    for name in registry.names(LM_BACKEND):
+        freed.update(registry.get(LM_BACKEND, name).unload())
+    return freed
 
 
 def _call_hook(name, hook):

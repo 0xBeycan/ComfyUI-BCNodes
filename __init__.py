@@ -28,6 +28,8 @@ Nodes:
     BC_SelectSwitch              input of the selected named option, only that branch runs
     BC_Seed                      seed widget; -1 = new random seed every run
     BC_ShowText                  show incoming text on the node, pass it on
+    BC_QwenLM                    Qwen chat model (+ one LoRA, images) -> text, thinking; ComfyUI core runs it
+    BC_LMConfig                  sampling settings for an LM node, only the edited fields
     BC_ImageComparer             two images, divider comparison on the node
     BC_PowerLoraLoader           MODEL + LoRA rows -> MODEL (no CLIP)
     BC_LoraLoaderKeyFix          MODEL + one LoRA -> MODEL, keys core's loader drops renamed first
@@ -64,8 +66,8 @@ on by default; its ComfyUI setting turns it off.
 
 from .nodes import (
     any_switch, birefnet, caption_audit, depth_anything, downloader, everywhere, frequency_merge, image_comparer, image_quality_gate,
-    image_scale, lists, logic, lora_key_fix, mask, math_expression, postfx, power_lora_loader, prompt_list, save_image, save_image_with_caption,
-    seed, seedvr2, select_switch, show_text, skin_texture, social_media_export,
+    image_scale, lists, lm, logic, lora_key_fix, mask, math_expression, postfx, power_lora_loader, prompt_list, save_image,
+    save_image_with_caption, seed, seedvr2, select_switch, show_text, skin_texture, social_media_export,
 )
 from .nodes.common import register_link_stamp
 from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's routes and, when on, its sampler)
@@ -73,7 +75,7 @@ from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's route
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
-                image_comparer, power_lora_loader, lora_key_fix, everywhere, seedvr2,
+                lm, image_comparer, power_lora_loader, lora_key_fix, everywhere, seedvr2,
                 postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture,
                 frequency_merge):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)
@@ -81,6 +83,8 @@ for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downl
 
 # writes the link state of the heavy outputs into each prompt (nodes/common.py)
 register_link_stamp(NODE_CLASS_MAPPINGS)
+# GET /bcnodes/lm/catalog, the LM catalog web/js/lm.js reads (inside a running server only)
+lm.register_routes()
 
 WEB_DIRECTORY = "./web"
 

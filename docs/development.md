@@ -2,7 +2,7 @@
 
 ```
 ComfyUI-BCNodes/
-  __init__.py              assembles the mappings, nothing else
+  __init__.py              assembles the mappings; registers the link stamp and the LM catalog route
   nodes/
     logic.py               BC_LogicBoolean, BC_IsMaskEmpty
     mask.py                BC_MaskFillHoles, BC_MaskGrow, BC_DrawMaskOnImage, BC_BlockifyMask, BC_RepeatMaskBatch
@@ -14,6 +14,7 @@ ComfyUI-BCNodes/
     select_switch.py       BC_SelectSwitch
     seed.py                BC_Seed
     show_text.py           BC_ShowText
+    lm.py                  BC_QwenLM, BC_LMConfig + GET /bcnodes/lm/catalog; the Qwen-LM folder_paths key
     image_comparer.py      BC_ImageComparer
     power_lora_loader.py   BC_PowerLoraLoader
     lora_key_fix.py        BC_LoraLoaderKeyFix
@@ -45,6 +46,8 @@ ComfyUI-BCNodes/
                            caption extension check, save loop
     depth_anything.py      Depth Anything: output size (short side or cover + crop), per-frame normalisation
     lora.py                a LoRA file through core's conversion, the key fix and core's loader (both LoRA loaders)
+    lm.py                  the LM run (LMRequest -> LMResult): catalog, prompt checks, model file search / download,
+                           LoRA, sampling; the catalog route's data and the LoRA list
     caption_audit/
       audit.py             audit plumbing: package guard, allowed roots, run_audit, reports
       card.py              the fixed-size card
@@ -68,8 +71,15 @@ ComfyUI-BCNodes/
       drop_stale.py        the drop stale outputs setting (a hook on ComfyUI's output cache)
   models/                  one package per model; __init__.py imports those that register
     common/
-      registry.py          model families (matting, depth): register / names / get
+      registry.py          model families (matting, depth) and the LM families and backends (lm_family,
+                           lm_backend): register / names / get
       download.py          weight download with console progress
+      lm/                  the LM runtime the LM families share; registers the core backend
+        catalog.py         the models.yaml schema, the built-in file merged with the user's, errors naming file + entry
+        backend.py         the LMBackend protocol, GenerateParams, LoraSpec
+        core_backend.py    ComfyUI core: load_clip, the LoRA copy, the prompt's tokens, generate, decode; one slot;
+                           unload() for the full clear
+        family.py          PromptParts, LMFamily
     birefnet/
       checkpoints.py       the 11 checkpoints, registered as matting models
       weights.py           weights folder (ComfyUI/models/background_removal) and download
@@ -95,6 +105,10 @@ ComfyUI-BCNodes/
       checkpoint.py        default checkpoint, combo list, path (downloads the default)
       loader.py            one checkpoint held at a time; unload() for the full clear
       detect.py            text detection through ComfyUI's SAM3_Detect
+    qwen_lm/               the Qwen LM family (models/Qwen-LM, LoRAs in its loras/), registered as qwen_lm
+      models.yaml          the built-in catalog: models, precisions with their files, sampling defaults and sources
+      chat.py              the official chat templates (qwen3.5, qwen3.8, qwen3-vl), their checks, the output split
+      images.py            the official image processor's sizing (smart_resize) and bicubic resize
   libs/                    model-independent helpers
     image.py               IMAGE frame <-> PIL, fit into a target size
     geometry.py            integer size arithmetic for resizing; a ControlNet preprocessor's output size
@@ -107,7 +121,8 @@ ComfyUI-BCNodes/
     image_metrics.py       blur / sharpness / noise / clipping / entropy
     math_expression.py     the whitelisted expression evaluator
     download.py            HTTP download with resume, allowed hosts, token store
-    files.py               the next image counter from the files in a folder
+    files.py               the next image counter from the files in a folder; walk_once, a folder walk that follows
+                           links and walks each real folder once
     image_write.py         Save Image formats, metadata, writer
     memory_sources.py      RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers; what the RAM is
                            made of (anon / file, RssAnon / RssFile), glibc's free blocks and malloc_trim
@@ -115,6 +130,7 @@ ComfyUI-BCNodes/
     safetensors_info.py    weights from a safetensors header
     lora_keys.py           LoRA keys core's loader leaves out (.diff_m, PEFT keys without the prefix), renamed to the
                            names it maps; the keys still unmapped
+    lm_lora.py             LM LoRAs: the format table, alpha resolution, config checks, base-model check, the list
   docs/                    the node documentation, one page per menu category; README.md links them
   luts/                    drop .cube LUTs here for PostFx LUT (gitignored)
   web/js/
@@ -135,7 +151,8 @@ ComfyUI-BCNodes/
     save_image.js          no output preview under Save Image
     save_image_with_caption.js  the frontend's text replacements in its filename_prefix
     process_monitor.js     Process Monitor: top bar, modal, the on / off setting
-    bcnodes_api.js         JSON calls to the pack's routes (downloader, Process Monitor)
+    lm.js                  Qwen LM's precision / thinking widgets; LM Config's shown defaults and `edited`
+    bcnodes_api.js         JSON calls to the pack's routes (downloader, Process Monitor, LM catalog)
   locales/en/main.json     tooltips for the Align buttons
   tests/
     test_import_time.py    import gate
@@ -159,6 +176,6 @@ python tests/parity_seedvr2_video.py --comfy ../ComfyUI --vae ../ComfyUI/models/
 
 The tests need `postfx` and `caption-audit` importable: `pip install -r requirements.txt`, or `PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts.
 
-The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, Select Switch running only the selected lazy branch, that a genuine type mismatch is still rejected, and Lora Loader (Key Fix) against core's own LoRA loader on a tiny real Wan model (the keys core leaves out as they are, and loads once renamed).
+The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, Select Switch running only the selected lazy branch, that a genuine type mismatch is still rejected, Lora Loader (Key Fix) against core's own LoRA loader on a tiny real Wan model (the keys core leaves out as they are, and loads once renamed), and the LM nodes against core's Qwen code without weights: `lm_core` (the prompt's tokens equal core's own Qwen3.5 and Qwen3-VL tokenizers' output for ordinary text, and the official Qwen3.5 tokenizer's ids where core's differ (words with combining marks), and every LoRA key form lands on its weight in the key maps of core models built on the meta device, where an adapter of Qwen3.5-9B's structure passes the base-model check on Qwen3.5-9B and is refused on the others, and a LoRA on `embed_tokens` / `lm_head` is refused on Qwen3.5-4B's tied head) and `lm_nodes` (the catalog route, the `Qwen-LM` folder, and LM Config -> Qwen LM through `validate_prompt` + `PromptExecutor` with a stand-in backend).
 
-Every module in `nodes/`, `pipelines/`, `models/` and `libs/` imports only `torch`, `numpy` and the standard library at module level; `scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*` and the pip packages `postfx` / `caption_audit` are imported inside the functions that use them (the downloader also touches `server` / `aiohttp`, which ComfyUI has loaded already), so the pack adds nothing to ComfyUI's startup. A node module also imports its pipeline, model and lib modules inside the methods that use them (a widget list such as the model names inside `INPUT_TYPES`), so the package import reads and compiles little more than `nodes/`; the Process Monitor's own modules load at import, where it registers and starts. `python tests/test_import_time.py` checks both.
+Every module in `nodes/`, `pipelines/`, `models/` and `libs/` imports only `torch`, `numpy` and the standard library at module level; `scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*`, `yaml` and the pip packages `postfx` / `caption_audit` are imported inside the functions that use them (the downloader also touches `server` / `aiohttp`, which ComfyUI has loaded already), so the pack adds nothing to ComfyUI's startup. A node module also imports its pipeline, model and lib modules inside the methods that use them (a widget list such as the model names inside `INPUT_TYPES`), so the package import reads and compiles little more than `nodes/`; the Process Monitor's own modules load at import, where it registers and starts. `python tests/test_import_time.py` checks both.

@@ -23,7 +23,12 @@ def stub_comfy(tmp):
     fp.folder_names_and_paths = {}
 
     def add_model_folder_path(name, path, is_default=False):
-        fp.folder_names_and_paths.setdefault(name, ([], set()))[0].append(path)
+        paths = fp.folder_names_and_paths.setdefault(name, ([], set()))[0]
+        if path not in paths:  # as core: a folder is kept once
+            paths.append(path)
+
+    def get_folder_paths(name):
+        return list(fp.folder_names_and_paths[name][0])  # as core: a copy; KeyError for an unknown key
 
     def get_full_path(name, filename):
         for p in fp.folder_names_and_paths.get(name, ([], set()))[0]:
@@ -33,6 +38,7 @@ def stub_comfy(tmp):
         return None
 
     fp.add_model_folder_path = add_model_folder_path
+    fp.get_folder_paths = get_folder_paths
     fp.get_full_path = get_full_path
     fp.get_filename_list = lambda name: []
     fp.get_output_directory = lambda: os.path.join(tmp, "output")
@@ -119,7 +125,7 @@ def load_package():
     sys.modules[PKG_NAME] = pkg
     return ModuleMap(PKG_NAME, {name: importlib.import_module(f"{PKG_NAME}.nodes.{name}")
             for name in ("logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
-                         "image_comparer", "power_lora_loader", "lora_key_fix", "everywhere", "seedvr2",
+                         "lm", "image_comparer", "power_lora_loader", "lora_key_fix", "everywhere", "seedvr2",
                          "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption",
                          "skin_texture", "frequency_merge")})
 

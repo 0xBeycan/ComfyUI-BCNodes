@@ -1,0 +1,80 @@
+# The built-in Qwen LM catalog. Schema: models/common/lm/catalog.py.
+# A models.yaml in a Qwen-LM models folder (ComfyUI/models/Qwen-LM/models.yaml) overrides or extends it:
+# a field it gives replaces the field here, a precision it names replaces or adds that precision.
+#
+# Sampling defaults are the official ones per mode, from the model cards (each defaults block names its
+# source); do_sample is true for all (generation_config do_sample true / the card's greedy=false). The
+# derivatives (abliterated builds) keep their base model's sets. mtp: auto lets core pick the draft depth on a file with an MTP head.
+# Files: https://huggingface.co/beycanai/Qwen-LM (public, no token).
+
+models:
+  Qwen3.5-4B:
+    template: qwen3.5
+    thinking: true
+    mtp: true
+    defaults:
+      # source: Qwen/Qwen3.5-9B README lines 833-836 (general tasks; the 4B card is identical)
+      thinking_off: {do_sample: true, temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0, mtp: auto}
+      thinking_on: {do_sample: true, temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0, mtp: auto}
+    precisions:
+      BF16: {file: Qwen3.5-4B_bf16.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3.5-4B_bf16.safetensors"}
+      INT8 ConvRot: {file: Qwen3.5-4B_int8_convrot.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3.5-4B_int8_convrot.safetensors"}
+
+  Qwen3.5-9B:
+    template: qwen3.5
+    thinking: true
+    mtp: true
+    defaults:
+      # source: Qwen/Qwen3.5-9B README lines 833-836 (general tasks)
+      thinking_off: {do_sample: true, temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0, mtp: auto}
+      thinking_on: {do_sample: true, temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0, mtp: auto}
+    precisions:
+      BF16: {file: Qwen3.5-9B_bf16.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3.5-9B_bf16.safetensors"}
+      INT8 ConvRot: {file: Qwen3.5-9B_int8_convrot.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3.5-9B_int8_convrot.safetensors"}
+
+  Qwen3.5-9B Abliterated:
+    template: qwen3.5
+    thinking: true
+    mtp: false
+    defaults:
+      # source: the base model's, Qwen/Qwen3.5-9B README lines 833-836 (general tasks)
+      thinking_off: {do_sample: true, temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0, mtp: auto}
+      thinking_on: {do_sample: true, temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0, mtp: auto}
+    precisions:
+      BF16: {file: Qwen3.5-9B-abliterated_bf16.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3.5-9B-abliterated_bf16.safetensors"}
+      INT8 ConvRot: {file: Qwen3.5-9B-abliterated_int8_convrot.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3.5-9B-abliterated_int8_convrot.safetensors"}
+
+  Qwen3-VL-8B Instruct:
+    template: qwen3-vl
+    thinking: false
+    mtp: false
+    defaults:
+      # source: Qwen/Qwen3-VL-8B-Instruct README lines 134-153 (min_p not given: 0.0 = disabled)
+      thinking_off: {do_sample: true, temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0, mtp: auto}
+    precisions:
+      BF16: {file: Qwen3-VL-8B-Instruct_bf16.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3-VL-8B-Instruct_bf16.safetensors"}
+      INT8 ConvRot: {file: Qwen3-VL-8B-Instruct_int8_convrot.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3-VL-8B-Instruct_int8_convrot.safetensors"}
+
+  Qwen3-VL-8B Instruct Abliterated:
+    template: qwen3-vl
+    thinking: false
+    mtp: false
+    defaults:
+      # source: the base model's, Qwen/Qwen3-VL-8B-Instruct README lines 134-153 (min_p not given: 0.0 = disabled)
+      thinking_off: {do_sample: true, temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0, mtp: auto}
+    precisions:
+      BF16: {file: Qwen3-VL-8B-Instruct-abliterated_bf16.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3-VL-8B-Instruct-abliterated_bf16.safetensors"}
+      INT8 ConvRot: {file: Qwen3-VL-8B-Instruct-abliterated_int8_convrot.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3-VL-8B-Instruct-abliterated_int8_convrot.safetensors"}
+
+  Qwen3.8-27B:
+    template: qwen3.8
+    thinking: true
+    mtp: true
+    defaults:
+      # source: Qwen/Qwen3.8-27B README lines 246-264
+      thinking_off: {do_sample: true, temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0, mtp: auto}
+      thinking_on: {do_sample: true, temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.0, mtp: auto}
+    precisions:
+      BF16: {file: Qwen3.8-27B_bf16.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3.8-27B_bf16.safetensors"}
+      INT8 ConvRot: {file: Qwen3.8-27B_int8_convrot.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3.8-27B_int8_convrot.safetensors"}
+      W4A8: {file: Qwen3.8-27B_w4a8.safetensors, url: "https://huggingface.co/beycanai/Qwen-LM/resolve/main/Qwen3.8-27B_w4a8.safetensors"}

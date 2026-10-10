@@ -29,7 +29,7 @@ Monitor's HTTP routes and, when the monitor's saved setting is on, starts it (se
 nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, compute_device (the device widgets),
                               the unused-heavy-outputs helper (LinkStamp, register_link_stamp, stamps_last,
                               heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (26); social_specs.json is the user-editable platform table
+nodes/<domain>.py             one per domain (27); social_specs.json is the user-editable platform table
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
@@ -42,17 +42,28 @@ pipelines/depth_anything.py   Depth Anything: output size (short side, or cover 
                               normalisation, one depth-family predict per frame
 pipelines/lora.py             apply_lora: a LoRA file through core's conversion, libs/lora_keys' renames and core's
                               loader; Lora Loader (Key Fix) and each Power Lora Loader row
+pipelines/lm.py               the LM flow: one LM node run (family, catalog, model file found or downloaded, LoRA,
+                              sampling, images, backend; keep_model_loaded off unloads in a finally); the catalog,
+                              LoRA list and catalog route data the LM nodes show
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/seedvr2/            resize, encode, decode, postprocess, compact flows; framing (Resize's downscale factor
                               from the SAM 3 face size); chunk_size (SeedVR2 Chunk Size: frames per chunk for the
                               card); progress; shared constants
 pipelines/process_monitor/    monitor (sampler thread, runs, per-node records, snapshot), hook (the executor hook),
                               blackbox (run logs, reports), emulate + profiles (estimate, per-node-type costs), settings,
-                              clear (the full clear: its steps, each measured against the startup baseline),
+                              clear (the full clear: its steps, each measured against the startup baseline;
+                              release_pack_models: the pack's model slots and every registered LM backend),
                               drop_stale (drop stale outputs: a hook on ComfyUI's output cache, applied monitor
                               on or off)
-models/common/                registry.py (families matting and depth; a depth entry is a loader returning
-                              `predict`), download.py (fetch_with_progress)
+models/common/                registry.py (families matting, depth, lm_family and lm_backend; a depth entry is a
+                              loader returning `predict`), download.py (fetch_with_progress)
+models/common/lm/             the LM runtime the LM families share: catalog (the built-in models.yaml merged with the
+                              user's), family and backend contracts, core_backend (the "core" LM backend: core's
+                              text-encoder loader, LoRA loader and generate; the prompt tokenized here, with the
+                              official pre-tokenizer; the cuDNN attention fallback)
+models/qwen_lm/               the Qwen LM family, registered as qwen_lm under LM_FAMILY: models.yaml (the built-in
+                              catalog), chat (the official chat templates, the output split), images (the official
+                              image sizing)
 models/birefnet/              checkpoints (registered under MATTING), weights, loader, inference, arch/ (vendored, MIT)
 models/depth_anything_v2/     Depth Anything V2 Small: weights, loader, inference, arch/ (vendored, Apache-2.0); registered
                               as v2-small in the depth family
@@ -72,13 +83,17 @@ libs/geometry.py              integer size arithmetic; short_side_size (a Contro
 libs/resize.py                Image Resize: size plan, crop / resample / pad per frame
 libs/math_expression.py       whitelisted AST evaluator with injected resolvers
 libs/download.py              HTTP download with resume, host list, token store
-libs/files.py image_write.py  output counters; image formats, metadata, write_image
+libs/files.py image_write.py  output counters, walk_once (os.walk with links followed, each folder once); image
+                              formats, metadata, write_image
 libs/memory_sources.py        RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers; what the RAM is made
                               of (cgroup anon / file, RssAnon / RssFile), glibc's free blocks and malloc_trim
 libs/tensor_census.py         tensor bytes, each byte counted once by address range, file-backed memory told apart; the live tensor census
 libs/safetensors_info.py      weights from a safetensors header, no load
 libs/lora_keys.py             LoRA keys core's loader leaves out (.diff_m, PEFT keys without the diffusion_model.
-                              prefix), renamed to the names its key map holds; strings only
+                              prefix), renamed to the names its key map holds; strings only; first_names (the
+                              "first five, then ..." list of names in messages)
+libs/lm_lora.py               LM LoRA files (PEFT, core's names) -> the tensors core applies: the alpha resolved, the
+                              base-model and tied-head check; the LoRA folder listing
 ```
 
 ## Process Monitor
@@ -175,9 +190,9 @@ where it is.
 
 ## How to add a node
 
-- Key `BC_<Name>`, a display name, and `CATEGORY` one of the 9 groups: `BCNodes/analysis`,
-  `image`, `loaders`, `logic`, `mask`, `postfx`, `seedvr2` (with its subcategory `seedvr2/compact`),
-  `text`, `workflow`.
+- Key `BC_<Name>`, a display name, and a `CATEGORY` under `BCNodes/`. The groups today:
+  `analysis`, `image`, `lm`, `loaders`, `logic`, `mask`, `postfx`, `seedvr2` (with its subcategory
+  `seedvr2/compact`), `text`, `workflow`. A new group is added when a new kind of node needs one.
 - A literal `INPUT_TYPES` in the node class. The node file holds the surface only; the work goes
   to a pipeline (or straight to libs/models when there is no flow).
 - Import the module in the root `__init__.py` and add it to the registration loop (order = menu
@@ -215,6 +230,10 @@ where it is.
   directly, and `models/birefnet/loader.load` evicts the cached model before an unknown name
   raises `KeyError`. A second matting implementation needs the owner's decision on dispatch.
 - Vendored code keeps its LICENSE in its own subdirectory (as `models/birefnet/arch/`).
+- An LM family is a `models/<name>/` package with its own `models.yaml` (its built-in catalog),
+  registered as an `LMFamily` under `LM_FAMILY` (as `models/qwen_lm/`), served by one LM node. A
+  backend registers under `LM_BACKEND` (as `models/common/lm/` registers `core`);
+  `release_pack_models` unloads every registered backend.
 
 ## Coding style
 
@@ -295,6 +314,11 @@ python -m pytest tests -q                             # layer rule, unit tests
   node method lives in `tests/layers/nodes/`. Basenames carry the layer prefix (`test_node_`,
   `test_pipe_`, `test_model_`, `test_lib_`). Never a `tests/nodes/` or `tests/models/`: pytest
   would make it an importable top-level `nodes` / `models`.
+- `tests/test_runtime.py` holds two LM sections: `lm_core` (core's own Qwen code, no weights: the
+  prompt's tokens against core's tokenizers and the official ids, every LoRA key form in the key maps
+  of core models built on the meta device, the base-model and tied-head checks) and `lm_nodes` (the
+  catalog route, the Qwen-LM folder, LM Config -> Qwen LM through `validate_prompt` +
+  `PromptExecutor` with a stand-in backend).
 - `tests/parity_seedvr2_video.py` compares the SeedVR2 nodes with ComfyUI's own and needs a GPU
   for the VAE; it is not part of the suite.
 
@@ -318,8 +342,7 @@ idempotent; the next node call loads the model again. This pack registers `relea
 
 The owner's project memory for this pack (the "ComfyUI-BCNodes pack" entry) holds them; do not
 reopen them:
-- `BC_` keys and the 9 categories; Logic Boolean takes a FLOAT; mask nodes return zeros on
-  empty input.
+- `BC_` keys; Logic Boolean takes a FLOAT; mask nodes return zeros on empty input.
 - BiRefNet: vendored architecture; the authors' weights under `models/background_removal/`; an
   unknown name evicts the cached model before the `KeyError`.
 - Downloader: tokens are set in the UI only and never echoed; `Authorization` never follows a

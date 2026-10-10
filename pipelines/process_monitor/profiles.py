@@ -6,7 +6,8 @@ estimate is a dict: "type", "shape", "bytes", and the dims later profiles read (
 frames; "lt", "lh", "lw" for a SeedVR2 latent). "shared": True marks an output that is one of the
 node's inputs passed on: it adds no bytes. A transient of None is "not counted"; the note says
 which part of the node's memory the profile does not size (a model's own working set, mostly).
-A profile raises NotCounted when an input it needs has no estimate.
+A profile raises NotCounted when an input it needs has no estimate, or when the prompt does not say
+what the node holds (Qwen LM: its model is a catalog name, not a file).
 """
 
 import math
@@ -828,6 +829,20 @@ def _join_lists(c):
     return {}, 0, "a list of references to its inputs, no copy (downstream sizes are not followed through lists)"
 
 
+# -- LM nodes -------------------------------------------------------------------------------------
+
+def _qwen_lm(c):
+    # Qwen LM loads its own model: the model widget holds a catalog name, not a file name, so no weights
+    # are read for it; its outputs are two strings.
+    raise NotCounted("the model widget names a catalog entry, not a file: the model file's weights, the LoRA, the "
+                     "KV cache core reserves for prompt + max_new_tokens and the images resized for the model are "
+                     "not counted")
+
+
+def _lm_config(c):
+    return {}, 0, "a dict of the edited sampling fields, at most eight plain values; no tensor"
+
+
 PROFILES = {
     # loaders and resizers
     "VHS_LoadVideo": _whole_clip_loader, "VHS_LoadVideoPath": _whole_clip_loader, "BCVLoadVideo": _bcv_load_video,
@@ -868,4 +883,6 @@ PROFILES = {
     "BC_SkinTexture": _skin_texture, "BC_AnySwitch": _any_switch, "BC_SelectSwitch": _select_switch,
     "BC_JoinImageLists": _join_lists,
     "BC_FrequencyMerge": _frequency_merge,
+    # LM nodes
+    "BC_QwenLM": _qwen_lm, "BC_LMConfig": _lm_config,
 }

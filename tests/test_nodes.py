@@ -171,6 +171,14 @@ def main():
     check("ShowText empty list", lambda: st.show([]) == {"ui": {"text": []}, "result": ([],)} or _fail())
     check("ShowText list with None", lambda: st.show(["a", None])["ui"]["text"] == ["a", ""] or _fail())
 
+    qlm = m["lm"].QwenLM()
+    check("QwenLM INPUT_TYPES with no file or LoRA on disk", lambda: (lambda r: r["model"][1]["default"] in r["model"][0]
+          and r["lora"][0] == ["None"])(qlm.INPUT_TYPES()["required"]) or _fail())
+    check("QwenLM empty user, no image -> ValueError (before any file search)",
+          lambda: _raises(ValueError, lambda: qlm.generate("Qwen3.5-9B", "INT8 ConvRot", "None", 1.0, False, 8, 0, True, "", "", "")))
+    lmc = m["lm"].LMConfig()
+    check("LMConfig nothing edited -> {}", lambda: lmc.build(True, 0.7, 20, 0.8, 0.0, 1.0, 1.5, "auto", "") == ({},) or _fail())
+
     ic = m["image_comparer"].ImageComparer()
     check("ImageComparer nothing wired", lambda: ic.compare() == {"ui": {"a_images": [], "b_images": []}} or _fail())
     check("ImageComparer empty batches", lambda: ic.compare(torch.zeros((0, 8, 8, 3)), torch.zeros((0, 8, 8, 3))) == {"ui": {"a_images": [], "b_images": []}} or _fail())

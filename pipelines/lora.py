@@ -7,7 +7,7 @@ function.
 
 import logging
 
-from ..libs.lora_keys import fix_keys
+from ..libs.lora_keys import first_names, fix_keys
 
 
 def apply_lora(model, path, strength, node, lora_name, *, log_clean, with_metadata):
@@ -33,8 +33,7 @@ def apply_lora(model, path, strength, node, lora_name, *, log_clean, with_metada
                 f"({fix.modulation} .diff_m -> .modulation.diff, {fix.prefixed} given the diffusion_model. prefix), "
                 f"{len(fix.unmapped)} match no module of this model")
         if fix.unmapped:
-            shown = ", ".join(fix.unmapped[:5]) + (", ..." if len(fix.unmapped) > 5 else "")
-            logging.warning("%s and are not applied: %s", line, shown)
+            logging.warning("%s and are not applied: %s", line, first_names(fix.unmapped))
         else:
             logging.info(line)
     model, _ = comfy.sd.load_lora_for_models(model, None, lora, strength, 0,

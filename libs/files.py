@@ -1,4 +1,5 @@
-"""File helpers: the next image counter, continued from the files already in a folder."""
+"""File helpers: the next image counter, continued from the files already in a folder; a folder walk
+that follows links and ends on link loops."""
 
 import os
 
@@ -26,3 +27,18 @@ def latest_counter(folder, filename, counter_digits, counter_position, output_ex
         counters = [int(f[:counter_digits]) if f[:counter_digits].isdecimal() else 0
                     for f in files if f[counter_digits + 1:].startswith(filename)]
     return max(counters) + 1 if counters else 1
+
+
+def walk_once(root):
+    """os.walk(root) top-down with links followed, each real folder walked once (a link back up the tree,
+    or a second link to a folder, is skipped), subfolders in sorted order. Yields os.walk's (dirpath,
+    dirnames, filenames); the caller may prune dirnames. Nothing when `root` does not exist."""
+    seen = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen:
+            dirnames[:] = []
+            continue
+        seen.add(real)
+        dirnames.sort()
+        yield dirpath, dirnames, filenames

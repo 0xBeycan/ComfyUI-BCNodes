@@ -11,6 +11,12 @@ MATTING = "matting"
 # frame, run at short side `resolution` and resampled to size = (height, width), float32 on the
 # compute device.
 DEPTH = "depth"
+# An LM family entry is a models.common.lm.family.LMFamily: one family of chat models (its folder, built-in
+# catalog, prompt templates, image preparation and output split), served by one LM node.
+LM_FAMILY = "lm_family"
+# An LM backend entry is an object of the models.common.lm.backend.LMBackend protocol: what loads a model
+# file, applies a LoRA, generates and unloads. A catalog model names its backend.
+LM_BACKEND = "lm_backend"
 
 _FAMILIES = {}
 

@@ -200,6 +200,28 @@ def test_release_pack_models_drops_every_slot_and_counts_its_bytes(cl, bcnodes):
     assert cl.release_pack_models() == {}  # idempotent
 
 
+def test_release_pack_models_unloads_every_lm_backend(cl, bcnodes, monkeypatch):
+    import comfy.model_management as mm
+
+    registry = bcnodes["models.common.registry"]
+    core = registry.get(registry.LM_BACKEND, "core")
+    unloaded = []
+    monkeypatch.setattr(mm, "unload_model_and_clones", unloaded.append, raising=False)
+    patcher = object()
+    monkeypatch.setattr(core, "_path", "/models/Qwen-LM/Qwen3.5-9B_int8_convrot.safetensors")
+    monkeypatch.setattr(core, "_base", types.SimpleNamespace(cond_stage_model=linear(300), patcher=patcher))  # comfy.sd.CLIP
+
+    class Other:  # a second LM backend
+        def unload(self):
+            return {"other.safetensors": 5}
+
+    monkeypatch.setitem(registry._FAMILIES[registry.LM_BACKEND], "other", Other())
+    assert cl.release_pack_models() == {"Qwen3.5-9B_int8_convrot.safetensors": 1200, "other.safetensors": 5}
+    assert unloaded == [patcher] and core._base is None  # through core, then dropped
+    monkeypatch.delitem(registry._FAMILIES[registry.LM_BACKEND], "other")
+    assert cl.release_pack_models() == {}
+
+
 def test_pack_models_calls_every_hook_and_reports_a_failing_one(cl):
     calls = []
 

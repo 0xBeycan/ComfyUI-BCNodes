@@ -1,6 +1,6 @@
 """libs/lora_keys.py: the LoRA keys ComfyUI core's loader leaves out, renamed so its key map holds
 them; the keys core already maps are never touched, no rename overwrites a tensor, and the keys
-still unmapped are listed.
+still unmapped are listed. `first_names`, the offender list both LoRA loaders print, names five.
 
 The key map is written out by hand as core builds it for a Wan model (comfy/lora.py
 model_lora_keys_unet; Wan has no branch of its own there): each `diffusion_model.<module>.weight`
@@ -100,3 +100,15 @@ def test_a_model_that_maps_bare_keys_keeps_them_bare(lk):
 ])
 def test_addressed(lk, key, entry, addressed):
     assert lk.addressed(key, {entry}) is addressed
+
+
+@pytest.mark.parametrize("count, shown", [
+    (0, ""),
+    (1, "k0"),
+    (5, "k0, k1, k2, k3, k4"),
+    (6, "k0, k1, k2, k3, k4, ..."),
+    (200, "k0, k1, k2, k3, k4, ..."),
+])
+def test_first_names_gives_five_then_an_ellipsis(lk, count, shown):
+    # the one formatter both LoRA loaders name their offenders with (pipelines/lora.py, libs/lm_lora.py)
+    assert lk.first_names([f"k{i}" for i in range(count)]) == shown

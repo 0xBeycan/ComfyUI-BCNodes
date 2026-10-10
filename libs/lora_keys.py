@@ -10,12 +10,16 @@ Core applies a LoRA tensor only when its key is an entry of the key map it build
 - PEFT exports made outside ComfyUI (DiffSynth's, e.g. SVI 2.0) name the modules without the
   `diffusion_model.` prefix of core's map.
 
+`first_names` is how a LoRA loader's warning or error names the keys or modules it is about (this
+one's unmapped keys, libs/lm_lora.py's offenders).
+
 Strings only: the caller passes the LoRA's keys and the key map; nothing here imports torch or
 ComfyUI.
 """
 
 from dataclasses import dataclass
 
+SHOWN = 5  # names a message gives before ", ..."
 MODEL_PREFIX = "diffusion_model."
 DIFF_M = ".diff_m"
 MODULATION_DIFF = ".modulation.diff"
@@ -75,3 +79,8 @@ def fix_keys(keys, key_map):
         if not key.startswith(MODEL_PREFIX):
             prefixed += 1
     return KeyFix(renamed, unmapped, modulation, prefixed)
+
+
+def first_names(names):
+    """The first SHOWN of `names` (a list) joined by ", ", then ", ..." when there are more."""
+    return ", ".join(names[:SHOWN]) + (", ..." if len(names) > SHOWN else "")

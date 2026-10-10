@@ -763,6 +763,8 @@ async def main():
     check("AutoModelDownloader: runs every queue by design", out is not None and executed == ["1"], f"{executed}")
 
     await lora_key_fix()
+    lm_core()
+    await lm_nodes()
     await unused_outputs()
     await process_monitor_hook()
     await process_monitor_clear()
@@ -958,6 +960,355 @@ async def lora_key_fix():
                    "[BCNodes] Lora Loader (Key Fix): peft.safetensors: 4 keys, 4 renamed (0 .diff_m -> .modulation.diff, "
                    "4 given the diffusion_model. prefix), 0 match no module of this model"]
           and not any(line.startswith("lora key not loaded") for line in lines.lines), f"{lines.lines}")
+
+
+def lm_core():
+    """The LM runtime against core's own Qwen code, no weights:
+
+    - tokenization: for ordinary text (no `embedding:`, no `\\(`, no combining marks) the token structure
+      models/common/lm/core_backend.tokenize builds equals what core's Qwen3.5 (qwen35_9b) and Qwen3-VL
+      (qwen3vl_8b) tokenizers return from tokenize_with_weights, for prompts of every template, thinking
+      on and off, with a prefill and 0 / 1 / 3 images: the same ids, weights 1.0, and image entries
+      holding the very frames in order. With combining marks ours gives the official Qwen3.5 ids (literals
+      from the official tokenizer.json) where core's differ; Qwen3-VL's tokenizer is used as it is. On
+      `\\(` and `embedding:` core changes the ids; ours keeps the HF tokenizer's own. A stray
+      <|image_pad|> in the text, which core leaves as an id with no image, is refused;
+    - LoRA (libs/lm_lora): core's CLIP models built on the meta device give the real key maps. Every PEFT
+      key form (ForCausalLM and ForConditionalGeneration module names, `.default` factors, embed_tokens,
+      lm_head, the vision tower) lands on its weight; weight_shapes covers every weight the key map
+      addresses; an adapter of Qwen3.5-9B's structure (200 modules) passes check_base on qwen35_9b and is
+      refused on qwen35_4b and qwen35_27b (every name there, no shape fits) and on qwen3vl_8b (72 modules
+      missing, where core alone would apply 120 of the 200); on qwen35_4b, whose core build ties lm_head to
+      embed_tokens (no lm_head weight), a LoRA on embed_tokens or lm_head is refused for the tie; core's
+      load_lora reads every tensor of the plan, alpha included;
+    - the cuDNN attention fallback's footing in core: its SDPA wrapper reads SDPA_BACKEND_PRIORITY at call
+      time, and the executor's cleanup it calls exists."""
+    import importlib
+    import types
+
+    import comfy.lora
+    import comfy.lora_convert
+    import comfy.text_encoders.qwen35 as qwen35
+    import comfy.text_encoders.qwen3vl as qwen3vl
+    import torch
+
+    pkg = nodes.NODE_CLASS_MAPPINGS["BC_ImageResize"].__module__.rsplit(".", 2)[0]
+
+    def pack(name):
+        return importlib.import_module(f"{pkg}.{name}")
+
+    core_backend, chat, lm_lora = pack("models.common.lm.core_backend"), pack("models.qwen_lm.chat"), pack("libs.lm_lora")
+    family = pack("models.qwen_lm").FAMILY
+    catalog = pack("models.common.lm.catalog").load_catalog(family.catalog_path, [], family.templates,
+                                                           default_backend=family.default_backend)
+    PromptParts = pack("models.common.lm.family").PromptParts
+    tokenizers = {"qwen35_9b": qwen35.tokenizer(model_type="qwen35_9b")(embedding_directory=None),
+                  "qwen3vl_8b": qwen3vl.tokenizer(model_type="qwen3vl_8b")(embedding_directory=None)}
+
+    def ours(tok, prompt, images):
+        return core_backend.tokenize(types.SimpleNamespace(tokenizer=tok), prompt, images)
+
+    def entry_equal(x, y):
+        if isinstance(x, dict):
+            return (isinstance(y, dict) and x.keys() == y.keys() == {"type", "data", "original_type"}
+                    and x["type"] == y["type"] == "image" and x["original_type"] == y["original_type"]
+                    and x["data"].data_ptr() == y["data"].data_ptr() and x["data"].shape == y["data"].shape)
+        return type(x) is type(y) and x == y
+
+    def same(a, b):
+        """Equal token structures: one key, the same rows of (id or image entry, weight)."""
+        return a.keys() == b.keys() and all(
+            len(a[k]) == len(b[k]) and all(len(r) == len(s) and all(entry_equal(x[0], y[0]) and x[1:] == y[1:] for x, y in zip(r, s))
+                                           for r, s in zip(a[k], b[k])) for k in a)
+
+    texts = ["Describe this.", "  Two spaces, a tab\tand\nnew\n\nlines.  \n", 'JSON: {"a": [1, 2.5e-3], "b": null}',
+             "def f(x):\n    return x ** 2  # code \\d+ C:\\path", "Unicode: çğıöşü İ 日本語 中文 العربية 👩‍👩‍👧 é",
+             "(weight:1.2) [brackets] <angle> 100% & 'q'"]
+    total = equal = 0
+    for model_name, tok_name in (("Qwen3.5-9B", "qwen35_9b"), ("Qwen3.8-27B", "qwen35_9b"), ("Qwen3-VL-8B Instruct", "qwen3vl_8b")):
+        model, tok = catalog[model_name], tokenizers[tok_name]
+        for system in ("", "You are a helpful assistant.", texts[1]):
+            for user in texts:
+                for prefill in ("", '{"name": "', "  Sure,\n"):
+                    for n in (0, 1, 3):
+                        for thinking in ((False, True) if model.thinking else (False,)):
+                            if thinking and prefill:
+                                continue
+                            prompt = chat.build_prompt(model, PromptParts(system=system, user=user, assistant=prefill, n_images=n, thinking=thinking))
+                            images = torch.rand((n, 4, 5, 3)) if n else None
+                            frames = [] if images is None else [images[i:i + 1] for i in range(n)]
+                            total += 1
+                            equal += same(ours(tok, prompt, images), tok.tokenize_with_weights(prompt, False, images=frames))
+    check(f"LM: the token structure of {total} ordinary prompts (no combining marks) equals core's tokenize_with_weights "
+          "(Qwen3.5 / 3.8 on qwen35_9b's tokenizer, Qwen3-VL on qwen3vl_8b's; 0 / 1 / 3 images)", equal == total,
+          f"{equal} of {total}")
+
+    # Core's Qwen3.5 tokenizer splits words with Qwen2's regex (no \p{M}); ours with the official one, so a word with
+    # combining marks gets the official ids. The ids below come from the official tokenizer.json of Qwen/Qwen3.5-9B
+    # (Qwen/Qwen3.8-27B's gives the same).
+    official = {
+        "नमस्ते दुनिया, यह एक परीक्षण है।": [58069, 84237, 150104, 153348, 184642, 235886, 11, 175089, 171549, 155171, 42201,
+                                       242749, 170046, 154845],
+        "สวัสดีครับ ภาษาไทย": [34469, 168607, 153295, 212495, 149826],
+        "مَرْحَبًا بِالْعَالَم": [9873, 164865, 28850, 150765, 150021, 222153, 187581, 155815, 152397],
+        "আমি বাংলায় গান গাই": [168955, 148653, 59283, 166781, 148787, 152485, 149321, 152485, 172980],
+        "<|im_start|>user\nவணக்கம் உலகம்<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n":
+            [248045, 846, 198, 149608, 150229, 152246, 150075, 160321, 149255, 148574, 150075, 248046, 198, 248045, 74455,
+             198, 248068, 271, 248069, 271],
+        "Describe a cat on a sofa. It's 12:30, isn't it?": [72240, 264, 7993, 383, 264, 30051, 13, 1049, 579, 220, 16, 17,
+                                                            25, 18, 15, 11, 4290, 914, 424, 30],
+        "Şu görseli ayrıntılı anlat, lütfen. İĞÜŞÖÇ ığüşöç": [168981, 84, 29200, 5259, 11942, 215583, 398, 50420, 204408, 11,
+                                                         324, 2314, 8665, 268, 13, 37146, 169384, 50724, 168981, 61222,
+                                                         44382, 220, 89393, 153675, 2862, 3031],
+    }
+    tok = tokenizers["qwen35_9b"]
+    got = {text: [t for t, _ in ours(tok, text, None)[tok.clip_name][0]] for text in official}
+    check("LM: Qwen3.5 / 3.8: ours gives the official tokenizer.json ids (Hindi, Thai, Arabic, Bengali, a Tamil chat "
+          "prompt, English, Turkish)", got == official, f"{[t for t in official if got[t] != official[t]]}")
+    marked = list(official)[:5]
+    differ, vl_equal = 0, 0
+    for text in marked:
+        for model_name, tok_name in (("Qwen3.5-9B", "qwen35_9b"), ("Qwen3-VL-8B Instruct", "qwen3vl_8b")):
+            prompt = chat.build_prompt(catalog[model_name], PromptParts(system="", user=text, assistant="", n_images=0, thinking=False))
+            tok = tokenizers[tok_name]
+            same_as_core = same(ours(tok, prompt, None), tok.tokenize_with_weights(prompt, False))
+            differ += tok_name == "qwen35_9b" and not same_as_core
+            vl_equal += tok_name == "qwen3vl_8b" and same_as_core
+    check("LM: with combining marks core's Qwen3.5 tokenize departs from the official ids; Qwen3-VL's (no "
+          "pretokenize_regex, Qwen2's split is official there) is used as it is", differ == vl_equal == len(marked),
+          f"{differ} {vl_equal} of {len(marked)}")
+
+    model = catalog["Qwen3.5-9B"]
+    for label, user in (("\\( \\)", "Keep \\(x\\) as written."), ("embedding:", "Use embedding:foo here.")):
+        kept = changed = True
+        for tok_name, tok in tokenizers.items():
+            prompt = chat.build_prompt(model, PromptParts(system="", user=user, assistant="", n_images=0, thinking=False))
+            canonical = getattr(tok, tok.clip).tokenizer(prompt)["input_ids"]
+            kept &= [t for t, _ in ours(tok, prompt, None)[tok.clip_name][0]] == canonical
+            changed &= [t for t, _ in tok.tokenize_with_weights(prompt, False)[tok.clip_name][0]] != canonical
+        check(f"LM: on {label} core's tokenize changes the ids; ours keeps the HF tokenizer's", kept and changed, f"{kept} {changed}")
+    tok = tokenizers["qwen35_9b"]
+    # build_prompt refuses a typed pad (chat._check); one is written in here to test the backend's own guard
+    prompt = chat.build_prompt(model, PromptParts(system="", user="see", assistant="", n_images=1, thinking=False)).replace(
+        "see<|im_end|>", "see <|image_pad|><|im_end|>")
+    image = torch.rand((1, 4, 5, 3))
+    stray = sum(1 for t, _ in tok.tokenize_with_weights(prompt, False, images=[image])[tok.clip_name][0] if t == 248056)
+    try:
+        ours(tok, prompt, image)
+        refused = ""
+    except ValueError as e:
+        refused = str(e)
+    check("LM: a stray <|image_pad|> in a prompt is refused by the backend too (core leaves it as an id with no image)",
+          stray == 1 and "2 <|image_pad|> token(s) for 1 image(s)" in refused, f"{stray} {refused!r}")
+
+    built = {}
+    for name, te in (("qwen35_9b", qwen35.te(model_type="qwen35_9b", mtp=True)), ("qwen35_4b", qwen35.te(model_type="qwen35_4b", mtp=True)),
+                     ("qwen35_27b", qwen35.te(model_type="qwen35_27b", mtp=True)), ("qwen3vl_8b", qwen3vl.te(model_type="qwen3vl_8b"))):
+        with torch.device("meta"):
+            clip_model = te(device="meta", dtype=torch.bfloat16)
+        built[name] = (comfy.lora.model_lora_keys_clip(clip_model, {}), core_backend.weight_shapes(clip_model), clip_model)
+    check("LM: weight_shapes holds every weight core's key map addresses, with the state dict's shapes",
+          all(set(km.values()) <= ws.keys() and all(ws[k] == tuple(v.shape) for k, v in m.state_dict().items() if k.endswith(".weight"))
+              for km, ws, m in built.values()))
+
+    def source(tensors):
+        return lm_lora.LoraSource("synthetic", tensors, {}, {"r": 2, "lora_alpha": 4, "peft_type": "LORA"}, "adapter_config.json")
+
+    def pair(name, out_in, a="lora_A.weight", b="lora_B.weight"):
+        out, inn = out_in
+        return {f"{name}.{a}": torch.zeros(2, inn), f"{name}.{b}": torch.zeros(out, 2)}
+
+    # PEFT module name -> the state-dict key it must patch, per model
+    forms = {
+        "qwen35_9b": {"base_model.model.model.layers.0.linear_attn.in_proj_qkv": "model.layers.0.linear_attn.in_proj_qkv",
+                      "base_model.model.model.language_model.layers.3.self_attn.q_proj": "model.layers.3.self_attn.q_proj",
+                      "base_model.model.model.language_model.layers.5.mlp.down_proj": "model.layers.5.mlp.down_proj",
+                      "base_model.model.lm_head": "model.lm_head",
+                      "base_model.model.model.visual.blocks.0.attn.qkv": "visual.blocks.0.attn.qkv",
+                      "base_model.model.model.visual.merger.linear_fc1": "visual.merger.linear_fc1"},
+        "qwen3vl_8b": {"base_model.model.model.layers.0.self_attn.k_proj": "model.layers.0.self_attn.k_proj",
+                       "base_model.model.model.language_model.layers.35.mlp.up_proj": "model.layers.35.mlp.up_proj",
+                       "base_model.model.lm_head": "model.lm_head",
+                       "base_model.model.model.visual.blocks.26.mlp.linear_fc2": "visual.blocks.26.mlp.linear_fc2",
+                       "base_model.model.model.visual.deepstack_merger_list.0.linear_fc1": "visual.deepstack_merger_list.0.linear_fc1"},
+    }
+    for name, names in forms.items():
+        km, ws, _ = built[name]
+        target = {peft: f"{name}.transformer.{module}.weight" for peft, module in names.items()}
+        tensors = {}
+        for i, (peft, key) in enumerate(target.items()):
+            a, b = ("lora_A.default.weight", "lora_B.default.weight") if i % 2 else ("lora_A.weight", "lora_B.weight")
+            tensors.update(pair(peft, ws[key], a, b))
+        for embed in ("base_model.model.model.embed_tokens", "base_model.model.model.language_model.embed_tokens"):
+            vocab, hidden = ws[f"{name}.transformer.model.embed_tokens.weight"]
+            plan = lm_lora.plan_lora(source({**tensors, f"{embed}.lora_embedding_A": torch.zeros(2, vocab),
+                                             f"{embed}.lora_embedding_B": torch.zeros(hidden, 2)}))
+            try:
+                lm_lora.check_base(plan, km, ws)
+                landed = {km.get(m) for m in plan.modules}
+            except lm_lora.LoraError as e:
+                landed = str(e)
+            check(f"LM: {name}: the PEFT key forms ({embed.split('.')[-2]}.embed_tokens among them) land on their weights and pass check_base",
+                  landed == set(target.values()) | {f"{name}.transformer.model.embed_tokens.weight"}, f"{landed}")
+
+    # qwen35_4b has no lm_head weight: core's logits (and MTP head) use embed_tokens.weight, so a LoRA on either
+    # would patch both; told from the weight shapes
+    km4, ws4, _ = built["qwen35_4b"]
+    vocab, hidden = ws4["qwen35_4b.transformer.model.embed_tokens.weight"]
+    layer = pair("base_model.model.model.language_model.layers.3.self_attn.q_proj", ws4["qwen35_4b.transformer.model.layers.3.self_attn.q_proj.weight"])
+    verdicts = {}
+    for label, extra in (("none", {}), ("embed_tokens", {"base_model.model.model.embed_tokens.lora_embedding_A": torch.zeros(2, vocab),
+                                                         "base_model.model.model.embed_tokens.lora_embedding_B": torch.zeros(hidden, 2)}),
+                         ("language_model.embed_tokens", {"base_model.model.model.language_model.embed_tokens.lora_embedding_A": torch.zeros(2, vocab),
+                                                          "base_model.model.model.language_model.embed_tokens.lora_embedding_B": torch.zeros(hidden, 2)}),
+                         ("lm_head", pair("base_model.model.lm_head", (vocab, hidden)))):
+        try:
+            lm_lora.check_base(lm_lora.plan_lora(source({**layer, **extra})), km4, ws4)
+            verdicts[label] = "pass"
+        except lm_lora.LoraError as e:
+            verdicts[label] = str(e)
+    check("LM: qwen35_4b (tied head): a LoRA on embed_tokens or lm_head is refused for the tie, one without them passes",
+          verdicts["none"] == "pass" and all(verdicts[k].startswith("this model ties lm_head to embed_tokens") and "another base" not in verdicts[k]
+                                             for k in ("embed_tokens", "language_model.embed_tokens", "lm_head")), f"{verdicts}")
+
+    # Qwen3.5-9B's adapter structure: 24 linear-attention layers x 3, 8 full-attention layers x 4, 32 MLPs x 3
+    km9, ws9, _ = built["qwen35_9b"]
+    modules = [f"layers.{i}.{kind}.{p}" for i in range(32)
+               for kind, projections in ((("self_attn", ("q_proj", "k_proj", "v_proj", "o_proj")) if i % 4 == 3 else
+                                          ("linear_attn", ("in_proj_qkv", "in_proj_z", "out_proj"))), ("mlp", ("gate_proj", "up_proj", "down_proj")))
+               for p in projections]
+    tensors = {}
+    for module in modules:
+        tensors.update(pair(f"base_model.model.model.language_model.{module}", ws9[f"qwen35_9b.transformer.model.{module}.weight"]))
+    plan = lm_lora.plan_lora(source(tensors))
+    verdicts, counts = {}, {}
+    for name, (km, ws, _) in built.items():
+        try:
+            lm_lora.check_base(plan, km, ws)
+            verdicts[name] = "pass"
+        except lm_lora.LoraError as e:
+            verdicts[name] = str(e)
+        named = [m for m in plan.modules if m in km]
+        delta = {m: (plan.tensors[f"{m}.lora_B.weight"].shape[0], plan.tensors[f"{m}.lora_A.weight"].shape[1]) for m in named}
+        counts[name] = (len(named), sum(1 for m in named if ws[km[m]] == delta[m]))  # (names core finds, shapes that fit)
+    check("LM: a Qwen3.5-9B adapter (200 modules) passes check_base on qwen35_9b only; on qwen3vl_8b core alone would apply 120",
+          len(plan.modules) == 200 and verdicts["qwen35_9b"] == "pass"
+          and counts == {"qwen35_9b": (200, 200), "qwen35_4b": (200, 0), "qwen35_27b": (200, 0), "qwen3vl_8b": (128, 120)}
+          and all("200 of 200" in verdicts[n] for n in ("qwen35_4b", "qwen35_27b")) and "72 of 200" in verdicts["qwen3vl_8b"],
+          f"{len(plan.modules)} {counts} {verdicts}")
+    lines = Lines()
+    logging.getLogger().addHandler(lines)
+    try:
+        patches = comfy.lora.load_lora(comfy.lora_convert.convert_lora(dict(plan.tensors)), km9)
+    finally:
+        logging.getLogger().removeHandler(lines)
+    check("LM: core's load_lora reads every tensor of the plan (alpha 4 for rank 2: scale 2)",
+          len(patches) == 200 and not any("not loaded" in line for line in lines.lines)
+          and all(p.weights[2] == 4.0 for p in patches.values()), f"{len(patches)} {lines.lines[:3]}")
+
+    # The cuDNN attention fallback (core_backend.generate_ids) relies on core's SDPA wrapper reading the module global
+    # at every call, and calls the executor's own after-node cleanup between the attempts.
+    import inspect
+
+    import comfy.memory_management
+    import comfy.model_management
+    import comfy.model_prefetch
+    import comfy.ops
+    check("LM: core's SDPA wrapper reads comfy.ops.SDPA_BACKEND_PRIORITY at call time; the cleanup the cuDNN fallback "
+          "calls exists",
+          "with sdpa_kernel(SDPA_BACKEND_PRIORITY, set_priority=True)" in inspect.getsource(comfy.ops)
+          and callable(getattr(comfy.model_prefetch, "cleanup_prefetch_queues", None))
+          and callable(getattr(comfy.model_management, "reset_cast_buffers", None))
+          and isinstance(getattr(comfy.memory_management, "aimdo_enabled", None), bool))
+
+
+async def lm_nodes():
+    """Qwen LM and LM Config inside ComfyUI, the "core" LM backend replaced by a recording stand-in (no
+    weights): GET /bcnodes/lm/catalog is on the server and answers per family; the Qwen-LM folder is
+    registered with the .safetensors filter; a prompt LM Config -> Qwen LM -> Preview Any validates and runs,
+    the backend gets the official Qwen3.5 rendering, the config's edited fields over the model's defaults and
+    a seed of 2**64 - 1, and the same prompt queued again comes from the cache (seed fixed: the backend is not
+    called again); thinking on a model without it fails the run with the template's message; an LM Config field
+    fed by a link (a PrimitiveFloat) is applied with edited empty, the node reading the link from its hidden
+    PROMPT."""
+    import importlib
+
+    import folder_paths
+    import server as comfy_server
+
+    pkg = nodes.NODE_CLASS_MAPPINGS["BC_QwenLM"].__module__.rsplit(".", 2)[0]
+    registry = importlib.import_module(f"{pkg}.models.common.registry")
+    handler = next((r.handler for r in comfy_server.PromptServer.instance.routes
+                    if r.method == "GET" and r.path == "/bcnodes/lm/catalog"), None)
+    body = json.loads((await handler(None)).body) if handler else {}
+    family = body.get("families", {}).get("qwen_lm", {})
+    check("LM: GET /bcnodes/lm/catalog answers per family (node, error, models with thinking / mtp / precisions / defaults)",
+          body.get("config_node") == "BC_LMConfig" and family.get("node") == "BC_QwenLM" and family.get("error") is None
+          and family.get("models", {}).get("Qwen3.8-27B", {}).get("precisions") == ["BF16", "INT8 ConvRot", "W4A8"]
+          and list(family["models"]["Qwen3-VL-8B Instruct"]["defaults"]) == ["thinking_off"], f"{str(body)[:300]}")
+    paths, exts = folder_paths.folder_names_and_paths.get("Qwen-LM", ([], set()))
+    check("LM: the Qwen-LM folder is registered (models/Qwen-LM) with the .safetensors filter",
+          os.path.join(folder_paths.models_dir, "Qwen-LM") in paths and exts == {".safetensors"}, f"{paths} {exts}")
+
+    qwen = tempfile.mkdtemp(prefix="bcnodes_qwen_lm_")
+    open(os.path.join(qwen, "Qwen3.5-9B_int8_convrot.safetensors"), "wb").close()
+    folder_paths.add_model_folder_path("Qwen-LM", qwen, is_default=True)
+    calls = []
+
+    class StandIn:
+        name = "core"
+
+        def load(self, path, lora):
+            calls.append(("load", path, lora))
+            return "handle"
+
+        def generate(self, handle, prompt, images, params):
+            calls.append(("generate", prompt, params))
+            return " A red cube.\n"
+
+        def unload(self):
+            return {}
+
+    real = registry.get(registry.LM_BACKEND, "core")
+    registry._FAMILIES[registry.LM_BACKEND]["core"] = StandIn()
+    try:
+        def lm_prompt(model, thinking):
+            return {
+                "1": N("BC_LMConfig", do_sample=True, temperature=0.3, top_k=20, top_p=0.8, min_p=0.0, repetition_penalty=1.0,
+                       presence_penalty=1.5, mtp="off", edited="temperature, mtp"),
+                "2": N("BC_QwenLM", model=model, precision="INT8 ConvRot", lora="None", lora_strength=1.0, thinking=thinking,
+                       max_new_tokens=32768, seed=2 ** 64 - 1, keep_model_loaded=True, system="You are a helpful assistant.",
+                       user="Describe this.", assistant="", config=["1", 0]),
+                "3": N("PreviewAny", source=["2", 0]),
+                "4": N("PreviewAny", source=["2", 1]),
+            }
+        out, executed = await run_twice(lm_prompt("Qwen3.5-9B", False), "lm")
+        generated = [c for c in calls if c[0] == "generate"]
+        params = generated[0][2] if generated else None
+        check("LM: LM Config -> Qwen LM validates and runs; text and thinking reach the outputs",
+              out is not None and out["3"]["text"] == ["A red cube."] and out["4"]["text"] == [""], f"{out}")
+        check("LM: the backend gets the official Qwen3.5 rendering and the file from the Qwen-LM folder",
+              calls and calls[0][1] == os.path.join(qwen, "Qwen3.5-9B_int8_convrot.safetensors") and calls[0][2] is None
+              and generated and generated[0][1] == "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+              "Describe this.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n", f"{calls}")
+        check("LM: the config's edited fields over the model's defaults, seed 2**64 - 1",
+              params is not None and (params.temperature, params.mtp, params.top_p, params.presence_penalty, params.seed,
+                                      params.max_new_tokens) == (0.3, "off", 0.8, 1.5, 2 ** 64 - 1, 32768), f"{params}")
+        check("LM: the same prompt queued again comes from the cache (the backend is not called again)",
+              executed == [] and len(generated) == 1, f"{executed} {len(generated)}")
+        out, valid = await run(lm_prompt("Qwen3-VL-8B Instruct", True), "lm-thinking")
+        check("LM: thinking on a model without it fails the run", out is None and valid[0] and len(generated) == 1, f"{valid[1]}")
+        linked = lm_prompt("Qwen3.5-9B", False)
+        linked["5"] = N("PrimitiveFloat", value=0.42)
+        linked["1"]["inputs"].update(temperature=["5", 0], edited="")  # a field fed by a link, edited empty
+        out, valid = await run(linked, "lm-linked")
+        params = [c for c in calls if c[0] == "generate"][-1][2]
+        check("LM: a linked LM Config field is applied with edited empty; the other fields keep the model's defaults",
+              out is not None and (params.temperature, params.top_p, params.top_k, params.presence_penalty, params.mtp)
+              == (0.42, 0.8, 20, 1.5, "auto"), f"{valid[1] if not valid[0] else params}")
+    finally:
+        registry._FAMILIES[registry.LM_BACKEND]["core"] = real
+        folder_paths.folder_names_and_paths["Qwen-LM"][0].remove(qwen)
 
 
 def process_monitor_default():
