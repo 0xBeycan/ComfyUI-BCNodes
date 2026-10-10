@@ -843,6 +843,23 @@ def _lm_config(c):
     return {}, 0, "a dict of the edited sampling fields, at most eight plain values; no tensor"
 
 
+# -- PreFlight ------------------------------------------------------------------------------------
+
+def _preflight_observe(c):
+    # PreFlight Observe runs a fixed catalog model through the LM runtime (pipelines/preflight/observe.py): no
+    # widget names its file, so no weights are read for it; its outputs are two strings.
+    raise NotCounted("runs Qwen3.5-9B INT8 ConvRot, which no widget names as a file: the model file's weights, the "
+                     "KV cache core reserves for prompt + 300 tokens, the sampled frames (a copy when fewer than "
+                     "the batch) and the images resized for the model are not counted")
+
+
+def _preflight_report(c):
+    # the image input is returned as it is; the other outputs are strings
+    if not c.linked("image"):
+        return {}, 0, "text outputs only: no image to pass on"
+    return {c.slot("IMAGE"): shared(c.tensor("image"))}, 0, "passes the image input on as it is; the report is text"
+
+
 PROFILES = {
     # loaders and resizers
     "VHS_LoadVideo": _whole_clip_loader, "VHS_LoadVideoPath": _whole_clip_loader, "BCVLoadVideo": _bcv_load_video,
@@ -885,4 +902,6 @@ PROFILES = {
     "BC_FrequencyMerge": _frequency_merge,
     # LM nodes
     "BC_QwenLM": _qwen_lm, "BC_LMConfig": _lm_config,
+    # PreFlight (Outcome and Calibrate output text only: no profile needed)
+    "BC_PreFlightObserve": _preflight_observe, "BC_PreFlightReport": _preflight_report,
 }

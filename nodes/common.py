@@ -67,6 +67,24 @@ def compute_device(choice):
     return torch.device("cpu")
 
 
+def lm_folders(folder):
+    """(model folders, text_encoders folders) of an LM family whose folder_paths key, and folder under
+    models/, is `folder` (its LMFamily.folder), in folder_paths order: the folders an LM run (pipelines/lm)
+    searches. Registers the key as models/<folder> first (folder_paths keeps a folder once); a key with no
+    extensions (new, or made by extra_model_paths.yaml) gets .safetensors."""
+    import folder_paths
+
+    folder_paths.add_model_folder_path(folder, os.path.join(folder_paths.models_dir, folder))
+    extensions = folder_paths.folder_names_and_paths[folder][1]
+    if not extensions:
+        extensions.add(".safetensors")
+    try:
+        text_encoders = folder_paths.get_folder_paths("text_encoders")
+    except KeyError:
+        text_encoders = []
+    return tuple(folder_paths.get_folder_paths(folder)), tuple(text_encoders)
+
+
 # --- unused heavy outputs return empty ---------------------------------------------------------
 #
 # A whole-clip IMAGE or MASK that no node consumes is not kept in ComfyUI's output cache until the

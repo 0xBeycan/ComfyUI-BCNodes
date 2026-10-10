@@ -12,30 +12,17 @@ server and aiohttp are imported inside the functions.
 """
 
 import logging
-import os
 
-from .common import LINK_INPUTS, _is_link
+from .common import LINK_INPUTS, _is_link, lm_folders
 
 
 def family_folders(family_key):
-    """(model folders, text_encoders folders) of the LM family `family_key`, in folder_paths order. Registers
-    the family's folder_paths key as models/<its folder> first (folder_paths keeps a folder once); a key
-    with no extensions (new, or made by extra_model_paths.yaml) gets .safetensors."""
-    import folder_paths
-
+    """(model folders, text_encoders folders) of the LM family `family_key`: nodes/common.lm_folders over
+    the family's folder (registered as models/<its folder> first)."""
     from ..models.common import registry
     from ..models.common.registry import LM_FAMILY
 
-    key = registry.get(LM_FAMILY, family_key).folder
-    folder_paths.add_model_folder_path(key, os.path.join(folder_paths.models_dir, key))
-    extensions = folder_paths.folder_names_and_paths[key][1]
-    if not extensions:
-        extensions.add(".safetensors")
-    try:
-        text_encoders = folder_paths.get_folder_paths("text_encoders")
-    except KeyError:
-        text_encoders = []
-    return tuple(folder_paths.get_folder_paths(key)), tuple(text_encoders)
+    return lm_folders(registry.get(LM_FAMILY, family_key).folder)
 
 
 class QwenLM:

@@ -27,9 +27,10 @@ Monitor's HTTP routes and, when the monitor's saved setting is on, starts it (se
 
 ```
 nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, compute_device (the device widgets),
-                              the unused-heavy-outputs helper (LinkStamp, register_link_stamp, stamps_last,
-                              heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (27); social_specs.json is the user-editable platform table
+                              lm_folders (an LM family's model and text_encoders folders, its folder_paths key
+                              registered; Qwen LM and PreFlight Observe), the unused-heavy-outputs helper (LinkStamp,
+                              register_link_stamp, stamps_last, heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
+nodes/<domain>.py             one per domain (28); social_specs.json is the user-editable platform table
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
@@ -46,6 +47,10 @@ pipelines/lm.py               the LM flow: one LM node run (family, catalog, mod
                               sampling, images, backend; keep_model_loaded off unloads in a finally); the catalog,
                               LoRA list and catalog route data the LM nodes show
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
+pipelines/preflight/          prompts (the observation prompt and schema), observe (frames sampled, generate -> parse
+                              -> one retry -> validate -> meta, fail closed; the fixed model and greedy decoding),
+                              rules (the rules engine), feedback (the append-only store), report, outcome (the record
+                              list), calibrate (the tables); the node hands in the generate callable and the store path
 pipelines/seedvr2/            resize, encode, decode, postprocess, compact flows; framing (Resize's downscale factor
                               from the SAM 3 face size); chunk_size (SeedVR2 Chunk Size: frames per chunk for the
                               card); progress; shared constants
@@ -94,6 +99,8 @@ libs/lora_keys.py             LoRA keys core's loader leaves out (.diff_m, PEFT 
                               "first five, then ..." list of names in messages)
 libs/lm_lora.py               LM LoRA files (PEFT, core's names) -> the tensors core applies: the alpha resolved, the
                               base-model and tied-head check; the LoRA folder listing
+web/js/preflight.js           PreFlight Outcome's record list: GET /bcnodes/preflight/records on creation / load, the
+                              bcnodes.preflight.records event after Report logs; a saved value never rewritten
 ```
 
 ## Process Monitor
@@ -191,8 +198,8 @@ where it is.
 ## How to add a node
 
 - Key `BC_<Name>`, a display name, and a `CATEGORY` under `BCNodes/`. The groups today:
-  `analysis`, `image`, `lm`, `loaders`, `logic`, `mask`, `postfx`, `seedvr2` (with its subcategory
-  `seedvr2/compact`), `text`, `workflow`. A new group is added when a new kind of node needs one.
+  `analysis`, `image`, `lm`, `loaders`, `logic`, `mask`, `postfx`, `preflight`, `seedvr2` (with its
+  subcategory `seedvr2/compact`), `text`, `workflow`. A new group is added when a new kind of node needs one.
 - A literal `INPUT_TYPES` in the node class. The node file holds the surface only; the work goes
   to a pipeline (or straight to libs/models when there is no flow).
 - Import the module in the root `__init__.py` and add it to the registration loop (order = menu

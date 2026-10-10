@@ -765,6 +765,7 @@ async def main():
     await lora_key_fix()
     lm_core()
     await lm_nodes()
+    await preflight_nodes()
     await unused_outputs()
     await process_monitor_hook()
     await process_monitor_clear()
@@ -1308,6 +1309,160 @@ async def lm_nodes():
               == (0.42, 0.8, 20, 1.5, "auto"), f"{valid[1] if not valid[0] else params}")
     finally:
         registry._FAMILIES[registry.LM_BACKEND]["core"] = real
+        folder_paths.folder_names_and_paths["Qwen-LM"][0].remove(qwen)
+
+
+async def preflight_nodes():
+    """The PreFlight nodes inside ComfyUI, the "core" LM backend replaced by a recording stand-in that answers
+    with an observation (no weights): EmptyImage -> PreFlight Observe -> PreFlight Report -> Show Text validates
+    and runs, the backend gets the frames then the prompt and greedy params (seed 42, 300 tokens) and unloads
+    once with keep_model_loaded off, the prediction lands in <user dir>/BCNodes/preflight/feedback.jsonl, the
+    record list goes to the browsers (bcnodes.preflight.records) and GET /bcnodes/preflight/records answers it,
+    the image passes through; the same prompt queued again comes from the cache (no second model run, nothing
+    logged again). PreFlight Outcome logs on every queue, by the list's label and by record_id_override with a
+    label the list does not hold (it validates). PreFlight Calibrate -> Show Text runs once, comes from the cache
+    while the store is unchanged and runs again after an outcome is logged."""
+    import importlib
+
+    import folder_paths
+    import server as comfy_server
+
+    pkg = nodes.NODE_CLASS_MAPPINGS["BC_PreFlightObserve"].__module__.rsplit(".", 2)[0]
+    registry = importlib.import_module(f"{pkg}.models.common.registry")
+    observe = importlib.import_module(f"{pkg}.pipelines.preflight.observe")
+    store = os.path.join(folder_paths.get_user_directory(), "BCNodes", "preflight", "feedback.jsonl")
+    answer = json.dumps({"subject_appears_under_18": False, "garment": "bikini", "setting": "beach_pool",
+                         "framing": "full_body", "pose": "neutral", "see_through_or_wet": False, "exposure": "mild",
+                         "nudity_or_sexual_act": False, "motion_flags": "none", "visible_text": "", "confidence": "high"})
+
+    qwen = tempfile.mkdtemp(prefix="bcnodes_preflight_")
+    open(os.path.join(qwen, "Qwen3.5-9B_int8_convrot.safetensors"), "wb").close()
+    folder_paths.add_model_folder_path("Qwen-LM", qwen, is_default=True)
+    calls = []
+
+    class StandIn:
+        name = "core"
+
+        def load(self, path, lora):
+            calls.append(("load", path, lora))
+            return "handle"
+
+        def generate(self, handle, prompt, images, params):
+            calls.append(("generate", prompt, images, params))
+            return answer
+
+        def unload(self):
+            calls.append(("unload",))
+            return {}
+
+    ps = comfy_server.PromptServer.instance
+    sent = []
+    real_send = ps.send_sync
+
+    def send_sync(event, data, sid=None):
+        if event == "bcnodes.preflight.records":
+            sent.append(data)
+        else:
+            real_send(event, data, sid)
+
+    async def queue(ex, server, prompt):
+        """One queue on `ex`: (outputs or None, node ids executed, validation tuple)."""
+        prompt_id = str(uuid.uuid4())
+        valid = await execution.validate_prompt(prompt_id, prompt, None)
+        if not valid[0]:
+            return None, None, valid
+        server.events.clear()
+        await ex.execute_async(copy.deepcopy(prompt), prompt_id, {"client_id": "test"}, valid[2])
+        if not ex.success:
+            errors = [m for m in ex.status_messages if m[0] == "execution_error"]
+            print(f"  [preflight] execution failed: {json.dumps(errors, default=str)[:600]}")
+            return None, None, valid
+        return ex.history_result["outputs"], executed_nodes(server), valid
+
+    def executor():
+        server = Server()
+        return execution.PromptExecutor(server, cache_type=execution.CacheType.CLASSIC,
+                                         cache_args={"lru": 0, "ram": 0, "ram_inactive": 0}), server
+
+    def lines():
+        with open(store, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    real = registry.get(registry.LM_BACKEND, "core")
+    registry._FAMILIES[registry.LM_BACKEND]["core"] = StandIn()
+    ps.send_sync = send_sync
+    try:
+        flow = {
+            "1": N("EmptyImage", width=96, height=64, batch_size=3, color=0x808080),
+            "2": N("BC_PreFlightObserve", image=["1", 0], max_frames=6, keep_model_loaded=False),
+            "3": N("BC_PreFlightReport", observations_json=["2", 0], caption="summer drop", log_prediction=True,
+                   image=["1", 0]),
+            "4": N("BC_ShowText", text=["3", 1]),
+            "5": N("PreviewAny", source=["3", 2]),
+            "6": N("BC_MathExpression", expression="a.width", a=["3", 3]),
+            "7": N("PreviewAny", source=["6", 0]),
+        }
+        ex, server = executor()
+        out, executed, valid = await queue(ex, server, flow)
+        rid = out["5"]["text"][0] if out else ""
+        summary = out["4"]["text"][0] if out else ""
+        check("PreFlight: Observe -> Report -> Show Text validates and runs; the summary holds the verdicts and the record",
+              out is not None and len(rid) == 8 and summary.startswith("Instagram:") and summary.endswith("record: " + rid)
+              and out["6"]["value"] == [96], f"{valid[1] if not valid[0] else out}")
+        generated = [c for c in calls if c[0] == "generate"]
+        params = generated[0][3] if generated else None
+        check("PreFlight: the backend gets the 3 frames then the prompt (no system turn, thinking off), greedy, seed 42, "
+              "300 tokens, and unloads once (keep_model_loaded off)",
+              len(generated) == 1 and generated[0][2].shape[0] == 3
+              and generated[0][1] == ("<|im_start|>user\n" + "<|vision_start|><|image_pad|><|vision_end|>" * 3
+                                      + observe.prompts.OBSERVATION_PROMPT
+                                      + "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
+              and (params.do_sample, params.presence_penalty, params.repetition_penalty, params.seed, params.max_new_tokens)
+              == (False, 0.0, 1.0, 42, 300) and [c[0] for c in calls] == ["load", "generate", "unload"],
+              f"{[c[0] for c in calls]} {params}")
+        check("PreFlight: the prediction is in <user dir>/BCNodes/preflight/feedback.jsonl, its observation stamped",
+              os.path.isfile(store) and [r["id"] for r in lines()] == [rid]
+              and lines()[0]["observations"]["meta"]["model_name"] == "Qwen3.5-9B", f"{store}")
+        check("PreFlight: the record list goes to the browsers once, the new prediction first",
+              len(sent) == 1 and sent[0]["records"][0].startswith(rid + " "), f"{sent}")
+        handler = next((r.handler for r in ps.routes if r.method == "GET" and r.path == "/bcnodes/preflight/records"), None)
+        body = json.loads((await handler(None)).body) if handler else {}
+        check("PreFlight: GET /bcnodes/preflight/records answers the same list", body == sent[0] if sent else False, f"{body}")
+        out, executed, _ = await queue(ex, server, flow)
+        check("PreFlight: the same prompt queued again comes from the cache (no model run, nothing logged again)",
+              out is not None and executed == [] and len([c for c in calls if c[0] == "generate"]) == 1 and len(lines()) == 1,
+              f"{executed} {len(lines())}")
+
+        label = body.get("records", [""])[0]
+        outcome = {"1": N("BC_PreFlightOutcome", record=label, platform="tiktok", result="removed", record_id_override=""),
+                   "2": N("PreviewAny", source=["1", 0])}
+        out, executed = await run_twice(outcome, "preflight-outcome")
+        check("PreFlight: Outcome logs the list's record, on every queue",
+              out is not None and out["2"]["text"] == [f"logged: {rid} tiktok=removed"] and "1" in (executed or [])
+              and [r["type"] for r in lines()] == ["prediction", "outcome", "outcome"], f"{out} {executed}")
+        stale = {"1": N("BC_PreFlightOutcome", record="ffff0000 · a label the list does not hold", platform="x",
+                        result="clean", record_id_override=rid),
+                 "2": N("PreviewAny", source=["1", 0])}
+        out, valid = await run(stale, "preflight-outcome-stale")
+        check("PreFlight: a record label the list does not hold validates; record_id_override wins",
+              out is not None and out["2"]["text"] == [f"logged: {rid} x=clean"], f"{valid[1] if not valid[0] else out}")
+
+        calibrate = {"1": N("BC_PreFlightCalibrate"), "2": N("BC_ShowText", text=["1", 0])}
+        ex, server = executor()
+        out, executed, valid = await queue(ex, server, calibrate)
+        text = out["2"]["text"][0] if out else ""
+        check("PreFlight: Calibrate -> Show Text gives the calibration tables of the store",
+              "predictions: 1   with at least one outcome: 1" in text and "base.bikini" in text and executed == ["1", "2"],
+              f"{valid[1] if not valid[0] else text[:200]} {executed}")
+        out, executed, _ = await queue(ex, server, calibrate)
+        cached = executed
+        await run(outcome, "preflight-outcome-again")
+        out, executed, _ = await queue(ex, server, calibrate)
+        check("PreFlight: Calibrate comes from the cache while the store is unchanged and runs again after an outcome",
+              cached == [] and executed == ["1", "2"], f"{cached} {executed}")
+    finally:
+        registry._FAMILIES[registry.LM_BACKEND]["core"] = real
+        del ps.send_sync
         folder_paths.folder_names_and_paths["Qwen-LM"][0].remove(qwen)
 
 

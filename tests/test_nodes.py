@@ -179,6 +179,16 @@ def main():
     lmc = m["lm"].LMConfig()
     check("LMConfig nothing edited -> {}", lambda: lmc.build(True, 0.7, 20, 0.8, 0.0, 1.0, 1.5, "auto", "") == ({},) or _fail())
 
+    pfo = m["preflight"].PreFlightObserve()
+    check("PreFlightObserve empty batch -> {\"error\": ...}, no model run",
+          lambda: json.loads(pfo.observe(torch.zeros((0, 8, 8, 3)), 6, True)[0])["error"].startswith("ValueError") or _fail())
+    pfr = m["preflight"].PreFlightReport()
+    check("PreFlightReport empty observations -> UNKNOWN, nothing logged, image passed on",
+          lambda: (lambda r: json.loads(r[0])["unknown"] is True and r[2] == "" and r[3] is None)(pfr.report("", "", False)) or _fail())
+    check("PreFlightOutcome INPUT_TYPES with no store", lambda: m["preflight"].PreFlightOutcome.INPUT_TYPES()["required"]["record"][0] == ["no records yet"] or _fail())
+    check("PreFlightOutcome nothing selected", lambda: "no record selected" in m["preflight"].PreFlightOutcome().log("no records yet", "x", "clean", "")[0] or _fail())
+    check("PreFlightCalibrate no store", lambda: "Store is empty" in m["preflight"].PreFlightCalibrate().calibrate()[0] or _fail())
+
     ic = m["image_comparer"].ImageComparer()
     check("ImageComparer nothing wired", lambda: ic.compare() == {"ui": {"a_images": [], "b_images": []}} or _fail())
     check("ImageComparer empty batches", lambda: ic.compare(torch.zeros((0, 8, 8, 3)), torch.zeros((0, 8, 8, 3))) == {"ui": {"a_images": [], "b_images": []}} or _fail())

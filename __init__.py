@@ -55,6 +55,10 @@ Nodes:
     BC_SaveImageWithCaption      save images as PNG, a caption file next to each (datasets)
     BC_SkinTexture               micro-texture on skin inside a SAM 3 mask, before upscale and grain
     BC_FrequencyMerge            low frequencies of one image + high frequencies of another
+    BC_PreFlightObserve          Qwen3.5-9B as an observation sensor: image / frames -> observations JSON
+    BC_PreFlightReport           rules engine: observations + caption -> IG / TikTok / X verdict ranges, logged
+    BC_PreFlightOutcome          what a platform did to a post, into the feedback store
+    BC_PreFlightCalibrate        the feedback store's calibration tables, as text
 
 Frontend-only pieces in web/js: BC_AutoBypass, Join Image Lists' growing
 slots, the downloader's node UI and first-open prompt, and the Align buttons
@@ -66,8 +70,8 @@ on by default; its ComfyUI setting turns it off.
 
 from .nodes import (
     any_switch, birefnet, caption_audit, depth_anything, downloader, everywhere, frequency_merge, image_comparer, image_quality_gate,
-    image_scale, lists, lm, logic, lora_key_fix, mask, math_expression, postfx, power_lora_loader, prompt_list, save_image,
-    save_image_with_caption, seed, seedvr2, select_switch, show_text, skin_texture, social_media_export,
+    image_scale, lists, lm, logic, lora_key_fix, mask, math_expression, postfx, power_lora_loader, preflight, prompt_list,
+    save_image, save_image_with_caption, seed, seedvr2, select_switch, show_text, skin_texture, social_media_export,
 )
 from .nodes.common import register_link_stamp
 from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's routes and, when on, its sampler)
@@ -77,7 +81,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {}
 for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
                 lm, image_comparer, power_lora_loader, lora_key_fix, everywhere, seedvr2,
                 postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture,
-                frequency_merge):
+                frequency_merge, preflight):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(_module.NODE_DISPLAY_NAME_MAPPINGS)
 
@@ -85,6 +89,8 @@ for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downl
 register_link_stamp(NODE_CLASS_MAPPINGS)
 # GET /bcnodes/lm/catalog, the LM catalog web/js/lm.js reads (inside a running server only)
 lm.register_routes()
+# GET /bcnodes/preflight/records, the Outcome record list web/js/preflight.js reads (inside a running server only)
+preflight.register_routes()
 
 WEB_DIRECTORY = "./web"
 

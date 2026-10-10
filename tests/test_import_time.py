@@ -40,7 +40,7 @@ LAYERS = ("nodes", "pipelines", "models", "libs")
 NODE_MODULES = ["logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
                 "lm", "image_comparer", "power_lora_loader", "lora_key_fix", "everywhere", "seedvr2",
                 "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption", "skin_texture",
-                "frequency_merge"]
+                "frequency_merge", "preflight"]
 HEAVY = [
     "transformers", "timm", "scipy", "cv2", "PIL", "huggingface_hub",
     "safetensors", "kornia", "einops", "torchvision", "folder_paths",
@@ -157,6 +157,7 @@ def main():
         "BC_PostFxApply", "BC_PostFxTheme", "BC_PostFxCustomLook", "BC_PostFxLut", "BC_PostFxSignatureSheet",
         "BC_CaptionAudit", "BC_SocialMediaExport", "BC_ImageQualityGate", "BC_SaveImage", "BC_SaveImageWithCaption", "BC_SkinTexture",
         "BC_FrequencyMerge",
+        "BC_PreFlightObserve", "BC_PreFlightReport", "BC_PreFlightOutcome", "BC_PreFlightCalibrate",
     }
     registered = set(pkg.NODE_CLASS_MAPPINGS)
     if registered != expected:
