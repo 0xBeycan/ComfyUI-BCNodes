@@ -4,6 +4,8 @@ list, a fake RAM reader and a fake prompt queue. The real ComfyUI path runs in t
 """
 
 import asyncio
+import collections
+import contextlib
 import enum
 import gc
 import sys
@@ -76,9 +78,11 @@ class FakeGpu:
         self.top = max(self.top, n)
 
     def reset_peak(self):
+        self.readers.add(threading.get_ident())
         self.top = self.now
 
     def peak(self):
+        self.readers.add(threading.get_ident())
         return {"vram_peak": self.top}
 
 
@@ -409,6 +413,8 @@ def test_cached_and_pending_nodes(mon, hk, bcnodes, tmp_path):
 
 
 def test_sampler_runs_and_threshold_snapshot(mon, bcnodes, tmp_path, monkeypatch):
+    """Without the hook the sampler writes the threshold's stack record only: the census of the live
+    tensors is the execution thread's, at a node boundary, which only the hook reaches."""
     import comfy.model_management as mm
 
     stopped = []
@@ -423,10 +429,10 @@ def test_sampler_runs_and_threshold_snapshot(mon, bcnodes, tmp_path, monkeypatch
     m.probe.prompt = None
     m._tick(live=False)  # the queue is empty: the run ends with the queue's status
     recs = records(bcnodes, tmp_path)
-    assert [r["type"] for r in recs] == ["start", "sample", "sample", "snapshot", "snapshot", "sample", "end"]
-    quick, full = recs[3], recs[4]
-    assert "census" not in quick and quick["stopped"]  # the stack record, written before the census
-    assert full["ram"] == 900 and full["stopped"] and stopped == [True] and isinstance(full["census"]["groups"], list)
+    assert [r["type"] for r in recs] == ["start", "sample", "sample", "snapshot", "sample", "end"]
+    stack = recs[3]
+    assert "census" not in stack and stack["ram"] == 900 and stack["stopped"] and stopped == [True]
+    assert recs[0]["models_loaded"] is None  # the sampler started the run: it never lists ComfyUI's models
     assert recs[-1]["status"] == "success" and m.run is None
     assert m.probe.pushed[0]["run"]["prompt_id"] == "p1" and m.probe.pushed[0]["ram"] == 100
 
@@ -456,7 +462,7 @@ def test_samples_carry_the_execution_threads_line(mon, tmp_path):
 def test_snapshot_keeps_no_local_of_the_execution_thread_alive(mon, bcnodes, tmp_path):
     """Reading a running frame's locals from another thread leaves a copy of them on the frame: a
     tensor the node then deletes would stay alive until its function returns. The snapshot reads the
-    stack from code and line numbers only, written before the census."""
+    stack as file names, line numbers and function names only."""
     m = make_monitor(mon, tmp_path)
     ready, snapped, freed = threading.Event(), threading.Event(), []
 
@@ -483,9 +489,8 @@ def test_snapshot_keeps_no_local_of_the_execution_thread_alive(mon, bcnodes, tmp
         snapped.set()
         t.join()
     assert freed == [True]
-    stack, full = [r for r in records(bcnodes, tmp_path) if r["type"] == "snapshot"]
+    (stack,) = [r for r in records(bcnodes, tmp_path) if r["type"] == "snapshot"]
     assert "census" not in stack and stack["line"].endswith("node_code") and any("in node_code" in line for line in stack["stack"])
-    assert [g["count"] for g in full["census"]["groups"] if g["shape"] == [16, 1024, 1024]] == [1]
 
 
 class TickingProbe(Probe):
@@ -508,9 +513,9 @@ class TickingProbe(Probe):
             time.sleep(0.0005)
 
 
-def run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, node, ram, hooked=True):
+def run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, node, ram, hooked=True, armed=True):
     """Runs node(probe) as ComfyUI runs a node, under the whole monitor: inside execute through the
-    hook, the run armed (hooked; else as on a ComfyUI without the hook point: the sampler looks for the
+    hook, the run armed (hooked and armed; else as on a ComfyUI without the hook point: the sampler looks for the
     execution thread on every thread's stack at every tick), the black box on, the sampler thread
     ticking every millisecond. The garbage collector is paused, as it practically is in a GPU loop that
     allocates as much as it frees: only reference counting frees. ram is a FakeRam or its value. Returns
@@ -530,7 +535,7 @@ def run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, node, ram, hooked
     m.start()
     gc.disable()
     try:
-        if hooked:
+        if hooked and armed:
             m.arm(True)
         probe.prompt = "p1"
         caches, executed, el = types.SimpleNamespace(outputs=Cache()), set(), types.SimpleNamespace(execution_cache={})
@@ -592,6 +597,7 @@ def test_a_node_loop_frees_every_iteration_under_the_monitor(mon, bcnodes, tmp_p
     stack, full = [r for r in recs if r["type"] == "snapshot"]
     assert any("in encode" in line for line in stack["stack"]) and any("in node" in line for line in stack["stack"])
     assert stack["stack"] == full["stack"] and isinstance(full["census"]["groups"], list)
+    assert full["scope"] == "whole process, when node 2 ended"
 
 
 def test_the_execution_thread_search_frees_every_iteration(mon, bcnodes, tmp_path, monkeypatch):
@@ -650,8 +656,9 @@ def fill_tuples(stop, errors):
 def test_threshold_snapshot_races_no_tuple_builder(mon, bcnodes, tmp_path):
     """A sampler died of the snapshot: its pass over all objects held a reference to a tuple the
     execution thread was still filling, and the tuple's resize failed (SystemError: bad argument to
-    internal function). The monitor's snapshot runs on a background thread, as in ComfyUI, while two
-    threads fill tuples from generators: one stands in for the execution thread, one for any other."""
+    internal function). The snapshot and its census run on a thread of their own while two other
+    threads fill tuples from generators (the census runs on ComfyUI's execution thread now, and any
+    other thread may be filling a tuple then)."""
     m = make_monitor(mon, tmp_path)
     m.probe.prompt = "p1"
     with m._lock:
@@ -663,7 +670,13 @@ def test_threshold_snapshot_races_no_tuple_builder(mon, bcnodes, tmp_path):
         t.start()
     m.exec_thread = builders[0].ident
     sample = {"ram": 900, "ram_limit": 1000, "node": "1", "class_type": "Grow", "line": None}
-    monitor = threading.Thread(target=lambda: [m._snapshot(run, sample) for _ in range(8)])
+
+    def snapshots():  # the sampler's stack record, then the census as the execution thread takes it
+        for _ in range(8):
+            run.snapshot_done = False
+            m._snapshot(run, sample)
+            m._census(run, "when node 1 ended")
+    monitor = threading.Thread(target=snapshots)
     try:
         monitor.start()
         monitor.join()
@@ -720,3 +733,257 @@ def test_no_hook_point_disables_per_node_measurement_with_a_message(mon, tmp_pat
         assert m.status()["hook"]["available"] is False
     finally:
         m.set_enabled(False)
+
+
+# -- the sampler thread frees nothing of another thread --------------------------------------------
+# The crash on a 3090 (LM generate with CUDA graphs, monitor on): the sampler walked the execution
+# thread's frames (frame = frame.f_back) and held one when its function returned. The frame then held
+# that function's locals, the sampler's reference was the last one, and the locals' CUDA tensors were
+# freed on the sampler thread while the execution thread captured a CUDA graph: the allocator's free
+# failed inside the capture and the process aborted. Whatever the sampler thread holds of another
+# thread's objects can become the last reference the moment that thread drops its own, so these tests
+# give the sampler as many chances as possible: the interpreter switches threads every microsecond
+# instead of every 5 ms, and each object records the thread that frees it.
+
+
+class Freed:
+    """Appends the id of the thread that frees it to `threads`."""
+
+    def __init__(self, threads):
+        self.threads = threads
+
+    def __del__(self):
+        self.threads.append(threading.get_ident())
+
+
+@contextlib.contextmanager
+def preempting():
+    """Threads switch every microsecond, so a Python loop on the sampler is interrupted anywhere."""
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        yield
+    finally:
+        sys.setswitchinterval(old)
+
+
+def race(work, sample, seconds=1.0):
+    """Runs work(stop) as the execution thread and sample(stop, ident of the execution thread) as the
+    sampler thread, under preempting(), until `seconds` pass or sample returns True (it saw what it
+    looks for); returns the sampler thread's id."""
+    stop = threading.Event()
+    worker = threading.Thread(target=work, args=(stop,))
+    out = {}
+
+    def sampler():
+        out["ident"] = threading.get_ident()
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not sample(stop, worker.ident):
+            pass
+        stop.set()
+
+    with preempting():
+        worker.start()
+        thread = threading.Thread(target=sampler)
+        thread.start()
+        thread.join(seconds + 30)
+        stop.set()
+        worker.join(30)
+    return out["ident"]
+
+
+def test_reading_the_stacks_frees_nothing_of_the_execution_thread(mon, tmp_path):
+    """Calls that make an object, go deeper and return, over and over (a model's forward, layer by layer),
+    while the sampler reads that thread's stack, every thread's stack, and searches for the execution
+    thread. No object of those calls is ever freed on the sampler thread; the stacks are read. With a
+    Python audit hook, as filelock installs in every ComfyUI process: reading frame.f_code calls it, and
+    a hook is bytecode, during which other threads run (audit hooks cannot be removed: it stays for the
+    session, a no-op)."""
+    sys.addaudithook(lambda event, args: None)
+    freed, seen = [], set()
+
+    def layer(n):
+        held = Freed(freed)
+        return layer(n - 1) if n else held
+
+    def work(stop):
+        while not stop.is_set():
+            layer(24)
+
+    m = make_monitor(mon, tmp_path)
+
+    def sample(stop, ident):
+        seen.update(entry[-1] for entry in mon.thread_stack(ident))  # (file, line, name); old: (code, line)
+        seen.update(len(stack) > 0 for stack in mon.thread_stacks().values())
+        m.exec_thread = None
+        m._execution_stack()  # no thread runs execution.py here: every thread's stack is searched
+        return threading.get_ident() in freed
+
+    sampler = race(work, sample)
+    assert sampler not in freed, f"{freed.count(sampler)} object(s) of the execution thread freed on the sampler thread"
+    assert {"layer", True} <= seen and len(freed) > 1000
+
+
+def test_the_threshold_snapshot_frees_no_tensor_on_the_sampler_thread(mon, tmp_path):
+    """A node that makes and drops tensors while RAM is over the threshold and the sampler takes the
+    snapshot again and again: the census of the live tensors (which holds each tensor while it describes
+    it) is not taken on the sampler thread, so no tensor is freed there."""
+    freed = []
+
+    def note():  # weakref.finalize calls it on the thread that frees the tensor
+        freed.append(threading.get_ident())
+
+    def work(stop):  # the node's last 64 tensors alive, the oldest dropped as each new one comes
+        alive = collections.deque()
+        while not stop.is_set():
+            t = torch.empty(16)
+            weakref.finalize(t, note)
+            alive.append(t)
+            del t
+            if len(alive) > 64:
+                alive.popleft()
+
+    m = make_monitor(mon, tmp_path)
+    m.update_settings({"threshold": 0.5})
+    with m._lock:
+        run = m._start_run("p1", {})
+    sample = {"ram": 900, "ram_limit": 1000, "node": "1", "class_type": "Grow", "line": None}
+
+    def snapshot(stop, ident):
+        run.snapshot_done = False
+        m._snapshot(run, sample)
+        return threading.get_ident() in freed
+
+    sampler = race(work, snapshot, seconds=3.0)
+    assert sampler not in freed, f"{freed.count(sampler)} tensor(s) of the execution thread freed on the sampler thread"
+    assert len(freed) > 1000
+
+
+class Patcher:
+    """ComfyUI's ModelPatcher as far as model management reaches it; records the thread that frees it."""
+
+    def __init__(self, freed):
+        self.freed, self.model = freed, torch.nn.Identity()
+
+    def loaded_size(self):
+        return 1
+
+    def __del__(self):
+        self.freed.append(threading.get_ident())
+
+
+class LoadedModel:
+    """ComfyUI's LoadedModel: a weak reference to its patcher (comfy/model_management.py)."""
+
+    def __init__(self, patcher):
+        self._model = weakref.ref(patcher)
+
+    @property
+    def model(self):
+        return self._model()
+
+    def model_loaded_memory(self):
+        return self.model.loaded_size()
+
+
+def test_a_run_start_on_the_sampler_frees_no_model_of_the_execution_thread(mon, tmp_path):
+    """The start record lists ComfyUI's loaded models; reading them takes a strong reference to each
+    patcher (LoadedModel holds a weak one). The sampler starts runs (one per tick here) while the
+    execution thread loads patchers and drops them: none is freed on the sampler thread."""
+    import comfy.model_management as mm
+
+    freed = []
+
+    def work(stop):
+        while not stop.is_set():
+            patcher = Patcher(freed)
+            loaded = LoadedModel(patcher)
+            mm.current_loaded_models.append(loaded)
+            del patcher  # the node's output dropped: only the weak reference is left
+            mm.current_loaded_models.remove(loaded)
+
+    m = make_monitor(mon, tmp_path)
+    n = iter(range(10 ** 9))
+
+    def tick(stop, ident):
+        m.probe.prompt = f"p{next(n)}"  # another prompt each tick: the run ends and a new one starts
+        m._tick(live=False)
+        return threading.get_ident() in freed
+
+    sampler = race(work, tick)
+    assert sampler not in freed, f"{freed.count(sampler)} patcher(s) freed on the sampler thread"
+    assert len(freed) > 100
+
+
+def test_turning_the_monitor_off_reads_the_gpu_on_the_sampler_thread_only(mon, bcnodes, tmp_path, monkeypatch):
+    """The run's end record reads torch's VRAM peak (cudaMemPoolGetAttribute under cudaMallocAsync). Only
+    the sampler thread may make that call during a run: it alone is in the relaxed capture mode. Turning
+    the monitor off during a run (a route's thread) ends the run on the sampler thread."""
+    gpu = FakeGpu()
+    monkeypatch.setattr(mon, "PERIOD", 0.001)
+    monkeypatch.setattr(mon, "find", lambda: (None, "no hook in this test"))
+    monkeypatch.setattr(mon.memory_sources, "ram_source", lambda: FakeRam())
+    monkeypatch.setattr(mon.memory_sources, "gpu_source", lambda: gpu)
+    m = mon.Monitor(str(tmp_path), TickingProbe(), platform="linux")
+    m.start()
+    sampler = m._thread.ident
+    try:
+        m.probe.prompt = "p1"
+        m.probe.sampled()
+        assert m.run is not None
+    finally:
+        m.stop()  # from this thread, as the /enable route's
+    end = records(bcnodes, tmp_path)[-1]
+    assert end["type"] == "end" and end["status"] == "monitor turned off during the run" and "vram_peak" in end
+    assert gpu.readers == {sampler}
+
+
+def test_the_census_is_taken_by_the_execution_thread_when_the_node_ends(mon, bcnodes, tmp_path, monkeypatch):
+    """RAM crosses the threshold during a node of a run that is not armed (the black box only): the
+    sampler writes the stack at once; the census of the live tensors comes from the execution thread
+    when the node ends, through the hook, with what is alive then. Its time is the snapshot's, not the
+    hook's."""
+    threads, kept, ram = [], [], FakeRam(100)
+    real = mon.census
+    monkeypatch.setattr(mon, "census", lambda: threads.append(threading.get_ident()) or real())
+
+    def node(probe):
+        kept.append(torch.zeros(16, 1024, 333, dtype=torch.uint8))  # a shape of its own, alive after the node
+        ram.value = 900
+        probe.sampled()  # the sampler crosses the threshold meanwhile
+        assert threads == []
+
+    recs = run_under_the_monitor(mon, bcnodes, tmp_path, monkeypatch, node, ram=ram, armed=False)
+    stack, full = [r for r in recs if r["type"] == "snapshot"]
+    assert "census" not in stack and stack["node"] == "2" and full["scope"] == "whole process, when node 2 ended"
+    assert threads == [threading.get_ident()]  # call_execute runs the node on this thread
+    assert [g["count"] for g in full["census"]["groups"] if g["shape"] == [16, 1024, 333]] == [1]
+    monitor = recs[-1]["monitor"]
+    assert full["seconds"] > 0 and monitor["snapshot_s"] == pytest.approx(full["seconds"], abs=1e-3) and monitor["hook_s"] >= 0
+    assert monitor["total_s"] == pytest.approx(monitor["hook_s"] + monitor["sampler_s"] + monitor["snapshot_s"], abs=1e-3)
+
+
+def test_a_run_the_sampler_started_lists_the_models_at_its_first_node(mon, hk, bcnodes, tmp_path, monkeypatch):
+    """The sampler starts a run as soon as the queue runs a prompt and never lists ComfyUI's loaded
+    models; the run's first node start lists them on the execution thread, and the report reads them."""
+    import comfy.model_management as mm
+
+    patcher = Patcher([])
+    monkeypatch.setattr(mm, "current_loaded_models", [LoadedModel(patcher)])
+    m = make_monitor(mon, tmp_path)
+    module = fake_execution(produce)
+    m.hook = hk.Hook(module, m)
+    m.hook.install()
+    m.probe.prompt = "p1"
+    m._tick(live=False)  # the sampler starts the run
+    caches, executed, el = types.SimpleNamespace(outputs=Cache()), set(), types.SimpleNamespace(execution_cache={})
+    call_execute(module, "1", caches, executed, el)
+    call_execute(module, "2", caches, executed, el)
+    with m._lock:
+        m._end_run("success")
+    recs = records(bcnodes, tmp_path)
+    nodes = [r for r in recs if r["type"] == "node"]
+    assert recs[0]["models_loaded"] is None
+    assert nodes[0]["models_at_start"] == [{"name": "Identity", "bytes": 1}] and "models_at_start" not in nodes[1]
+    report = bcnodes["pipelines.process_monitor.blackbox"].run_report(recs)
+    assert report["profile"].startswith("repeat run: 1 model(s) were already loaded at the start (Identity)")

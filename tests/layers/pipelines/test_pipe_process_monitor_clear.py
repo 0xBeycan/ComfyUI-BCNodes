@@ -349,3 +349,28 @@ def test_two_clears_at_once_run_one(cl):
     finally:
         gate.set()
         first.join()
+
+
+def test_the_clear_reads_the_gpu_models_and_tensors_only_with_the_queue_held(cl, monkeypatch):
+    """A CUDA counter read (cudaMemPoolGetAttribute, cudaMemGetInfo) from a route's thread aborts the
+    process when a prompt captures a CUDA graph meanwhile, and a model or tensor held by that thread is
+    freed there when the prompt drops its own reference. The clear makes every such read with the
+    prompt queue held and empty: the reading before it, the model list, each reading after a step,
+    and the census of what remains."""
+    probe = Probe()
+    seen = []
+
+    class Gpu:
+        def read(self):
+            seen.append(("gpu", probe.held))
+            return {"vram": 0}
+
+        def pinned_cache(self):
+            return 0
+
+    monkeypatch.setattr(cl, "census", lambda **kw: seen.append(("census", probe.held)) or {"groups": [], "by_device": {}})
+    monkeypatch.setattr(cl, "loaded_models", lambda: seen.append(("models", probe.held)) or [])
+    ram = Ram()
+    cl.FullClear(probe, lambda: (ram, Gpu())).run()
+    assert {kind for kind, _ in seen} == {"gpu", "census", "models"}
+    assert [kind for kind, held in seen if not held] == []

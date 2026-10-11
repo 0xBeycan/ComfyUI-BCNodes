@@ -267,8 +267,8 @@ def test_generate(backend, backend_params, core):
     clip = backend.load("/m/a.safetensors", None)
     prompt = "<|im_start|>user\nHi \\(x\\) embedding:e<|im_end|>\n"
     text = backend.generate(clip, prompt, None, params(backend_params))
-    (_, used, tokens, kw), decode = core.events[-2:]
-    assert used is clip and text == "AB"
+    (_, used, tokens, kw), cleanup, reset, decode = core.events[-4:]
+    assert used is clip and text == "AB" and (cleanup, reset) == (("cleanup_prefetch_queues",), ("reset_cast_buffers",))
     assert tokens == {"qwen35_9b": [[(t, 1.0) for t in _HF()(prompt)["input_ids"]]]}, "the raw prompt, unaltered"
     assert kw == dict(do_sample=True, max_length=32768, temperature=0.7, top_k=20, top_p=0.8, min_p=0.0,
                       repetition_penalty=1.0, seed=123, presence_penalty=1.5, mtp=True)
@@ -279,7 +279,7 @@ def test_generate(backend, backend_params, core):
 def test_generate_greedy_still_gets_the_seed(backend, backend_params, core, mtp, expected):
     clip = backend.load("/m/a.safetensors", None)
     backend.generate(clip, "<|im_start|>user\nx<|im_end|>\n", None, params(backend_params, do_sample=False, seed=0, mtp=mtp))
-    kw = core.events[-2][3]
+    kw = core.events[-4][3]
     assert kw["do_sample"] is False and kw["seed"] == 0 and type(kw["seed"]) is int and kw["mtp"] == expected
 
 
@@ -288,7 +288,7 @@ def test_generate_with_images(backend, backend_params, core):
     images = torch.rand((2, 32, 32, 3))
     prompt = "<|im_start|>user\n<|image_pad|><|image_pad|>Hi<|im_end|>\n"
     backend.generate(clip, prompt, images, params(backend_params))
-    (row,) = core.events[-2][2]["qwen35_9b"]
+    (row,) = core.events[-4][2]["qwen35_9b"]
     entries = [t for t, _ in row if isinstance(t, dict)]
     assert len(row) == len(_HF()(prompt)["input_ids"]) and [w for _, w in row] == [1.0] * len(row)
     assert [e["type"] for e in entries] == ["image", "image"] and [e["original_type"] for e in entries] == ["image", "image"]
@@ -339,9 +339,11 @@ def test_cudnn_attention_failure_retries_once_without_it(backend, backend_params
     without = [b for b in sdpa.priority if b != sdpa.cudnn]
     assert clip.seen == [sdpa.priority, without]
     assert sdpa.ops.SDPA_BACKEND_PRIORITY is sdpa.original and sdpa.original == sdpa.priority
-    failed, cleanup, reset, retried = core.events[-5:-1]
-    # the executor's own cleanup between the attempts; the retry gets exactly what the first attempt got
-    assert kinds(core)[-5:] == ["generate failed", "cleanup_prefetch_queues", "reset_cast_buffers", "generate", "decode"]
+    failed, cleanup, reset, retried = core.events[-7:-3]
+    # the executor's own cleanup between the attempts and after the generate; the retry gets exactly what the first
+    # attempt got
+    assert kinds(core)[-7:] == ["generate failed", "cleanup_prefetch_queues", "reset_cast_buffers", "generate",
+                                "cleanup_prefetch_queues", "reset_cast_buffers", "decode"]
     assert retried[2] == failed[2] and retried[3] == failed[3] and retried[3]["seed"] == 123
     (warning,) = [r for r in caplog.records if "cuDNN" in r.getMessage()]
     assert warning.levelname == "WARNING" and "LM generation runs without cuDNN attention in this process" in warning.getMessage()
@@ -391,6 +393,29 @@ def test_no_fallback_without_cudnn_in_cores_priority(backend, backend_params, co
     with pytest.raises(RuntimeError, match="^cuDNN Frontend error"):
         backend.generate(clip, "<|im_start|>user\nx<|im_end|>\n", None, params(backend_params))
     assert clip.seen == [[]] and cb._cudnn_attention_off is False
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_every_generate_drops_the_captured_state(backend, backend_params, core, cb, fails):
+    # the CUDA graphs a decode captures hold its KV cache's addresses: each generate ends with the executor's own
+    # cleanup, so the next one (another frame, another prompt length) never replays them; a failed one too
+    clip = _Attention(core, error=RuntimeError("CUDA out of memory") if fails else None)
+    prompt = "<|im_start|>user\nx<|im_end|>\n"
+    for _ in range(2):
+        if fails:
+            with pytest.raises(RuntimeError, match="out of memory"):
+                backend.generate(clip, prompt, None, params(backend_params))
+        else:
+            assert backend.generate(clip, prompt, None, params(backend_params)) == "AB"
+    after = ["cleanup_prefetch_queues", "reset_cast_buffers"]
+    assert kinds(core) == (after * 2 if fails else ["generate", *after, "decode"] * 2)
+
+
+def test_no_cleanup_without_aimdo(backend, backend_params, core, monkeypatch):
+    monkeypatch.setattr(sys.modules["comfy.memory_management"], "aimdo_enabled", False)
+    assert backend.generate(_Clip(core, "/m/a.safetensors"), "<|im_start|>user\nx<|im_end|>\n", None,
+                            params(backend_params)) == "AB"
+    assert kinds(core) == ["generate", "decode"]
 
 
 def test_token_structure(cb):

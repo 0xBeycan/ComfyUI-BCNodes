@@ -35,7 +35,7 @@ class RunStart(TypedDict):
     ram_limit: int
     oom_kills: int  # None outside a cgroup v2 / v1 with the counter
     container: str  # the cgroup's identity (memory_sources.CgroupMemory.identity), None outside one
-    models_loaded: list
+    models_loaded: list  # None when the sampler thread started the run: the first node record has them
     armed: bool
     threshold: float
 
@@ -67,6 +67,7 @@ class NodeStart(TypedDict):
     ram: int
     cache: int  # bytes held by ComfyUI's output cache when the node starts
     inputs: list  # [{"name", "bytes", "count", "tensors": [tensor_census.describe(t) ...]}]
+    models_at_start: list  # the run's first node, when the start record has no models_loaded (NotRequired)
 
 
 class NodeEnd(TypedDict, total=False):
@@ -92,7 +93,8 @@ class NodeEnd(TypedDict, total=False):
 
 
 class Snapshot(TypedDict, total=False):
-    type: str  # "snapshot", twice: the stack at once, then the same record with census and seconds
+    type: str  # "snapshot", twice: the stack at once (sampler thread), then the same record with census,
+    # scope and seconds, taken by the execution thread when the running node ends (or the next starts)
     t: float
     ram: int
     ram_limit: int
@@ -104,7 +106,7 @@ class Snapshot(TypedDict, total=False):
     stack: list
     seconds: float  # the second record only
     stopped: bool
-    scope: str  # older run logs only: "execution thread locals" (first record) or "whole process"
+    scope: str  # the census record: "whole process, when node N ended"; older logs: "execution thread locals"
 
 
 class CachedNodes(TypedDict):
@@ -329,15 +331,27 @@ def _node_rows(records):
              "output_bytes": n["output_bytes"], "outputs": []} for n in listed] + ends
 
 
+def _models_at_start(start, records):
+    """ComfyUI's loaded models when the run started, or None when they were not read: the start record's,
+    else the first node record's (the sampler thread started the run and never reads them)."""
+    if start.get("models_loaded") is not None:
+        return start["models_loaded"]
+    return next((r["models_at_start"] for r in _of(records, "node") if "models_at_start" in r), None)
+
+
 def run_report(records):
     """The Last run tab: status, the monitor's own time, peaks, and the per-node table of an armed run
     (or the node timeline the hook recorded)."""
     start, end = records[0], records[-1]
     samples = _of(records, "sample")
-    loaded = start.get("models_loaded") or []
-    profile = (f"repeat run: {len(loaded)} model(s) were already loaded at the start "
-               f"({', '.join(m['name'] for m in loaded)}); a first run loads them and differs"
-               if loaded else "first run: no model was loaded at the start")
+    loaded = _models_at_start(start, records)
+    if loaded is None:
+        profile = "models loaded at the start: not read (no node ran through the monitor's hook)"
+    elif loaded:
+        profile = (f"repeat run: {len(loaded)} model(s) were already loaded at the start "
+                   f"({', '.join(m['name'] for m in loaded)}); a first run loads them and differs")
+    else:
+        profile = "first run: no model was loaded at the start"
     seconds = end.get("seconds") or 0.0
     monitor = end.get("monitor") or {}
     snaps = _of(records, "snapshot")

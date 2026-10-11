@@ -156,6 +156,22 @@ def without_cudnn_attention(ops, cudnn):
         ops.SDPA_BACKEND_PRIORITY = original
 
 
+def drop_generate_state():
+    """What ComfyUI's executor does after each node when comfy-aimdo is on (execution.py): the prefetch queues
+    (pinned blocks, the malloc graph, and the CUDA graphs the decode captured on the layers) and the cast buffers
+    are dropped. A captured graph replays the addresses of the KV cache it was captured with, and the next generate
+    frees that cache and allocates its own, so every generate ends with this: several generates in one node run
+    (Captioner's frames, PreFlight Observe's retry) then start as separate node runs do, where the next prompt of
+    another length would replay the previous cache (CUDA "index_copy_(): index out of bounds")."""
+    import comfy.memory_management
+    import comfy.model_management
+    import comfy.model_prefetch
+
+    if comfy.memory_management.aimdo_enabled:
+        comfy.model_prefetch.cleanup_prefetch_queues()
+        comfy.model_management.reset_cast_buffers()
+
+
 def generate_ids(handle, tokens, kwargs):
     """handle.generate(tokens, **kwargs) with the cuDNN attention fallback (module docstring), which applies only
     while core's SDPA priority list holds cuDNN (comfy.ops.SDPA_BACKEND_PRIORITY exists only with CUDA and a torch
@@ -184,17 +200,9 @@ def generate_ids(handle, tokens, kwargs):
                         "this process from now on (core's other models keep it), and this one runs again",
                         str(first).strip())
         _cudnn_attention_off = True
-        # What ComfyUI's executor does after each node when comfy-aimdo is on (execution.py): the prefetch queues
-        # (pinned blocks, malloc graph) and cast buffers the failed forward left are dropped, so the retry starts
-        # as an un-failed run does. The KV cache, the seeded generator and the clip options are new in every
-        # generate.
-        import comfy.memory_management
-        import comfy.model_management
-        import comfy.model_prefetch
-
-        if comfy.memory_management.aimdo_enabled:
-            comfy.model_prefetch.cleanup_prefetch_queues()
-            comfy.model_management.reset_cast_buffers()
+        # the retry starts as an un-failed run does; the KV cache, the seeded generator and the clip options are
+        # new in every generate
+        drop_generate_state()
     try:
         with without_cudnn_attention(comfy.ops, cudnn):
             return handle.generate(tokens, **kwargs)
@@ -248,11 +256,14 @@ class CoreBackend:
     def generate(self, handle, prompt: str, images, params: GenerateParams) -> str:
         """The decoded new text of `handle` (a CLIP from load) for the raw `prompt`; special tokens such as
         <|im_end|> are stripped, <think> / </think> stay."""
-        ids = generate_ids(handle, tokenize(handle, prompt, images),
-                           dict(do_sample=params.do_sample, max_length=params.max_new_tokens,
-                                temperature=params.temperature, top_k=params.top_k, top_p=params.top_p,
-                                min_p=params.min_p, repetition_penalty=params.repetition_penalty, seed=params.seed,
-                                presence_penalty=params.presence_penalty, mtp=core_mtp(params.mtp)))
+        try:
+            ids = generate_ids(handle, tokenize(handle, prompt, images),
+                               dict(do_sample=params.do_sample, max_length=params.max_new_tokens,
+                                    temperature=params.temperature, top_k=params.top_k, top_p=params.top_p,
+                                    min_p=params.min_p, repetition_penalty=params.repetition_penalty, seed=params.seed,
+                                    presence_penalty=params.presence_penalty, mtp=core_mtp(params.mtp)))
+        finally:
+            drop_generate_state()
         return handle.decode(ids, skip_special_tokens=True)
 
     def unload(self) -> dict:

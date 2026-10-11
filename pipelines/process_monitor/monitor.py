@@ -4,7 +4,16 @@ Off: no thread, no hook, no file write. On: one sampler thread wakes every 100 m
 looks whether a prompt runs and reads RAM / VRAM once a second for the live bars. During a run it
 reads every tick and, with the black box on, logs a line (RAM, VRAM, the executing node, the line
 the execution thread is on). With the hook, every node start is logged too; an armed run adds the
-per-node measurement. When RAM crosses the threshold, one snapshot of the live tensors is logged.
+per-node measurement. When RAM crosses the threshold, the execution thread's stack is logged at once,
+and the census of the live tensors when the running node ends (on the execution thread, through the
+hook).
+
+The sampler thread frees nothing of another thread: whatever it held of another thread's objects (a
+frame, a tensor, a model patcher) would become the last reference when that thread dropped its own,
+and be freed on the sampler, during a CUDA graph capture of the execution thread too (an abort). So it
+reads stacks as strings (thread_stack), never takes the census or lists ComfyUI's loaded models, and
+makes no CUDA call but the counter reads it is entered for (CudaMemory.enter_thread); the run's end
+record, which reads torch's peak, is written on this thread or the execution thread.
 
 Run boundaries come from the prompt queue (`probe.running()`), which every ComfyUI version has; the
 hook starts a run as soon as its first node runs. The monitor counts its own time: the hook's time
@@ -14,6 +23,9 @@ The probe is the node layer's adapter over ComfyUI's server: running() -> (promp
 or None, status(prompt_id) -> str, last_node() -> node id or None, push(payload).
 """
 
+import ast
+import contextlib
+import gc
 import json
 import logging
 import os
@@ -25,6 +37,9 @@ import time
 import traceback
 import uuid
 from dataclasses import asdict
+from functools import lru_cache, partial
+from itertools import accumulate, chain, repeat, starmap, takewhile
+from operator import is_not, methodcaller
 
 from ...libs import memory_sources
 from ...libs.tensor_census import Covered, census, sized, storage_bytes
@@ -34,10 +49,16 @@ from .hook import MIN_COMFYUI, Hook, find
 PERIOD = 0.1
 LIVE_EVERY = 10  # ticks: the live bars update once a second
 _LIBRARY_DIRS = tuple(p for p in {sysconfig.get_paths().get("stdlib"), sysconfig.get_paths().get("platstdlib")} if p)
+# the stack read (thread_stack): C callables only
+_ONCE = ((),)  # starmap's one call
+_IS_FRAME = partial(is_not, None)
+_BACK = repeat("f_back")
+_COLLECTS_ON_ALLOCATION = sys.version_info < (3, 12)  # since 3.12 a collection waits for the next bytecode
+_FRAME_REPR = re.compile(r"<frame at 0x[0-9a-fA-F]+, file (.+), line (-?\d+), code (.*)>", re.DOTALL)
 
 
-def _entry_text(code, line):
-    return f"{code.co_filename}:{line} {code.co_name}"
+def _entry_text(filename, line, name):
+    return f"{filename}:{line} {name}"
 
 
 def _is_library(filename):
@@ -45,35 +66,76 @@ def _is_library(filename):
             or filename.startswith(_LIBRARY_DIRS))
 
 
-def _walk(frame):
-    stack = []
-    while frame is not None:
-        stack.append((frame.f_code, frame.f_lineno))
-        frame = frame.f_back
-    return stack
+def _gil():
+    """False on a free-threaded interpreter running without its GIL (3.13t+), where other threads run
+    during any call."""
+    enabled = getattr(sys, "_is_gil_enabled", None)
+    return enabled is None or enabled()
+
+
+@contextlib.contextmanager
+def _no_collection():
+    """Before Python 3.12 an allocation can run the cyclic collector at once, and the finalizers it runs
+    are Python code, during which other threads run: the collector is paused around a stack read there."""
+    paused = _COLLECTS_ON_ALLOCATION and gc.isenabled()
+    if paused:
+        gc.disable()
+    try:
+        yield
+    finally:
+        if paused:
+            gc.enable()
+
+
+@lru_cache(maxsize=4096)
+def _filename(quoted):
+    """A file name from its repr(), as a frame's repr shows it (decoded once per file)."""
+    return ast.literal_eval(quoted)
+
+
+def _entry(text):
+    """(filename, line, name) of a frame's repr: <frame at 0x.., file '/x.py', line 12, code fn>."""
+    match = _FRAME_REPR.fullmatch(text)
+    return _filename(match[1]), int(match[2]), match[3]
 
 
 def thread_stack(ident):
-    """[(code, line), ...] of a thread's stack, innermost first; [] for a thread that is gone, or ident None.
+    """((filename, line, name), ...) of a thread's stack, innermost first; () for a thread that is gone,
+    for ident None, and without the GIL (_gil).
 
-    With thread_stacks, the only place the monitor touches frame objects, and none leaves it: a frame
-    object held after its function ends keeps that function's locals (the node's tensors), and the
-    caller's frame with them. The dict sys._current_frames() returns is never bound to a name: it holds
-    the frame of the function that called it, so a local holding the dict makes the two a reference
-    cycle, which keeps every frame of the dict, and the locals of each one that ends meanwhile, until
-    the garbage collector runs (a GPU loop that allocates and frees can run for minutes without one)."""
-    return _walk(sys._current_frames().get(ident))
+    The only place the monitor reads a stack. The frames are taken and dropped inside ONE C-level call
+    (the tuple() below): sys._current_frames(), the dict's get, each f_back and each frame's repr are C
+    functions that run no bytecode and never release the GIL, and the call drops its last frame
+    reference before it returns. So no other thread runs while this thread holds a frame, every frame it
+    holds belongs to a call that is still running, and that call's own reference outlives this one: the
+    read frees nothing. A frame held in Python (a loop over f_back) is still held when its call returns;
+    it then keeps the call's locals, and dropping it frees them on this thread (the RTX 3090 crash: the
+    LM's CUDA tensors freed on the sampler thread during a CUDA graph capture, an abort). Only strings
+    leave the call. The repr, not f_code: reading f_code raises an audit event, and a Python audit hook
+    (filelock installs one, and ComfyUI imports it) is bytecode, during which other threads run;
+    sys._current_frames() audits too, but before it takes a frame. The dict it returns lives inside the
+    call: it holds the caller's own frame, and a name bound to it would make a reference cycle that keeps
+    every frame of it, and their locals, until the cyclic collector runs."""
+    if not _gil():
+        return ()
+    with _no_collection():
+        frames = tuple(map(repr, takewhile(_IS_FRAME, accumulate(chain(
+            map(methodcaller("get", ident), starmap(sys._current_frames, _ONCE)), _BACK), getattr))))
+    return tuple(map(_entry, frames))
 
 
 def thread_stacks():
-    """{thread id: [(code, line), ...]} of every thread, as thread_stack."""
-    return {ident: _walk(frame) for ident, frame in sys._current_frames().items()}
+    """{thread id: stack} of every thread, each read as thread_stack reads one (the ids in one C-level
+    call of their own)."""
+    with _no_collection():
+        idents = list(chain.from_iterable(starmap(sys._current_frames, _ONCE)))
+    return {ident: thread_stack(ident) for ident in idents}
 
 
 def code_lines(stack):
     """(line, top) of a stack: the innermost entry outside the stdlib and installed packages (the line
     of the node's own code, e.g. the torch.stack call), and the innermost entry when it is another one."""
-    own = next((i for i, (code, _) in enumerate(stack) if not _is_library(code.co_filename)), None)
+    own = next((i for i, (filename, _, _) in enumerate(stack) if not _is_library(filename)), None)
     return _entry_text(*stack[own or 0]), (_entry_text(*stack[0]) if own != 0 else None)
 
 
@@ -81,7 +143,7 @@ def find_execution_thread(stacks):
     """The id of the thread running a prompt (stacks as thread_stacks gives them): the one with
     PromptExecutor's frame on its stack."""
     for ident, stack in stacks.items():
-        if any(code.co_name in ("execute_async", "execute") and code.co_filename.endswith("execution.py") for code, _ in stack):
+        if any(name in ("execute_async", "execute") and filename.endswith("execution.py") for filename, _, name in stack):
             return ident
     return None
 
@@ -129,7 +191,10 @@ def cached_nodes(dynprompt, outputs_cache):
 
 def loaded_models():
     """[{"id", "name", "bytes"}] of ComfyUI's loaded models (bytes on their device), [] outside
-    ComfyUI."""
+    ComfyUI. Only on the execution thread between nodes, or with the prompt queue held and empty:
+    a LoadedModel holds its patcher by a weak reference, so the strong one taken here is the last when
+    the execution thread drops the patcher meanwhile, and the patcher, its weights and its finalizers
+    (cleanup_models) then go on the calling thread."""
     try:
         import comfy.model_management as mm
     except ImportError:
@@ -172,6 +237,8 @@ class Run:
         self.node_peak = 0
         self.vram_peak = 0  # torch's peak over the run, folded in before every per-node reset
         self.snapshot_done = False
+        self.census_due = None  # the threshold's stack record, until the execution thread adds the census
+        self.models_known = False  # ComfyUI's loaded models at the start are in the log
         self.cached_listed = False
         self.pending = {}  # node id -> seconds of its PENDING execute calls
 
@@ -236,16 +303,15 @@ class Monitor:
                             "see the monitor's Crash tab.", crash)
 
     def stop(self):
+        """Removes the hook, then stops the sampler, which ends a running run on its way out (the end
+        record reads torch's peak: a CUDA call the calling thread, a route's, must not make)."""
         if self._thread is None:
             return
+        if self.hook is not None:
+            self.hook.uninstall()
         self._stop.set()
         self._thread.join(timeout=5)
         self._thread = None
-        if self.hook is not None:
-            self.hook.uninstall()
-        with self._lock:
-            if self.run is not None:
-                self._end_run("monitor turned off during the run")
 
     def update_settings(self, changes):
         self.settings = settings_mod.apply(self.settings, {k: v for k, v in changes.items() if k != "enabled"})
@@ -268,29 +334,34 @@ class Monitor:
     # -- the sampler thread ----------------------------------------------------------------------
 
     def _loop(self):
-        tick = 0
-        while not self._stop.wait(PERIOD):
-            t0 = time.thread_time()
-            try:
-                if tick == 0 and self.gpu is not None:
+        status = "monitor turned off during the run"
+        try:
+            if self.gpu is not None:
+                try:
                     self.gpu.enter_thread()  # before this thread's first CUDA read
+                except Exception:
+                    self.gpu = None  # no CUDA read is safe on this thread, not even the end record's
+                    raise
+            tick = 0
+            while not self._stop.wait(PERIOD):
+                t0 = time.thread_time()
                 self._tick(tick % LIVE_EVERY == 0)
-            except Exception as e:  # keep the workflow running; the status shows the error
-                self.error = f"the sampler stopped after an error: {e!r}"
-                logging.exception("[BCNodes] Process Monitor: %s", self.error)
-                if self.hook is not None:
-                    self.hook.uninstall()  # no run starts without the sampler that ends it
-                with self._lock:
-                    if self.run is not None:  # its end record: the run did not crash, the monitor did
-                        self._end_run(f"monitor stopped during the run: {self.error}")
-                return
-            spent = time.thread_time() - t0
-            run = self.run
-            if run is not None:
-                run.sampler_s += spent
-            else:
-                self.idle_sampler_s += spent
-            tick += 1
+                spent = time.thread_time() - t0
+                run = self.run
+                if run is not None:
+                    run.sampler_s += spent
+                else:
+                    self.idle_sampler_s += spent
+                tick += 1
+        except Exception as e:  # keep the workflow running; the status shows the error
+            self.error = f"the sampler stopped after an error: {e!r}"
+            logging.exception("[BCNodes] Process Monitor: %s", self.error)
+            if self.hook is not None:
+                self.hook.uninstall()  # no run starts without the sampler that ends it
+            status = f"monitor stopped during the run: {self.error}"  # the run did not crash, the monitor did
+        with self._lock:
+            if self.run is not None:  # its end record, written here: it reads torch's peak
+                self._end_run(status)
 
     def _tick(self, live):
         running = self.probe.running()
@@ -333,12 +404,12 @@ class Monitor:
         return sample
 
     def _execution_stack(self):
-        """The execution thread's stack as thread_stack gives it; [] when no thread runs a prompt."""
+        """The execution thread's stack as thread_stack gives it; () when no thread runs a prompt."""
         stack = thread_stack(self.exec_thread)
         if not stack:
             stacks = thread_stacks()
             self.exec_thread = find_execution_thread(stacks)
-            stack = stacks.get(self.exec_thread, [])
+            stack = stacks.get(self.exec_thread, ())
         return stack
 
     def _live(self, sample):
@@ -348,15 +419,14 @@ class Monitor:
                                                  "class_type": run.class_type, "elapsed": time.time() - run.t0}}
 
     def _snapshot(self, run, sample):
-        """Once per run: the execution thread's stack, its 40 innermost calls as traceback.format_stack
-        prints them, from code and line numbers only (thread_stack; a record written at once: the kill
-        can be a fraction of a second away), then the same record with every live tensor of the
-        process (tensor_census.census: the list of all objects is made, filtered and freed inside one C
-        call with the collector paused, so no other thread runs while it exists)."""
+        """Once per run, on the sampler thread: the execution thread's stack, its 40 innermost calls as
+        traceback.format_stack prints them (thread_stack), a record written at once: the kill can be a
+        fraction of a second away. The census of the live tensors is not taken here: it holds each
+        tensor while it describes it, and a tensor the node drops meanwhile would be freed on this
+        thread. The execution thread adds it when the running node ends (_census)."""
         run.snapshot_done = True
-        t0 = time.perf_counter()
-        stack = traceback.format_list([(code.co_filename, line, code.co_name, None)
-                                       for code, line in reversed(self._execution_stack()[:40])])
+        stack = traceback.format_list([(filename, line, name, None)
+                                       for filename, line, name in reversed(self._execution_stack()[:40])])
         stopped = False
         if self.settings.stop_at_threshold:
             try:
@@ -369,13 +439,24 @@ class Monitor:
                   "threshold": self.settings.threshold, "node": sample.get("node"), "class_type": sample.get("class_type"),
                   "line": sample.get("line"), "stack": stack, "stopped": stopped}
         run.log.write(record)
-        record.update(census=census(), t=time.time(), seconds=round(time.perf_counter() - t0, 3))
-        run.log.write(record)
+        run.census_due = record
+
+    def _census(self, run, where):
+        """On the execution thread, at a node boundary (no CUDA graph is captured there, and what the
+        census frees it frees on the thread that owns it): the threshold's stack record again, with
+        every live tensor of the process (tensor_census.census). Its time is the run's snapshot_s, not
+        the hook's."""
+        record, run.census_due = run.census_due, None
+        t0 = time.perf_counter()
+        run.log.write({**record, "census": census(), "scope": f"whole process, {where}", "t": time.time(),
+                       "seconds": round(time.perf_counter() - t0, 3)})
         run.snapshot_s += time.perf_counter() - t0
 
     # -- runs ------------------------------------------------------------------------------------
 
-    def _start_run(self, prompt_id, extra_data):
+    def _start_run(self, prompt_id, extra_data, models=None):
+        """models: loaded_models(), read by the caller on the execution thread; None from the sampler
+        thread, which never reads them: the run's first node start logs them then."""
         armed, self.armed_next = self.armed_next and self.hook is not None, False
         log = None
         if self.settings.black_box or armed:
@@ -383,6 +464,7 @@ class Monitor:
             blackbox.rotate(self.runs_dir, self.settings.keep_runs)
             log = blackbox.RunLog(blackbox.run_path(self.runs_dir, time.time(), prompt_id))
         run = Run(prompt_id, extra_data, armed, log, self.hook.seconds if self.hook else 0.0)
+        run.models_known = models is not None
         self.run = run
         self.exec_thread = None
         if self.gpu is not None:
@@ -392,13 +474,14 @@ class Monitor:
                        "workflow_id": run.workflow_id, "t": run.t0, "pid": os.getpid(), "platform": self.platform,
                        "ram_source": self.ram.describe(), "ram_limit": self.ram.limit, "oom_kills": self.ram.oom_kills(),
                        "container": self.ram.identity(),
-                       "models_loaded": [{"name": m["name"], "bytes": m["bytes"]} for m in loaded_models()],
+                       "models_loaded": None if models is None else [{"name": m["name"], "bytes": m["bytes"]} for m in models],
                        "armed": armed, "threshold": self.settings.threshold})
         return run
 
     def _end_run(self, status):
+        """On the sampler thread or the execution thread only: _fold_vram_peak is a CUDA call."""
         run, self.run = self.run, None
-        hook_s = (self.hook.seconds if self.hook else 0.0) - run.hook_s0
+        hook_s = (self.hook.seconds if self.hook else 0.0) - run.hook_s0 - run.snapshot_s  # the census ran inside the hook
         seconds = time.time() - run.t0
         monitor = {"hook_s": round(hook_s, 4), "sampler_s": round(run.sampler_s, 4), "snapshot_s": round(run.snapshot_s, 4),
                    "total_s": round(hook_s + run.sampler_s + run.snapshot_s, 4)}
@@ -423,7 +506,7 @@ class Monitor:
         with self._lock:
             if self.run is not None and self.run.prompt_id != prompt_id:
                 self._end_run(self.probe.status(self.run.prompt_id))
-            return self.run or self._start_run(prompt_id, extra_data)
+            return self.run or self._start_run(prompt_id, extra_data, loaded_models())
 
     def _keep_measurement(self, run, hook_s):
         """The armed run's per-node records, per workflow, for Emulate's calibration."""
@@ -455,6 +538,8 @@ class Monitor:
         self.exec_thread = threading.get_ident()
         if run.log is None:
             return None
+        if run.census_due is not None:
+            self._census(run, f"before node {call.current_item} started")
         if run.armed and not run.cached_listed:
             run.cached_listed = True
             run.log.write({"type": "cached", "t": time.time(), "nodes": cached_nodes(call.dynprompt, call.caches.outputs)})
@@ -463,6 +548,9 @@ class Monitor:
                   "display": call.dynprompt.get_display_node_id(call.current_item), "class_type": node["class_type"],
                   "ram": ram, "cache": output_cache_bytes(call.caches.outputs),
                   "inputs": link_inputs(node, call.execution_list, call.current_item)}
+        if not run.models_known:  # the sampler started the run
+            run.models_known = True
+            record["models_at_start"] = [{"name": m["name"], "bytes": m["bytes"]} for m in loaded_models()]
         run.log.write(record)
         if not run.armed:
             return None
@@ -473,7 +561,13 @@ class Monitor:
         return {"run": run, "record": record, "window": self.ram.open_peak_window(), "models": loaded_models()}
 
     def node_end(self, token, call, result, seconds):
-        run, start, window = token["run"], token["record"], token["window"]
+        """After every node; token is node_start's (None when it measures nothing)."""
+        run = self.run if token is None else token["run"]
+        if run is not None and run.census_due is not None:
+            self._census(run, f"when node {call.current_item} ended")
+        if token is None:
+            return
+        start, window = token["record"], token["window"]
         state = getattr(result[0], "name", "FAILURE") if result else "FAILURE"
         uid = call.current_item
         if state == "PENDING":  # runs again later (lazy inputs, subgraph expansion, async): time adds up
@@ -550,14 +644,14 @@ class Monitor:
                                    self.node_cost_s())
 
     def status(self):
-        ram = self.ram
+        ram, run = self.ram, self.run  # read once: the sampler ends runs meanwhile
         return {
             "enabled": self.enabled, "settings": asdict(self.settings), "armed": self.armed_next,
             "hook": {"available": self.hook is not None and not self.hook.error, "message": self.hook_message(),
                      "min_version": MIN_COMFYUI},
             "sources": {"ram": ram.describe() if ram else None,
                         "vram": self.gpu.describe() if self.gpu is not None else "no CUDA or MPS device"},
-            "error": self.error, "crash": self.crash_flag(), "running": self.run.prompt_id if self.run else None,
+            "error": self.error, "crash": self.crash_flag(), "running": run.prompt_id if run else None,
             "idle_sampler_s": round(self.idle_sampler_s, 4),
             "node_cost_s": self.node_cost_s(),
         }

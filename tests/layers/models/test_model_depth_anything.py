@@ -12,7 +12,7 @@ predictor and the loader, without the real weights (no downloads).
     rounded short side and the prediction comes back at the size asked for, unnormalised, as
     the authors' bilinear resize (align_corners=True);
   - the depth family lists v2-small first, then the four v3 models;
-  - loader: the weights come from models/depthanything through torch.load(weights_only=True),
+  - loader: the weights come from models/geometry_estimation through torch.load(weights_only=True),
     a strict load, one load for two calls; without the file the authors' HF URL is fetched.
 """
 
@@ -141,7 +141,7 @@ def weights_dir(loader, monkeypatch, tmp_path):
     monkeypatch.setattr(fp, "folder_names_and_paths", {}, raising=True)
     monkeypatch.setattr(loader._Loaded, "model", None, raising=True)
     monkeypatch.setattr(loader._Loaded, "device", None, raising=True)
-    return tmp_path / "models" / "depthanything"
+    return tmp_path / "models" / "geometry_estimation"
 
 
 class _Tiny(torch.nn.Module):
@@ -150,7 +150,7 @@ class _Tiny(torch.nn.Module):
         self.w = torch.nn.Parameter(torch.zeros(1))
 
 
-def test_loader_reads_depthanything_folder(weights_dir, arch, loader, monkeypatch):
+def test_loader_reads_geometry_estimation_folder(weights_dir, arch, loader, monkeypatch):
     weights_dir.mkdir(parents=True)
     (weights_dir / "depth_anything_v2_vits.pth").write_bytes(b"")
     calls = []
@@ -164,7 +164,7 @@ def test_loader_reads_depthanything_folder(weights_dir, arch, loader, monkeypatc
     model, device = loader.load()
     again, _ = loader.load()
     assert again is model
-    assert calls == [("depth_anything_v2_vits.pth", "depthanything", "cpu", True)]
+    assert calls == [("depth_anything_v2_vits.pth", "geometry_estimation", "cpu", True)]
     assert float(model.w.detach()) == 1.0 and not model.training
     assert device == torch.device("cpu")
 

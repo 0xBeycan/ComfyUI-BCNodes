@@ -21,6 +21,7 @@ loads the model again. This pack registers release_pack_models there.
 """
 
 import asyncio
+import dis
 import logging
 import os
 
@@ -76,11 +77,11 @@ class ServerProbe:
         return None
 
     def _worker_stack(self):
-        """The code objects on the stack of ComfyUI's prompt worker thread (main.py's prompt_worker)."""
+        """The stack of ComfyUI's prompt worker thread (main.py's prompt_worker), as thread_stacks reads
+        it: strings and line numbers, no frame."""
         for stack in thread_stacks().values():
-            codes = [code for code, _ in stack]
-            if any(c.co_name == "prompt_worker" for c in codes):
-                return codes
+            if any(name == "prompt_worker" for _, _, name in stack):
+                return stack
         raise RuntimeError("ComfyUI's prompt worker thread was not found (a ComfyUI that does not run prompts "
                            "through main.py's prompt_worker), so its free cannot be asked for here. Use ComfyUI's "
                            "own POST /free (unload_models, free_memory) instead.")
@@ -96,16 +97,19 @@ class ServerProbe:
     def free_done(self):
         """True once the prompt worker has taken the flags and waits in the queue again, so its free
         (models unloaded, the executor's caches reset, gc.collect, empty_cache) has finished. Read from
-        the code objects on its stack, never from a frame's locals. While the flags wait, each call
-        wakes the worker again: set_flag's notify is lost when the worker is between its get_flags()
-        and its next q.get() (its gc.collect and empty_cache after a prompt), and it would then sleep
-        in q.get(timeout=1000) with the flags set."""
+        its stack: a line of the queue's get (its file, its name, one of its lines), never from a frame.
+        While the flags wait, each call wakes the worker again: set_flag's notify is lost when the
+        worker is between its get_flags() and its next q.get() (its gc.collect and empty_cache after a
+        prompt), and it would then sleep in q.get(timeout=1000) with the flags set."""
         queue = self.server.prompt_queue
         with queue.mutex:
             if queue.flags:
                 queue.not_empty.notify()
                 return False
-        return type(queue).get.__code__ in self._worker_stack()
+        get = type(queue).get.__code__
+        lines = {line for _, line in dis.findlinestarts(get)}
+        return any(filename == get.co_filename and name == get.co_name and line in lines
+                   for filename, line, name in self._worker_stack())
 
     def hold(self):
         """The prompt queue's lock: while it is held the worker cannot take a prompt (q.get waits for

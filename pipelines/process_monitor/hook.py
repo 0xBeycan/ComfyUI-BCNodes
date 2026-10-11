@@ -55,7 +55,8 @@ def find():
 
 class Hook:
     """Wraps execution.execute around a recorder with node_start(call) -> token and
-    node_end(token, call, result, seconds)."""
+    node_end(token, call, result, seconds), called after every node (token None when node_start
+    returned None): the execution thread's own moment between two nodes."""
 
     def __init__(self, execution, recorder):
         self.module = execution
@@ -110,7 +111,7 @@ class Hook:
                 return result
             finally:
                 t2 = time.perf_counter()
-                if token is not None and hook.active:
+                if call is not None and hook.active:
                     try:
                         hook.recorder.node_end(token, call, result, t2 - t1)
                     except Exception as e:

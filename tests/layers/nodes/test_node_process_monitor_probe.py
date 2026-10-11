@@ -103,7 +103,7 @@ def test_the_free_happens_when_the_wake_up_came_between_get_flags_and_q_get(work
 
 def test_no_prompt_starts_while_the_queue_is_held(worker):
     worker.between.set()
-    assert wait_for(lambda: type(worker.queue).get.__code__ in worker.probe._worker_stack())
+    assert wait_for(worker.probe.free_done)  # no flags wait: the worker waits in q.get
     with worker.probe.hold():
         assert worker.probe.busy() is None  # re-entrant: the queue is read under the hold
         putter = threading.Thread(target=worker.queue.put, args=((0, "prompt"),), daemon=True)

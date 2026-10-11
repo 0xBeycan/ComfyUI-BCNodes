@@ -5,8 +5,6 @@ layout core's loader reads), kept in core's `geometry_estimation` folder, so cor
 Anything 3 node and this pack share them. Only the four Apache-2.0 models are offered (DA3-Large,
 DA3-Giant and DA3Nested are CC-BY-NC)."""
 
-import os
-
 FOLDER_KEY = "geometry_estimation"
 REPO = "Comfy-Org/Depth-Anything-3"
 FILES = {
@@ -20,16 +18,7 @@ FILES = {
 def weights_path(name):
     """The file of model `name`, fetched into models/geometry_estimation when no folder of that
     key holds it."""
-    import folder_paths
-
-    from ..common.download import fetch_with_progress
+    from ..common.download import model_file
 
     filename = FILES[name]
-    primary = os.path.join(folder_paths.models_dir, FOLDER_KEY)
-    folder_paths.add_model_folder_path(FOLDER_KEY, primary)
-    found = folder_paths.get_full_path(FOLDER_KEY, filename)
-    if found is not None:
-        return found
-
-    url = f"https://huggingface.co/{REPO}/resolve/main/{FOLDER_KEY}/{filename}"
-    return fetch_with_progress(url, os.path.join(primary, filename), filename)
+    return model_file(FOLDER_KEY, filename, f"https://huggingface.co/{REPO}/resolve/main/{FOLDER_KEY}/{filename}")

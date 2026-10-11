@@ -73,7 +73,7 @@ The backend accepts any number of `InN` inputs, so API prompts can list `In3`, `
 
 | `model` | Model | Weights, fetched on first use |
 | --- | --- | --- |
-| `v2-small` | Depth-Anything-V2-Small, this pack's own code | `depth_anything_v2_vits.pth` (~99 MB) into `ComfyUI/models/depthanything/` |
+| `v2-small` | Depth-Anything-V2-Small, this pack's own code | `depth_anything_v2_vits.pth` (~99 MB) into `ComfyUI/models/geometry_estimation/` |
 | `v3-small` | DA3-Small, through ComfyUI core | `depth_anything_3_small.safetensors` (137,254,980 B) |
 | `v3-base` | DA3-Base, through ComfyUI core | `depth_anything_3_base.safetensors` (541,524,124 B) |
 | `v3-mono-large` | DA3Mono-Large, through ComfyUI core | `depth_anything_3_mono_large.safetensors` (1,336,748,056 B) |

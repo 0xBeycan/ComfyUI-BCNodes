@@ -92,7 +92,7 @@ ComfyUI-BCNodes/
     common/
       registry.py          model families (matting, depth) and the LM families and backends (lm_family,
                            lm_backend): register / names / get
-      download.py          weight download with console progress
+      download.py          weight download with console progress; model_file (a file in a ComfyUI model folder)
       lm/                  the LM runtime the LM families share; registers the core backend
         catalog.py         the models.yaml schema, the built-in file merged with the user's, errors naming file + entry
         backend.py         the LMBackend protocol, GenerateParams, LoraSpec
@@ -106,7 +106,7 @@ ComfyUI-BCNodes/
       inference.py         resize, normalise, run, matte back to size
       arch/                BiRefNet + Swin v1 architecture (see LICENSE in the folder)
     depth_anything_v2/     Depth Anything V2 Small, registered as v2-small in the depth family
-      weights.py           weights folder (ComfyUI/models/depthanything) and download
+      weights.py           weights folder (ComfyUI/models/geometry_estimation) and download
       loader.py            the model, loaded once; unload() for the full clear
       inference.py         resize as the authors, run, resample to the size asked for
       arch/                DPT head + DINOv2 ViT-S architecture (see LICENSE in the folder)

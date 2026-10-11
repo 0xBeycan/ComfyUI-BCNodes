@@ -77,7 +77,8 @@ pipelines/process_monitor/    monitor (sampler thread, runs, per-node records, s
                               drop_stale (drop stale outputs: a hook on ComfyUI's output cache, applied monitor
                               on or off)
 models/common/                registry.py (families matting, depth, lm_family and lm_backend; a depth entry is a
-                              loader returning `predict`), download.py (fetch_with_progress)
+                              loader returning `predict`), download.py (fetch_with_progress; model_file: a file in a
+                              ComfyUI model folder, downloaded there when missing)
 models/common/lm/             the LM runtime the LM families share: catalog (the built-in models.yaml merged with the
                               user's), family and backend contracts, core_backend (the "core" LM backend: core's
                               text-encoder loader, LoRA loader and generate; the prompt tokenized here, with the
@@ -143,22 +144,28 @@ Rules that keep it cheap and safe:
   feature (ComfyUI 0.17.0+). The wrapper always awaits the original and returns its result
   untouched; an error in the monitor turns the measurement off with a message.
 - Counters only, never tensor copies: cgroup files, allocator statistics, shape x dtype. The scans
-  over all objects are the threshold snapshot, once per run, after the stack record is written, and
-  the full clear's report, once per click. That pass is one C-level call with the collector paused
+  over all objects are the threshold snapshot's census, once per run, and the full clear's report,
+  once per click. That pass is one C-level call with the collector paused
   (`libs/tensor_census.census`) and must stay one: a Python loop over `gc.get_objects()` breaks other
-  threads' tuple builds. The census keeps weak references, each tensor held only while its row is
-  made. No frame's locals are read from another thread: a thread's stack is read only as (code,
-  line) pairs by `thread_stack` / `thread_stacks` in `pipelines/process_monitor/monitor.py`, the only
-  place frame objects are touched. The dict `sys._current_frames()` returns is never bound to a
-  name: it holds the caller's own frame, and a local holding it is a cycle that keeps the running
-  node's frames and locals (its tensors) alive until the cyclic collector runs, which a GPU loop
-  that frees what it allocates almost never triggers (owner, 2026-10-03: the SeedVR2 encode OOM).
-- The sampler thread never breaks a CUDA graph capture in another thread: torch captures in CUDA's
-  global mode, where an allocator counter under cudaMallocAsync (cudaMemPoolGetAttribute) or
-  cudaMemGetInfo from any thread invalidates the capture and the process aborts. The sampler thread
-  switches itself to the relaxed capture mode before its first read (`CudaMemory.enter_thread`, the
-  mode torch's own allocator takes during a capture); the numbers stay the same calls. Never call it
-  from ComfyUI's prompt worker.
+  threads' tuple builds. The census keeps weak references, each tensor held only while its row is made.
+- Only ComfyUI's execution thread frees what it owns. Whatever another thread holds of it (a frame, a
+  tensor, a model patcher) becomes the last reference when the execution thread drops its own, and is
+  then freed on the holding thread, a CUDA tensor during the execution thread's CUDA graph capture too:
+  an abort (owner, 2026-10-11, RTX 3090: the sampler's loop over `f_back` held a frame of the LM's
+  decode when its call returned). So a stack is read only by `thread_stack` / `thread_stacks`
+  (`monitor.py`): its frames are taken and dropped inside one C-level call that runs no bytecode, so no
+  other thread runs meanwhile, and only strings and ints leave it (the dict `sys._current_frames()`
+  returns stays inside it: bound to a name it is a cycle with the caller's frame, the 2026-10-03
+  SeedVR2 encode OOM). The threshold's census and `loaded_models()` run on the execution thread between
+  nodes (through the hook) or with the prompt queue held and empty (the full clear); at the threshold
+  the sampler writes only the stack record. No `gc.collect()` on the sampler.
+- The sampler thread never breaks a CUDA graph capture: torch captures in CUDA's global mode, where an
+  allocator counter under cudaMallocAsync (cudaMemPoolGetAttribute) or cudaMemGetInfo from any other
+  thread invalidates the capture and the process aborts. The sampler switches itself to the relaxed
+  capture mode before its first read (`CudaMemory.enter_thread`, the mode torch's own allocator takes
+  during a capture) and makes no other CUDA call; never call it from ComfyUI's prompt worker. Every
+  other CUDA read runs on the execution thread between nodes or with the queue held and empty (the
+  full clear and its baseline); a run ended by turning the monitor off is ended on the sampler.
 - The full clear frees each part with the call that owns it, each step measured on its own:
   ComfyUI's own free (the `/free` flags, run by its prompt worker and waited for), the packs' own
   model caches (every hook in `bc_full_clear_hooks`, this pack's `release_pack_models` among them),
@@ -240,8 +247,8 @@ where it is.
 
 - A family exists only when there is a real choice between models. Its key lives in
   `models/common/registry.py`.
-- A `models/<name>/` package: architecture, weights (download through
-  `models.common.download.fetch_with_progress`), a single-slot cache as in
+- A `models/<name>/` package: architecture, weights (a file in a ComfyUI model folder through
+  `models.common.download.model_file`, any other download through `fetch_with_progress`), a single-slot cache as in
   `models/birefnet/loader.py` with its `unload()` (drops the slot, returns {name: bytes of its
   weights} through `libs/tensor_census.module_bytes`, {} when empty), which the full clear calls (add
   it to `release_pack_models` in `pipelines/process_monitor/clear.py`), model-specific

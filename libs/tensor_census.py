@@ -220,7 +220,10 @@ def census(values=None, min_bytes=1 << 20, top=20):
     nested tensor by its parts (_plain): what the memory holds, not the logical dtype's size.
     The tensors are those reachable from `values` through lists, tuples and dicts (numpy arrays too),
     or, with None, every torch tensor of the process, found through the garbage collector: a pass over
-    all of the process's objects, the slow part. Any thread may call it."""
+    all of the process's objects, the slow part. Call it where a tensor it holds cannot be the last
+    reference another thread drops meanwhile (that tensor would be freed on the caller's thread, a CUDA
+    one during the other thread's CUDA graph capture too): on the thread that runs the work (ComfyUI's
+    execution thread between two nodes), or while no work runs (the prompt queue held and empty)."""
     if values is not None:
         tensors = {id(t): t for t in tensors_in(values)}.values()  # the caller's values: the caller holds them
     else:
@@ -235,9 +238,9 @@ def census(values=None, min_bytes=1 << 20, top=20):
         # cleared, so no iterator made before the list keeps it in a cycle). The collector is paused
         # around the call, so no finalizer runs Python code inside it. A tensor is told by its type
         # alone (type.__subclasscheck__ in C): isinstance reads __class__, which can run Python code.
-        # The pass keeps a weak reference to each tensor: the census runs while the node goes on, and a
-        # tensor the node frees meanwhile is freed at once; below, each one is held only while its row
-        # is made (None once it is gone).
+        # The pass keeps a weak reference to each tensor: a tensor freed meanwhile (by another thread)
+        # is freed at once; below, each one is held only while its row is made (None once it is gone),
+        # and that hold is why the caller's thread matters (docstring).
         # Guarded by test_threshold_snapshot_races_no_tuple_builder (tests/layers/pipelines/
         # test_pipe_process_monitor_monitor.py), test_census_scan_keeps_no_reference and
         # test_census_holds_no_tensor_while_it_describes_the_others.

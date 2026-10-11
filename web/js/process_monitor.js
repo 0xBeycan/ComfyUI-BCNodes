@@ -448,9 +448,9 @@ async function crashTab() {
 	const snap = r.snapshot;
 	if (snap) {
 		const c = snap.census;
-		parts.push(el("h4", {}, `Tensors alive at the threshold (${gb(snap.ram)}, node ${snap.node} ${snap.class_type ?? ""}; ${snap.scope ?? "whole process"})`));
-		// no census: the run died while it was taken; the stack record was written before it
-		if (!c) parts.push(el("div", { class: "bcpm-note" }, "The run ended before the tensor census finished; the stack below was written at the threshold."));
+		parts.push(el("h4", {}, `Threshold snapshot (${gb(snap.ram)}, node ${snap.node} ${snap.class_type ?? ""}; tensors: ${snap.scope ?? "whole process"})`));
+		// no census: the execution thread takes it when the running node ends; the run died first
+		if (!c) parts.push(el("div", { class: "bcpm-note" }, "No tensor census: the run ended before the node that crossed the threshold did (the census is taken when it ends, on the execution thread). The stack below was written at the threshold."));
 		if (c) parts.push(el("div", { class: "bcpm-note" }, `Each byte once: ${censusTotals(c)}`));
 		if (c) parts.push(censusTable(c));
 		parts.push(el("details", {}, el("summary", {}, "Stack of the execution thread"), el("pre", {}, snap.stack.join(""))));

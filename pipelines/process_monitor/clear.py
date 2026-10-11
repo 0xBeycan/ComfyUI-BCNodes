@@ -21,13 +21,17 @@ The steps, in order, each measured on its own (a reading before and after it):
                 prompt worker is a thread); malloc_trim(0) gives every whole free page back. Linux with
                 glibc only.
 
-ComfyUI's free runs on its prompt worker, so the queue is open until it ends; the steps after it run
-with the prompt queue held (its lock, which the worker's q.get needs to take a prompt): no prompt starts
-while ComfyUI's cast buffers and torch's caches are reset, which ComfyUI itself does only between nodes
-on that worker. A POST /prompt meanwhile waits until the steps end (seconds).
+ComfyUI's free runs on its prompt worker, so the queue is open until it ends; everything else runs
+with the prompt queue held (its lock, which the worker's q.get needs to take a prompt) and empty: the
+readings, the model list, the steps after the free and the census. The clear runs on a route's thread,
+and no prompt may run while that thread makes a CUDA call (a counter read during the prompt's CUDA
+graph capture aborts the process) or holds a model or tensor the prompt could drop (it would be freed
+on the clear's thread), and no prompt may start while ComfyUI's cast buffers and torch's caches are
+reset, which ComfyUI itself does only between nodes on its worker. A POST /prompt meanwhile waits
+until the steps end (seconds).
 
-Then one census of the live tensors (libs/tensor_census.census): what something still references
-after the clear. What a restart would free and the clear cannot: memory held by another pack's own
+Last, with the queue still held, one census of the live tensors (libs/tensor_census.census): what
+something still references after the clear. What a restart would free and the clear cannot: memory held by another pack's own
 cache (it shows in the census), libraries and kernels loaded during the run (the CUDA context grows on
 first use). Page cache (files read or mapped, the cgroup's `file`) is reported, not dropped: the
 kernel reclaims it under pressure, and a restart of the process does not free it either.
@@ -106,7 +110,11 @@ def reading(ram, gpu):
 
 
 def _comfyui_free(clear):
-    models = loaded_models()
+    with clear.probe.hold():  # loaded_models() holds each patcher for a moment: no prompt may run then
+        message = clear.probe.busy()
+        if message:
+            raise Busy(message)
+        models = loaded_models()
     clear.probe.request_free()
     deadline = time.monotonic() + clear.free_timeout
     while not clear.probe.free_done():
@@ -224,8 +232,11 @@ class FullClear:
         self._lock = threading.Lock()
 
     def record_baseline(self):
-        """The reading right after ComfyUI started: its custom nodes loaded, no prompt run yet."""
-        self.baseline = reading(*self.sources())
+        """The reading right after ComfyUI started: its custom nodes loaded, no prompt run yet (none is
+        read while a prompt runs or waits: a pack loaded late)."""
+        with self.probe.hold():
+            if self.probe.busy() is None:
+                self.baseline = reading(*self.sources())
 
     def run(self):
         """-> Report. Raises Busy (nothing done) while a prompt runs or waits, or another clear runs; Busy
@@ -237,26 +248,32 @@ class FullClear:
             raise Busy("a full clear is already running; wait for its report.")
         try:
             ram, gpu = self.sources()
-            before = reading(ram, gpu)
+            with self.probe.hold():
+                message = self.probe.busy()
+                if message:
+                    raise Busy(message)
+                before = reading(ram, gpu)
             steps, last = [], before
 
-            def step(name, text, fn):
+            def measured(name, text, t0, found, detail):
                 nonlocal last
-                t0 = time.perf_counter()
-                found, detail = fn(self)
                 now = reading(ram, gpu)
                 steps.append(Step(name=name, text=text, found=found, seconds=round(time.perf_counter() - t0, 3),
                                   freed=_freed(last, now), detail=detail))
                 last = now
 
-            free, *rest = STEPS
-            step(*free)
-            with self.probe.hold():  # the worker cannot take a prompt until these steps end
+            (name, text, fn), *rest = STEPS
+            t0 = time.perf_counter()
+            found, detail = fn(self)  # ComfyUI's free, on its worker: the queue open
+            with self.probe.hold():  # the worker cannot take a prompt until the census is taken
                 message = self.probe.busy()
                 if message:
                     raise Busy(f"a prompt was queued during ComfyUI's free; the clear stopped after it. {message}")
-                for s in rest:
-                    step(*s)
-            return Report(baseline=self.baseline, before=before, after=last, steps=steps, remaining=census(top=12))
+                measured(name, text, t0, found, detail)
+                for name, text, fn in rest:
+                    t0 = time.perf_counter()
+                    measured(name, text, t0, *fn(self))
+                remaining = census(top=12)
+            return Report(baseline=self.baseline, before=before, after=last, steps=steps, remaining=remaining)
         finally:
             self._lock.release()
