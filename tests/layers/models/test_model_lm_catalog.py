@@ -124,7 +124,8 @@ def test_each_defaults_block_names_its_source(family):
 def test_the_family_entry(family, bcnodes):
     registry = bcnodes["models.common.registry"]
     assert registry.get(registry.LM_FAMILY, "qwen_lm") is family
-    assert (family.key, family.folder, family.lora_subfolder, family.default_backend) == ("qwen_lm", "Qwen-LM", "loras", "core")
+    assert (family.key, family.name, family.folder, family.lora_subfolder, family.default_backend) == (
+        "qwen_lm", "Qwen LM", "Qwen-LM", "loras", "core")
     assert family.templates == ("qwen3.5", "qwen3.8", "qwen3-vl") and family.catalog_path.endswith("models.yaml")
 
 

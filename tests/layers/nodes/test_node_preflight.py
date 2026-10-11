@@ -258,13 +258,6 @@ def test_observe_raises_the_interrupt(pf, backend):
     assert backend.events[-1] == ("unload",)  # unloaded on the way out
 
 
-def test_unload_lm_unloads_every_backend(pf, bcnodes, monkeypatch):
-    registry = bcnodes["models.common.registry"]
-    a, b = Backend(), Backend()
-    monkeypatch.setitem(registry._FAMILIES, registry.LM_BACKEND, {"core": a, "other": b})
-    pf.unload_lm()
-    assert a.events == b.events == [("unload",)]
-
 
 # --- Report --------------------------------------------------------------------------------------------------
 

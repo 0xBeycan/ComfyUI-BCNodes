@@ -1,7 +1,8 @@
-"""The LM flow: one chat-model run of an LM node (Qwen LM today), and the catalog, LoRA list and catalog
-route data the node layer shows.
+"""The LM flow: one chat-model run of an LM node (Qwen LM today); a model prepared once and run per call by a
+wrapper node (Captioner) from an LM Loader's LMSpec; and the catalog, LoRA list and catalog route data the
+nodes show.
 
-run(request), in this order:
+The steps:
   1. the family (models/common/registry.py LM_FAMILY), its catalog (the built-in models.yaml merged with
      the user's models.yaml of each model folder), the model, the backend it names (LM_BACKEND) and the
      precision;
@@ -23,6 +24,13 @@ run(request), in this order:
   8. keep_model_loaded off: the backend unloads in a `finally` around everything after the backend is
      known (the precision, steps 2 - 7), so an error in any of them unloads too, a model an earlier run
      kept included; only an error found before (the catalog, the model name) leaves it held.
+
+run(request) is one LM node run: the steps in that order, so a prompt the model cannot take is refused before
+any file is looked for or downloaded. prepare(spec, ...) is steps 1 and 3 - 5, once per wrapper node call,
+and generate(prepared, ...) steps 2, 6 and 7, once per call of the model: the file is looked for and the
+LoRA read once, and every generate hands the backend the same path and the same LoraSpec, which its slot
+holds (no reload, no new patch). A wrapper unloads after its node call itself (unload_backends), when its
+LMSpec's keep_model_loaded is off. Each step is one function below; run, prepare and generate only order them.
 
 Folder paths come in from the node layer; nothing here imports folder_paths or ComfyUI.
 """
@@ -71,15 +79,18 @@ class ModelInfo(TypedDict):
 
 class FamilyInfo(TypedDict):
     """One LM family in the catalog route, keys in the order catalog_json builds them."""
+    name: str  # the family's display name (LMFamily.name): the value of LM Loader's family widget
     node: str  # the LM node class of the family
     error: "str | None"  # why the user models.yaml files cannot be used; models is then the built-in catalog
     models: dict[str, ModelInfo]  # model name -> its info, in catalog order
+    loras: list[str]  # the lora widget's list for the family (lora_choices): NO_LORA first
 
 
 class CatalogPayload(TypedDict):
     """GET /bcnodes/lm/catalog's body (nodes/lm.catalog_payload), read by web/js/lm.js."""
     families: dict[str, FamilyInfo]  # family key -> catalog_json's FamilyInfo
     config_node: str  # the LM config node class
+    loader_node: str  # the LM loader node class: its family widget picks the family by name
 
 
 @dataclass(frozen=True)
@@ -104,6 +115,31 @@ class LMRequest:
 
 
 @dataclass(frozen=True)
+class LMSpec:
+    """The value of the BC_LM type: LM Loader's output, a wrapper node's lm input (Captioner). Which model a
+    wrapper runs and whether it stays loaded; a description only, it never holds weights (prepare finds the
+    file and reads the LoRA)."""
+    family: str               # the LM family's registry key, e.g. 'qwen_lm' (LM Loader maps its name to it)
+    model: str                # a model name of that family's catalog
+    precision: str            # one of that model's precision names
+    lora: str                 # NO_LORA, or a path relative to one of the family's LoRA folders (lora_choices)
+    lora_strength: float      # 0 = no LoRA (not read), as core's LoRA loader
+    keep_model_loaded: bool   # off: the wrapper unloads the model once after its node call, after an error too
+
+
+@dataclass(frozen=True)
+class Prepared:
+    """A model ready to run (prepare): steps 1 and 3 - 5, done once for any number of generate calls."""
+    family: object          # the LMFamily
+    model: object           # its CatalogModel
+    backend: object         # the LMBackend the model names
+    path: str               # the model file
+    lora: object            # the LoraSpec, None for no LoRA: the same object on every generate
+    params: GenerateParams  # the sampling, seed and max_new_tokens
+    thinking: bool
+
+
+@dataclass(frozen=True)
 class LMResult:
     text: str      # the answer: the prefill and its continuation
     thinking: str  # the reasoning; "" with thinking off
@@ -119,42 +155,135 @@ class FamilyCatalog:
 def run(request: LMRequest) -> LMResult:
     """One generation; raises with what to change on any input the family, the files or the backend
     cannot take."""
-    # 1. family, catalog, model, its backend, precision
-    family = registry.get(LM_FAMILY, request.family)
-    models = _load(family, user_catalogs(request.model_folders))
-    if request.model not in models:
-        raise ValueError(f"model {request.model!r} is not in the {family.folder} catalog; the models are: "
-                         f"{', '.join(models)}")
-    model = models[request.model]
-    backend = registry.get(LM_BACKEND, model.backend)
+    family, model, backend = _model(request.family, request.model, request.model_folders)
     try:  # from here on an error unloads too (8.): a model an earlier run kept is not left held
-        precision = model.precisions.get(request.precision)
-        if precision is None:
-            raise ValueError(f"{model.name} has no precision {request.precision!r}; its precisions are: "
-                             f"{', '.join(model.precisions)}")
-
-        # 2. validation: the family's prompt builder refuses what its templates cannot take
-        image = request.image
-        parts = PromptParts(system=request.system, user=request.user, assistant=request.assistant,
-                            n_images=0 if image is None else int(image.shape[0]), thinking=request.thinking)
-        prompt = family.build_prompt(model, parts)
-
-        # 3. - 6. the model file, the LoRA, the sampling, the images
-        path = model_path(precision, request.model_folders, request.text_encoder_folders)
-        lora = lora_spec(request.lora, request.lora_strength, lora_roots(family, request.model_folders),
-                         request.node)
-        params = generate_params(model, request.thinking, request.config, request.seed, request.max_new_tokens,
-                                 request.node)
-        images = family.prepare_images(image)
-
-        # 7. generate
-        raw = backend.generate(backend.load(path, lora), prompt, images, params)
-        text, thinking = family.split_output(model, raw, parts)
+        precision = _precision(model, request.precision)
+        parts, prompt = _prompt(family, model, request.thinking, request.system, request.user, request.assistant,
+                                request.image)
+        prepared = _prepare(family, model, backend, precision, request.lora, request.lora_strength, request.thinking,
+                            request.config, request.seed, request.max_new_tokens, request.node,
+                            request.model_folders, request.text_encoder_folders)
+        result = _answer(prepared, parts, prompt, request.image)
     finally:
         # 8. unload unless the model is kept
         if not request.keep_model_loaded:
             backend.unload()
+    return result
+
+
+def prepare(spec: LMSpec, *, node, thinking, max_new_tokens, seed, config: LMConfigValues, model_folders,
+            text_encoder_folders) -> Prepared:
+    """Steps 1 and 3 - 5 for the model `spec` describes (the family's folders from the node layer): the model
+    file found or downloaded, the LoRA read and checked, the sampling. Its keep_model_loaded is the caller's to
+    apply (unload_backends after the node call)."""
+    family, model, backend = _model(spec.family, spec.model, model_folders)
+    return _prepare(family, model, backend, _precision(model, spec.precision), spec.lora, spec.lora_strength, thinking,
+                    config, seed, max_new_tokens, node, model_folders, text_encoder_folders)
+
+
+def generate(prepared: Prepared, system, user, assistant, image) -> LMResult:
+    """Steps 2, 6 and 7 with a model from prepare: the prompt of `system`, `user`, `assistant` (the prefill) and
+    `image` (an IMAGE batch, one image per frame, or None) built and validated, the images sized, the backend's
+    load (the prepared file and LoRA: its slot when it holds them) and generate, the output split."""
+    parts, prompt = _prompt(prepared.family, prepared.model, prepared.thinking, system, user, assistant, image)
+    return _answer(prepared, parts, prompt, image)
+
+
+def lm_spec(family_key, model, precision, lora, lora_strength, keep_model_loaded, model_folders) -> LMSpec:
+    """LM Loader's LMSpec, checked as far as it goes without a file read: the family registered, the model in
+    its catalog (the user models.yaml of `model_folders`, the family's folders, included), the precision one of
+    that model's and the LoRA one of the family's LoRA list. Raises ValueError saying what to pick."""
+    family, model_entry, _ = _model(family_key, model, model_folders)
+    _precision(model_entry, precision)
+    choices = lora_choices(family_key, model_folders)
+    if lora not in choices:
+        raise ValueError(f"LoRA {lora!r} is not in the LoRA folders of the {family.name} family "
+                         f"({', '.join(lora_roots(family, model_folders))}); pick one of: {', '.join(choices)}")
+    return LMSpec(family=family_key, model=model, precision=precision, lora=lora, lora_strength=lora_strength,
+                  keep_model_loaded=keep_model_loaded)
+
+
+def family_keys():
+    """{name: registry key} of every registered LM family, in registration order: the names LM Loader's family
+    widget lists (LMFamily.name, what a saved workflow stores). Two families with one name are a ValueError
+    naming both."""
+    keys = {}
+    for key in registry.names(LM_FAMILY):
+        name = registry.get(LM_FAMILY, key).name
+        if name in keys:
+            raise ValueError(f"LM families {keys[name]!r} and {key!r} both have the name {name!r}; give each family "
+                             f"its own name (LMFamily.name)")
+        keys[name] = key
+    return keys
+
+
+def family_key_of(name):
+    """The registry key of the LM family named `name` (LM Loader's family widget); a ValueError naming the
+    families for any other name."""
+    keys = family_keys()
+    if name not in keys:
+        raise ValueError(f"LM family {name!r} is not registered; pick one of: {', '.join(keys)}")
+    return keys[name]
+
+
+def lm_family(key):
+    """The LMFamily registered as `key` (internal: a node's family, an LMSpec's); a ValueError naming the
+    registered families for any other key."""
+    if key not in registry.names(LM_FAMILY):
+        raise ValueError(f"no LM family is registered as {key!r}; the families are: {', '.join(family_keys())}")
+    return registry.get(LM_FAMILY, key)
+
+
+def _model(family_key, name, model_folders):
+    """1. (family, catalog model, its backend): the family, its catalog with the user models.yaml of
+    `model_folders`, the model `name` in it, the backend it names. Raises naming the models for an unknown one."""
+    family = lm_family(family_key)
+    models = _load(family, user_catalogs(model_folders))
+    if name not in models:
+        raise ValueError(f"model {name!r} is not in the {family.folder} catalog; the models are: {', '.join(models)}")
+    model = models[name]
+    return family, model, registry.get(LM_BACKEND, model.backend)
+
+
+def _precision(model, name):
+    """1. The catalog Precision `name` of `model`; raises naming the model's precisions."""
+    precision = model.precisions.get(name)
+    if precision is None:
+        raise ValueError(f"{model.name} has no precision {name!r}; its precisions are: {', '.join(model.precisions)}")
+    return precision
+
+
+def _prompt(family, model, thinking, system, user, assistant, image):
+    """2. (PromptParts, the raw prompt): the family's prompt builder refuses what its templates cannot take."""
+    parts = PromptParts(system=system, user=user, assistant=assistant,
+                        n_images=0 if image is None else int(image.shape[0]), thinking=thinking)
+    return parts, family.build_prompt(model, parts)
+
+
+def _prepare(family, model, backend, precision, lora, lora_strength, thinking, config, seed, max_new_tokens, node,
+             model_folders, text_encoder_folders):
+    """3. - 5. The Prepared: the model file, the LoRA, the sampling."""
+    path = model_path(precision, model_folders, text_encoder_folders)
+    spec = lora_spec(lora, lora_strength, lora_roots(family, model_folders), node)
+    params = generate_params(model, thinking, config, seed, max_new_tokens, node)
+    return Prepared(family=family, model=model, backend=backend, path=path, lora=spec, params=params, thinking=thinking)
+
+
+def _answer(prepared, parts, prompt, image):
+    """6. - 7. The images, the backend's load and generate, the family's split of the output."""
+    images = prepared.family.prepare_images(image)
+    backend = prepared.backend
+    raw = backend.generate(backend.load(prepared.path, prepared.lora), prompt, images, prepared.params)
+    text, thinking = prepared.family.split_output(prepared.model, raw, parts)
     return LMResult(text=text, thinking=thinking)
+
+
+def unload_backends():
+    """Unloads every registered LM backend (models/common/registry.py LM_BACKEND): the one model slot the LM
+    nodes share. A node that runs the model several times with the model kept calls it once afterwards when
+    its keep_model_loaded is off (PreFlight Observe; Captioner, by its LMSpec's)."""
+    for name in registry.names(LM_BACKEND):
+        registry.get(LM_BACKEND, name).unload()
 
 
 def user_catalogs(model_folders):
@@ -194,17 +323,19 @@ def catalog(family_key, model_folders):
 
 def catalog_json(families) -> dict[str, FamilyInfo]:
     """{family key: FamilyInfo} for the catalog route: `families` maps each LM node class to (its family key,
-    the family's model folders); each model gives thinking, mtp, its precision names and its sampling
-    defaults per mode, in catalog order."""
+    the family's model folders); each family gives its name, each model thinking, mtp, its precision names and
+    its sampling defaults per mode, in catalog order; the family its LoRA list."""
     out: dict[str, FamilyInfo] = {}
     for node, (family_key, model_folders) in families.items():
         view = catalog(family_key, model_folders)
         out[family_key] = {
+            "name": lm_family(family_key).name,
             "node": node,
             "error": view.error,
             "models": {name: {"thinking": m.thinking, "mtp": m.mtp, "precisions": list(m.precisions),
                               "defaults": {mode: asdict(sampling) for mode, sampling in m.defaults.items()}}
                        for name, m in view.models.items()},
+            "loras": lora_choices(family_key, model_folders),
         }
     return out
 

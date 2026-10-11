@@ -15,7 +15,8 @@ ComfyUI-BCNodes/
     select_switch.py       BC_SelectSwitch
     seed.py                BC_Seed
     show_text.py           BC_ShowText
-    lm.py                  BC_QwenLM, BC_LMConfig + GET /bcnodes/lm/catalog; the Qwen-LM folder_paths key
+    lm.py                  BC_QwenLM, BC_LMConfig, BC_LMLoader, BC_Captioner + GET /bcnodes/lm/catalog; the Qwen-LM
+                           folder_paths key
     image_comparer.py      BC_ImageComparer
     power_lora_loader.py   BC_PowerLoraLoader
     lora_key_fix.py        BC_LoraLoaderKeyFix
@@ -51,7 +52,13 @@ ComfyUI-BCNodes/
     depth_anything.py      Depth Anything: output size (short side or cover + crop), per-frame normalisation
     lora.py                a LoRA file through core's conversion, the key fix and core's loader (both LoRA loaders)
     lm.py                  the LM run (LMRequest -> LMResult): catalog, prompt checks, model file search / download,
-                           LoRA, sampling; the catalog route's data and the LoRA list
+                           LoRA, sampling; LMSpec (the BC_LM value), prepare (once per wrapper call) and generate
+                           (once per model call), lm_spec (LM Loader's checks); unload_backends; the catalog
+                           route's data and the LoRA list
+    captioner/
+      caption.py           Captioner: frames split, user text (style prompt or instruction), 1024 cap, the model
+                           started once, one generate per frame; the fixed decoding
+      prompts/             tags.txt, prose.txt: the built-in style prompts, read at call time
     caption_audit/
       audit.py             audit plumbing: package guard, allowed roots, run_audit, reports
       card.py              the fixed-size card
@@ -117,7 +124,8 @@ ComfyUI-BCNodes/
       checkpoint.py        default checkpoint, combo list, path (downloads the default)
       loader.py            one checkpoint held at a time; unload() for the full clear
       detect.py            text detection through ComfyUI's SAM3_Detect
-    qwen_lm/               the Qwen LM family (models/Qwen-LM, LoRAs in its loras/), registered as qwen_lm
+    qwen_lm/               the Qwen LM family (models/Qwen-LM, LoRAs in its loras/), registered as qwen_lm, named
+                           Qwen LM (LM Loader's family value)
       models.yaml          the built-in catalog: models, precisions with their files, sampling defaults and sources
       chat.py              the official chat templates (qwen3.5, qwen3.8, qwen3-vl), their checks, the output split
       images.py            the official image processor's sizing (smart_resize) and bicubic resize

@@ -14,7 +14,12 @@ stand-in for the "core" LM backend (no ComfyUI, no weights):
     head (a warning naming mtp when the config set it), seed and max_new_tokens -> GenerateParams;
   - the outputs split by the family; keep_model_loaded off unloads in a finally, after an error in any step
     once the model is known too (precision, validation, file, LoRA, sampling, images, generate), a model an
-    earlier run kept included;
+    earlier run kept included; unload_backends unloads every registered backend;
+  - prepare (catalog, file, LoRA, sampling) from an LMSpec and generate (prompt, images, load, generate,
+    split) on it: neither unloads; what the backend gets equals run's; one prepare and three generates look
+    for the file and read the LoRA once, and every load gets the same path and the same LoraSpec (a backend
+    holding its slot by them, as core's, loads and patches once); prepare's errors name what to change;
+    lm_spec checks a loader's values without a file read;
   - the catalog the widgets and the route show: the user models.yaml of every model folder, in folder
     order; the built-in one with the error when a user models.yaml is broken (a run raises it), precisions
     built-in first, the route's per-family JSON and its TypedDicts.
@@ -223,6 +228,14 @@ def test_unload_after_an_error(pipe, backend, events, folders):
     assert events == ["load", "generate"]
 
 
+def test_unload_backends_unloads_every_backend(pipe, registry, monkeypatch):
+    """What PreFlight Observe and Captioner call once after their runs with keep_model_loaded off."""
+    first, second = [], []
+    monkeypatch.setitem(registry._FAMILIES, registry.LM_BACKEND, {"core": Backend(first), "other": Backend(second)})
+    pipe.unload_backends()
+    assert first == second == ["unload"]
+
+
 @pytest.mark.parametrize("changes, match", [
     (dict(precision="W4A8"), "has no precision 'W4A8'"),
     (dict(user="  "), "user is empty"),  # validation
@@ -246,6 +259,112 @@ def test_unload_after_an_error_before_loading(pipe, backend, events, folders, ch
         with pytest.raises((ValueError, FileNotFoundError), match=match):  # LoraError is a ValueError
             pipe.run(request(pipe, folders, keep_model_loaded=keep, **changes))
         assert events == after
+
+
+# --- prepare + generate -------------------------------------------------------------------------------------
+
+
+def lm_spec(pipe, **changes):
+    fields = dict(family="qwen_lm", model="Qwen3.5-9B", precision="INT8 ConvRot", lora="None", lora_strength=1.0,
+                  keep_model_loaded=False)
+    return pipe.LMSpec(**{**fields, **changes})
+
+
+def prepared(pipe, folders, spec=None, **changes):
+    a, b, te = folders
+    fields = dict(node="Captioner", thinking=False, max_new_tokens=64, seed=7, config={}, model_folders=(str(a), str(b)),
+                  text_encoder_folders=(str(te),))
+    return pipe.prepare(spec or lm_spec(pipe), **{**fields, **changes})
+
+
+def test_prepare_then_generate_steps(pipe, traced, backend, folders):
+    ready = prepared(pipe, folders)
+    assert traced == ["catalog", "file", "lora", "sampling"]  # keep_model_loaded off in the spec: no unload here
+    traced.clear()
+    assert pipe.generate(ready, "", "Describe this.", "", None) == pipe.LMResult(text="an answer", thinking="")
+    assert traced == ["prompt", "images", "load", "generate", "split"]
+
+
+def test_prepare_and_generate_give_the_backend_what_run_gives(pipe, backend, folders):
+    image = torch.rand(1, 64, 64, 3)
+    pipe.run(request(pipe, folders, image=image, config={"top_k": 5}, thinking=True, system="sys"))
+    by_run = (backend.loaded, backend.generated[1], backend.generated[3])
+    ready = prepared(pipe, folders, config={"top_k": 5}, thinking=True)
+    pipe.generate(ready, "sys", "Describe this.", "", image)
+    assert (backend.loaded, backend.generated[1], backend.generated[3]) == by_run
+    assert torch.equal(backend.generated[2], pipe.lm_family("qwen_lm").prepare_images(image))
+
+
+class SlotBackend(Backend):
+    """A backend that holds one slot as core's does: the base by path, the LoRA by its key; counts the base loads
+    and the LoRA builds."""
+
+    def __init__(self, events):
+        super().__init__(events)
+        self.path = self.key = None
+        self.base_loads, self.builds, self.specs = 0, 0, []
+
+    def load(self, path, lora):
+        self.specs.append((path, lora))
+        if path != self.path:
+            self.path, self.key, self.base_loads = path, None, self.base_loads + 1
+        if lora is not None and lora.key != self.key:
+            lora.build({}, {})
+            self.key, self.builds = lora.key, self.builds + 1
+        return super().load(path, lora)
+
+
+def test_one_prepare_many_generates(pipe, registry, monkeypatch, events, folders, caplog):
+    fake = SlotBackend(events)
+    monkeypatch.setitem(registry._FAMILIES[registry.LM_BACKEND], "core", fake)
+    save_lora(os.path.join(folders[0], "loras", "x.safetensors"))
+    counts = {"model_path": 0, "read_lora": 0}
+    for name in counts:
+        def counted(*args, _name=name, _fn=getattr(pipe, name)):
+            counts[_name] += 1
+            return _fn(*args)
+        monkeypatch.setattr(pipe, name, counted)
+    monkeypatch.setattr(pipe, "check_base", lambda plan, key_map, weight_shapes: None)  # the stand-in has no model
+    with caplog.at_level(logging.INFO):
+        ready = prepared(pipe, folders, spec=lm_spec(pipe, lora="x.safetensors", lora_strength=0.8))
+        for i in range(3):
+            pipe.generate(ready, "", f"frame {i}", "", torch.rand(1, 32, 32, 3))
+    assert counts == {"model_path": 1, "read_lora": 1}
+    assert len({path for path, _ in fake.specs}) == 1 and all(lora is ready.lora for _, lora in fake.specs)
+    assert ready.lora.strength == 0.8 and (fake.base_loads, fake.builds) == (1, 1)  # no reload, no new patch
+    assert events == ["load", "generate"] * 3
+    assert len([r for r in caplog.records if "Captioner: LoRA x.safetensors" in r.getMessage()]) == 1
+
+
+@pytest.mark.parametrize("changes, match", [
+    (dict(model="Qwen9"), "'Qwen9' is not in the Qwen-LM catalog"),
+    (dict(precision="W4A8"), "has no precision 'W4A8'"),
+    (dict(lora="gone.safetensors"), "LoRA gone.safetensors is not in"),
+    (dict(family="gemma_lm"), "no LM family is registered as 'gemma_lm'; the families are: Qwen LM$"),
+])
+def test_prepare_errors(pipe, backend, events, folders, changes, match):
+    with pytest.raises((ValueError, FileNotFoundError), match=match):
+        prepared(pipe, folders, spec=lm_spec(pipe, **changes))
+    assert events == []  # nothing loaded, nothing unloaded: the wrapper unloads after its node call
+
+
+def test_generate_validates_the_prompt(pipe, backend, events, folders):
+    ready = prepared(pipe, folders)
+    with pytest.raises(ValueError, match=re.escape("<|image_pad|>")):
+        pipe.generate(ready, "", "Compare with <|image_pad|>", "", torch.rand(1, 64, 64, 3))
+    assert events == []
+
+
+def test_lm_spec_checks_without_a_file(pipe, folders, monkeypatch):
+    monkeypatch.setattr(pipe, "model_path", lambda *a: pytest.fail("no file search"))
+    a = str(folders[0])
+    save_lora(os.path.join(a, "loras", "x.safetensors"))
+    assert pipe.lm_spec("qwen_lm", "Qwen3.8-27B", "W4A8", "x.safetensors", 0.0, True, (a,)) == pipe.LMSpec(
+        family="qwen_lm", model="Qwen3.8-27B", precision="W4A8", lora="x.safetensors", lora_strength=0.0,
+        keep_model_loaded=True)
+    with pytest.raises(ValueError, match=r"LoRA 'y.safetensors' is not in the LoRA folders of the Qwen LM family "
+                                         r"\(.*\); pick one of: None, x.safetensors$"):
+        pipe.lm_spec("qwen_lm", "Qwen3.8-27B", "W4A8", "y.safetensors", 1.0, True, (a,))
 
 
 # --- the model file ------------------------------------------------------------------------------------------
@@ -537,7 +656,7 @@ def test_catalog_json(pipe, folders):
     out = pipe.catalog_json({"BC_QwenLM": ("qwen_lm", (str(folders[0]),))})
     json.dumps(out)  # the route serialises it as it is
     family = out["qwen_lm"]
-    assert family["node"] == "BC_QwenLM" and family["error"] is None
+    assert family["name"] == "Qwen LM" and family["node"] == "BC_QwenLM" and family["error"] is None
     assert list(family) == list(pipe.FamilyInfo.__annotations__)  # the TypedDicts, keys in their order
     assert all(list(m) == list(pipe.ModelInfo.__annotations__) for m in family["models"].values())
     assert set(OFF_9B) == set(pipe.LMConfigValues.__annotations__) and pipe.LMConfigValues.__total__ is False
@@ -549,3 +668,4 @@ def test_catalog_json(pipe, folders):
     vl = family["models"]["Qwen3-VL-8B Instruct"]
     assert (vl["thinking"], vl["mtp"], list(vl["defaults"])) == (False, False, ["thinking_off"])
     assert family["models"]["Qwen3.8-27B"]["precisions"] == ["BF16", "INT8 ConvRot", "W4A8"]
+    assert family["loras"] == ["None"]

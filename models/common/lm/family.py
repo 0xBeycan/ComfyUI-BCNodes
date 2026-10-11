@@ -18,8 +18,12 @@ class PromptParts:
 
 @dataclass(frozen=True)
 class LMFamily:
-    key: str              # its registry name, e.g. 'qwen_lm'
-    folder: str           # the folder_paths key and the folder under models/, e.g. 'Qwen-LM'
+    key: str              # its registry name, e.g. 'qwen_lm': internal, never shown to the user
+    # Its display name, e.g. 'Qwen LM': LM Loader's family widget lists it and a saved workflow stores it, so it
+    # is a stable identifier once released (never renamed). Unique among the families: pipelines/lm.family_keys
+    # refuses two families with one name.
+    name: str
+    folder: str          # the folder_paths key and the folder under models/, e.g. 'Qwen-LM'
     lora_subfolder: str   # where its LoRAs live inside that folder
     catalog_path: str     # absolute path of the built-in models.yaml
     default_backend: str  # the backend of a catalog entry that names none

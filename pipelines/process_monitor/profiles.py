@@ -843,6 +843,22 @@ def _lm_config(c):
     return {}, 0, "a dict of the edited sampling fields, at most eight plain values; no tensor"
 
 
+def _lm_loader(c):
+    # LM Loader loads nothing (nodes/lm.py LMLoader.load): its output is a pipelines/lm.LMSpec, the model's
+    # description, which the node it feeds loads when it runs.
+    return {}, 0, "a description of the model (family, model, precision, LoRA name, strength, keep); nothing loaded"
+
+
+def _captioner(c):
+    # Captioner runs its LM Loader's model once per frame (pipelines/captioner/caption.py): the loader's model
+    # widget holds a catalog name, not a file name, so no weights are read for it. Its outputs are lists: views
+    # of the input frames (no copy) and one string per frame; sizes are not followed through lists.
+    raise NotCounted("the LM Loader's model is a catalog entry, not a file: the model file's weights, the LoRA, the "
+                     "KV cache core reserves for prompt + 600 tokens and each frame resized for the model (a "
+                     "frame over 1024 on a side capped first) are not counted; the outputs are lists of views of "
+                     "the input frames and strings")
+
+
 # -- PreFlight ------------------------------------------------------------------------------------
 
 def _preflight_observe(c):
@@ -901,7 +917,7 @@ PROFILES = {
     "BC_JoinImageLists": _join_lists,
     "BC_FrequencyMerge": _frequency_merge,
     # LM nodes
-    "BC_QwenLM": _qwen_lm, "BC_LMConfig": _lm_config,
+    "BC_QwenLM": _qwen_lm, "BC_LMConfig": _lm_config, "BC_LMLoader": _lm_loader, "BC_Captioner": _captioner,
     # PreFlight (Outcome and Calibrate output text only: no profile needed)
     "BC_PreFlightObserve": _preflight_observe, "BC_PreFlightReport": _preflight_report,
 }

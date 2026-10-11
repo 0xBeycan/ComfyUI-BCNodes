@@ -1,6 +1,6 @@
 # LM
 
-Chat models run by ComfyUI core: one node per model family (Qwen LM today) and one config node, LM Config, for all of them. Text and images in, text out. The prompt is built as the model's official chat template renders it, sampling starts from the official defaults of each model and mode, and the model files come from a public repository on first use. Type `qwen`, `llm`, `vlm`, `caption` or `prompt enhancer` in the node search to find the node.
+Chat models run by ComfyUI core: one node per model family (Qwen LM today) and one config node, LM Config, for all of them; LM Loader, which picks a model of any family for a wrapper node; and Captioner, a wrapper that writes one training caption per image with the LM Loader's model. Text and images in, text out. The prompt is built as the model's official chat template renders it, sampling starts from the official defaults of each model and mode, and the model files come from a public repository on first use. Type `qwen`, `llm`, `vlm`, `caption` or `prompt enhancer` in the node search to find the node.
 
 ## `BC_QwenLM` — Qwen LM
 
@@ -222,6 +222,75 @@ An edited field the model cannot use gets one console warning naming it, and the
 
 Multi-token prediction: core's speculative decoding with the multi-token-prediction head a model file carries, for faster decoding. `auto` lets core adapt the draft depth, `2`–`5` pins it, `off` disables it. It runs only on a model the catalog marks as having an MTP head (Qwen3.5-4B, Qwen3.5-9B, Qwen3.8-27B) and only for a text-only prompt: with an image connected core decodes without MTP. Everywhere else the run goes without it (the node passes `off` for a model without the head; Qwen3-VL's generation ignores it). Sampled output with MTP differs from non-MTP output for the same seed; core keeps it correctly distributed. Core verifies the drafted tokens in one pass over several positions, which is not numerically identical to decoding one token at a time, so even greedy text (`do_sample` off) can part from the text with `mtp` `off` after some hundred tokens. Measured on an RTX 3090 with Qwen3.5-9B `INT8 ConvRot`: 35.5 against 21.6 tokens/s (about 1.65×), the same text up to about 190 tokens in that run.
 
+## `BC_LMLoader` — LM Loader
+
+`family`, `model`, `precision`, `lora`, `lora_strength`, `keep_model_loaded` → `lm` (`BC_LM`), for the `lm` input of a wrapper node (Captioner).
+
+The model a wrapper node runs. A wrapper (Captioner today) lists no model and names no family: it takes the model from an LM Loader, so a model family added later works in it with no change to its code. The loader loads nothing: `lm` is a description of the model (`pipelines/lm.py` `LMSpec`: family, model, precision, LoRA, strength, keep), and the wrapper finds the file (or downloads it on first use), reads the LoRA and loads them when it runs, as [Qwen LM](#bc_qwenlm--qwen-lm) does ([Models and files](#models-and-files), [LoRA](#lora)).
+
+| Widget | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `family` | `Qwen LM` | the registered LM families, by name (`Qwen LM` today) | The family the model comes from: its catalog, its folder (`models/Qwen-LM` for Qwen LM) and its chat templates. |
+| `model` | `Qwen3.5-9B` | every family's models (Qwen LM's for the Qwen LM family) | The chat model. The frontend lists only the selected family's. |
+| `precision` | `INT8 ConvRot` | every precision | The model file. The frontend lists only the selected model's (Qwen3.8-27B: `BF16`, `INT8 ConvRot`, `W4A8`; Qwen3.5-9B: `BF16`, `INT8 ConvRot`). |
+| `lora` | `None` | `None` and every family's LoRAs | One LoRA, from the family's `loras` folder ([LoRA](#lora)). The frontend lists only the selected family's. |
+| `lora_strength` | `1.0` | `-100`–`100`, step `0.01` | As on Qwen LM: strength × alpha / rank × (lora_B @ lora_A); `0` runs the model without the LoRA, which is then not read. |
+| `keep_model_loaded` | on | | On: the model (with its LoRA) stays loaded after the node that runs it, in the one LM model slot every LM node shares. Off: that node unloads it once when its call ends, after an error too. |
+
+The defaults are Qwen LM's: one place in `nodes/lm.py` (`MODEL_DEFAULTS`) gives both nodes their initial values.
+
+**The lists.** ComfyUI checks a widget value against the list the node declares, so `model`, `precision` and `lora` declare every family's values, and the frontend narrows them as it narrows Qwen LM's precision: on creation, on load and on a node-definition refresh each list shows the selected family's models, the selected model's precisions and the family's LoRAs (`None` first). A family you change also fits the values: each one is kept when the new list holds it, else it becomes the list's first (the family's first model, that model's first precision, `None`); a model you change fits the precision. Not while that family's `models.yaml` has an error ([`models.yaml`](#modelsyaml)), and never on load: a saved workflow's values come back as saved.
+
+**Checks.** When it runs, the node checks what it can without reading a file and stops with what to pick: a family name that is not registered (the error names the registered families), a model not in that family's catalog (names its models), a precision the model does not have (names its precisions), a LoRA not in that family's list (names the list). A LoRA file removed after the check, or a model file that is missing and cannot be downloaded, is the wrapper's error when it runs.
+
+A saved workflow stores the family's name (`models/common/lm/family.py` `LMFamily.name`, unique among the families), which does not change once released. The registry key under `models/common/registry.py` `LM_FAMILY` (`qwen_lm`) is internal: the node maps the name to it, and the `lm` output holds the key.
+
+## `BC_Captioner` — Captioner
+
+`image`, `lm` (`BC_LM`), `style`, `seed`; optional `instruction` (`STRING`, a socket) → `image` (`IMAGE`, a list), `caption` (`STRING`, a list).
+
+One training caption per image: every frame of the input goes to the model on its own, with the style's built-in prompt or your instruction, and comes out as one element of each output list. The model comes from an [LM Loader](#bc_lmloader--lm-loader) connected to `lm`, which the Captioner needs: it has no model of its own and no default (without a loader ComfyUI refuses the prompt: `Required input is missing: lm`). The Captioner names no family or model; it reaches the model only through the LM runtime (`pipelines/lm.py` `prepare` and `generate`), so any family the loader offers works in it. Qwen LM itself is unchanged and still gives a whole batch to the model in one prompt.
+
+| Input | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `image` | | `IMAGE` | A single image, a batch, or a list of batches (below). Each frame is captioned on its own. |
+| `lm` | | `BC_LM`, required | The model, from an LM Loader: its model, precision, LoRA at its strength, and `keep_model_loaded` (on: the model stays loaded after the node, in the one LM model slot Qwen LM and PreFlight Observe share; off: unloaded once after the last frame of the call, after an error too; between frames it always stays loaded). |
+| `style` | `prose` | `none`, `tags`, `prose` | The built-in prompt ([below](#the-built-in-prompts)). `none`: no prompt, the model gets the image alone. A connected `instruction` replaces any style's prompt. A LoRA does not change the style: `tags` and `prose` work with one, and `none` applies only when it is selected. |
+| `seed` | `0` | `0`–`2^64 − 1` | The sampling seed, the same for every frame. Its control starts at `fixed`, as on Qwen LM: queueing again gives ComfyUI's cached captions. |
+| `instruction` | not connected | `STRING` socket | Your own prompt in place of the style's built-in one, with any style: the model gets the image, then this text. Not connected, or only whitespace: the style decides. |
+
+| Output | Type | Meaning |
+| --- | --- | --- |
+| `image` | `IMAGE`, list | Element *i* is frame *i* of the input as it came in: a (1, H, W, C) view of the input batch, no copy, the input's dtype; not the resized copy the model saw. |
+| `caption` | `STRING`, list | Element *i* is frame *i*'s caption: the model's answer as written, its surrounding whitespace stripped. |
+
+**One node call.** After the input checks the model is prepared once: the model file looked for (or downloaded), the LoRA read and checked against the model (its console notes come once) and the sampling set. Each frame is then one generate on that prepared model; the backend gets the same file and the same LoRA every time, so the loaded model and its LoRA'd copy are reused, not loaded or patched again.
+
+**Lists and batches.** Both outputs are lists (`OUTPUT_IS_LIST`), so the node after them runs once per element: connect `image` and `caption` to [Save Image With Caption](image.md#bc_saveimagewithcaption--save-image-with-caption) and every frame is saved with its own caption, `set_00001_.png` next to `set_00001_.txt`, and so on. The input is not a list input: given a list of batches (from [Join Image Lists](image.md#bc_joinimagelists--join-image-lists), a folder loader that outputs a list, …), ComfyUI calls the node once per batch and joins the results in order, so batches of 3 and 2 frames give 5 images and 5 captions; the batches may differ in size. The model is prepared once per call, so once per batch of a list, and with `keep_model_loaded` off it is unloaded once per batch. A batch with no frames is an error that says what to connect, raised before the model is prepared: an empty output list would stop the node after it with an error of its own (ComfyUI's executor indexes the last element of a list input).
+
+**Fixed for captions.** No widget changes these:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Sampling | `do_sample` on, `temperature` 0.7, `top_p` 0.8, `top_k` 20, `min_p` 0, `repetition_penalty` 1.0, `presence_penalty` 0 | The decoding the image-to-caption serving code this node was built for uses: Qwen3.5's thinking-off sampling, without its presence penalty of 1.5. A presence penalty is subtracted from every token already generated, and a caption repeats tokens by design (the comma between every pair of tags, the class word's pronoun), so 1.5 pushes it off its format. Fixed whatever the model's own defaults are; no LM Config input. |
+| Thinking | off | Captions are the answer itself, with the thinking-off sampling above; reasoning would also cost tokens on every frame. |
+| Turns | no system turn, no prefill; the user turn is the frame, then the text | The style's prompt (or the instruction) is the whole request. With `none` and no instruction the user turn is the frame alone (no empty text part), the official template's rendering of an image with no text. |
+| `max_new_tokens` | 600 | A caption is one line of tags or two or three sentences, well under 200 tokens; the budget only stops a runaway answer, and core reserves the KV cache for prompt + 600 tokens ([Memory](#memory)). |
+| Image size | the long side capped at 1024, aspect kept, never enlarged | PIL's `Image.thumbnail((1024, 1024))` on the frame as 8-bit RGB (an alpha channel dropped), the cap the image-to-caption training and serving code this node was built for applies, so a LoRA trained that way sees images as it was trained on them. A frame within 1024 is passed as it is. The family's image sizing then runs as on its LM node (Qwen: the [official sizing](#images), a 2000 × 1500 frame becomes 1024 × 768). The image output keeps the original frame. |
+
+### The built-in prompts
+
+The files are `pipelines/captioner/prompts/tags.txt` and `prompts/prose.txt`, read on every run (an edit takes effect on the next queue; their surrounding whitespace is stripped). Both are written for LoRA character training: the caption opens with the class word, `woman` or `man`, which the model reads off the image, and never describes hair or identity (eye colour, skin tone, face shape, age, ethnicity), which the character LoRA owns; it describes only what is visible, and when two readings are plausible it takes the one that claims less.
+
+- **tags**: one line, `<class word>, shot type, pose/action, facial expression, clothing, accessory, location/setting, lighting type, background`, lowercase, each field one attribute group of up to about four words. Every field after the class word is optional: a field the image does not show is left out with its comma (seven examples show it, one of them with a field that has nothing to tag), and the facial expression only when the face is clearly visible. No genre or style label.
+- **prose**: two or three sentences, 30 to 50 words, the class word as the very first token followed by a verb ("woman leans against a railing…"), never an article before it; pronouns matching the class word; the order of what she or he is doing, wearing and where, free per image.
+
+Each frame is a separate run, so the model never sees the other captions: nothing in the prompts refers to them.
+
+### Your own image-to-prompt LoRA
+
+A LoRA trained to write a caption or a prompt from an image alone: put it in the family's `loras` folder (`models/Qwen-LM/loras` for Qwen LM), choose it in the LM Loader's `lora` (`lora_strength` `1.0` applies it as trained), connect the loader to the Captioner's `lm`, and set `style` to `none`. Each frame then goes to the model as the user turn with no text, no system turn and no prefill, and the caption is what the LoRA writes; the image is capped at 1024 on its long side first (Image size above). If the LoRA was trained with a short brief after the image (the "image + brief" case), connect that brief as `instruction`: with `none` the user turn is then the frame followed by the brief. The LoRA must be trained on the loader's `model` (a LoRA of another base model is refused, [LoRA](#lora)). `none` is never chosen for you: with `tags` or `prose` the LoRA gets the style's prompt after the image.
+
 ## `models.yaml`
 
 The built-in catalog is `models/qwen_lm/models.yaml` in the pack. Your changes go into a `models.yaml` in a `Qwen-LM` folder (`ComfyUI/models/Qwen-LM/models.yaml`, or in a folder `extra_model_paths.yaml` gives the key); a pack update leaves that file alone. Every `Qwen-LM` folder may hold one; they apply in folder order, a later one over an earlier one. Same schema for both:
@@ -322,4 +391,4 @@ ComfyUI reads `extra_model_paths.yaml` before the node adds `models/Qwen-LM`, so
 - **Quantized kernels.** `INT8 ConvRot` and `W4A8` run on comfy-kitchen's CUDA kernels only with a torch built for CUDA 13.0 or later (cu130). With a cu12x torch ComfyUI 0.37 turns that backend off (`comfy/quant_ops.py`, with a console warning) and the slower fallback runs.
 - **cuDNN attention.** Core runs attention on a large enough input (from 32 prompt tokens on Qwen3-VL-8B) with PyTorch's SDPA in the order flash, cuDNN, memory-efficient, math (`SDPA_BACKEND_PRIORITY` in `comfy/ops.py`); with an attention mask flash is out, so cuDNN runs, and on some GPU and cuDNN builds it builds no plan (seen with Qwen3-VL-8B on an RTX 3090, torch 2.11 cu130, cuDNN 9.19: `cuDNN Frontend error: [cudnn_frontend] Error: No valid execution plans built.`). The first such error in an LM node's generation logs `[BCNodes] LM: cuDNN attention failed (<the error>); LM generation runs without cuDNN attention in this process from now on (core's other models keep it), and this one runs again`, and the run is repeated without cuDNN attention, from the same state (the failed attempt's prefetch state is dropped as ComfyUI does after a node; the KV cache and the seeded sampler are new in every run). Every later LM generation in that ComfyUI process runs without it from the start. It covers LM generation only: the list is changed for the length of an LM node's generate and put back after it, so core's other models keep cuDNN attention; no core file is changed and no launch flag is needed. Should it fail again, the run stops with `start ComfyUI with --use-split-cross-attention`, which takes core's attention off PyTorch's SDPA. Any other error passes through as it is.
 - **Downloads** report in the console every 10%, not on the node's progress bar; core's generation does update the progress bar.
-- **Process Monitor.** The full clear's report counts the model file's weights, not the LoRA's patch tensors. Emulate lists Qwen LM as not counted: its `model` widget names a catalog entry, not a file, so the model file's weights, the LoRA, the KV cache for prompt + `max_new_tokens` and the resized images are not in the estimate. LM Config is counted, with no tensor (a dict of the edited sampling fields).
+- **Process Monitor.** The full clear's report counts the model file's weights, not the LoRA's patch tensors. Emulate lists Qwen LM as not counted: its `model` widget names a catalog entry, not a file, so the model file's weights, the LoRA, the KV cache for prompt + `max_new_tokens` and the resized images are not in the estimate. Captioner likewise (its LM Loader's model is a catalog entry; the KV cache for prompt + 600 tokens, each frame resized for the model); its outputs are lists, which Emulate does not follow. LM Config and LM Loader are counted, with no tensor (a dict of the edited sampling fields; a description of the model, nothing loaded).

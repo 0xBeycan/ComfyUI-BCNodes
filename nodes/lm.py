@@ -1,28 +1,86 @@
-"""LM nodes: chat models run by ComfyUI core, one node per model family, and one config node for all.
+"""LM nodes: chat models run by ComfyUI core, one node per model family, one config node for all, and an
+LM Loader whose model a wrapper node runs.
 
     BC_QwenLM    (Qwen LM)    Qwen3.5 / Qwen3.8 / Qwen3-VL, one LoRA, images -> text, thinking
     BC_LMConfig  (LM Config)  sampling settings for an LM node: only the fields edited on it or fed by a link
+    BC_LMLoader  (LM Loader)  family, model, precision, LoRA, keep -> BC_LM (a pipelines/lm.LMSpec), no load
+    BC_Captioner (Captioner)  one training caption per image frame, with the LM Loader's model
 
-The flow is pipelines/lm.py; the catalog, families and backend are models/common/lm and models/qwen_lm.
-This module holds the surface: the widgets, the family's folder_paths key (models/Qwen-LM, which
-extra_model_paths.yaml can redirect or extend; the LoRAs live in the loras/ subfolder of each of its
-folders, no key of their own) and GET /bcnodes/lm/catalog, the catalog web/js/lm.js reads, registered by
-register_routes() (called from the root __init__) only inside a running ComfyUI server. folder_paths,
-server and aiohttp are imported inside the functions.
+The flow is pipelines/lm.py: run for an LM node, prepare + generate for a wrapper (Captioner's flow is
+pipelines/captioner, handed a start callable over them); the catalog, families and backend are
+models/common/lm and models/qwen_lm. A wrapper lists no model and names no family: it gets an LMSpec on its
+lm input and reaches the family only through pipelines/lm. This module holds the surface: the widgets
+(model_inputs: the model, precision, lora and lora_strength widgets Qwen LM and LM Loader share, with
+MODEL_DEFAULTS), each family's folder_paths key (models/Qwen-LM, which extra_model_paths.yaml can redirect or
+extend; the LoRAs live in the loras/ subfolder of each of its folders, no key of their own) and
+GET /bcnodes/lm/catalog, the catalog web/js/lm.js reads, registered by register_routes() (called from the root
+__init__) only inside a running ComfyUI server. folder_paths, server and aiohttp are imported inside the
+functions.
 """
 
 import logging
 
 from .common import LINK_INPUTS, _is_link, lm_folders
 
+# The model widgets' initial values, Qwen LM's and LM Loader's (both INPUT_TYPES read them here): a model of the
+# Qwen LM family, LM Loader's initial family (its family widget, which Qwen LM does not have, holds the family's
+# name, LMFamily.name). lora is pipelines/lm.NO_LORA. A wrapper node has none: its model comes from an LM Loader.
+MODEL_DEFAULTS = {"family": "Qwen LM", "model": "Qwen3.5-9B", "precision": "INT8 ConvRot", "lora": "None",
+                  "lora_strength": 1.0, "keep_model_loaded": True}
+
 
 def family_folders(family_key):
     """(model folders, text_encoders folders) of the LM family `family_key`: nodes/common.lm_folders over
-    the family's folder (registered as models/<its folder> first)."""
-    from ..models.common import registry
-    from ..models.common.registry import LM_FAMILY
+    the family's folder (registered as models/<its folder> first). An unknown key is an error naming the
+    families."""
+    from ..pipelines.lm import lm_family
 
-    return lm_folders(registry.get(LM_FAMILY, family_key).folder)
+    return lm_folders(lm_family(family_key).folder)
+
+
+def model_inputs(family_keys, node, lora_note):
+    """The model, precision, lora and lora_strength widgets of an LM node over the LM families `family_keys`
+    (Qwen LM: its family; LM Loader: every registered one): each family's catalog models and precisions, in
+    family order, and NO_LORA then the LoRAs of each family's LoRA folders; MODEL_DEFAULTS. web/js/lm.js narrows
+    the precision list to the selected model's. `lora_note` ends the lora tooltip with what the node itself
+    does. A user models.yaml that cannot be used leaves the built-in catalog, with one console error naming
+    `node` (the node's display name)."""
+    from ..pipelines.lm import catalog, lora_choices
+
+    models, precisions, loras = {}, {}, {}
+    for family_key in family_keys:
+        model_folders, _ = family_folders(family_key)
+        view = catalog(family_key, model_folders)
+        if view.error:
+            logging.error("[BCNodes] %s: %s. The model list holds the built-in models until it is fixed; "
+                          "a run raises this error.", node, view.error)
+        models.update(dict.fromkeys(view.models))
+        precisions.update(dict.fromkeys(view.precisions))
+        loras.update(dict.fromkeys(lora_choices(family_key, model_folders)))
+    return {
+        "model": (list(models), {"default": MODEL_DEFAULTS["model"],
+                                 "tooltip": "The chat model (the built-in ones all see images): the built-in list plus "
+                                            "the models.yaml in models/Qwen-LM. The file is looked for by name in "
+                                            "models/Qwen-LM (subfolders too), then anywhere under "
+                                            "models/text_encoders, and downloaded into models/Qwen-LM when "
+                                            "missing."}),
+        "precision": (list(precisions), {"default": MODEL_DEFAULTS["precision"],
+                                         "tooltip": "The model file's weights: BF16 (full), INT8 ConvRot (8-bit, "
+                                                    "about half the size), W4A8 (4-bit, Qwen3.8-27B only). Only the "
+                                                    "selected model's precisions are shown; another one is an "
+                                                    "error."}),
+        "lora": (list(loras), {"default": MODEL_DEFAULTS["lora"],
+                               "tooltip": "A LoRA from models/Qwen-LM/loras: a .safetensors file (PEFT or ComfyUI "
+                                          "key names) or a PEFT folder (adapter_config.json + "
+                                          "adapter_model.safetensors). Its alpha is read from the file, its "
+                                          "metadata or its config file (a file in ComfyUI's names without one: "
+                                          "alpha = rank, core's convention); a LoRA trained on another base model "
+                                          "is refused." + (" " + lora_note if lora_note else "")}),
+        "lora_strength": ("FLOAT", {"default": MODEL_DEFAULTS["lora_strength"], "min": -100.0, "max": 100.0,
+                                    "step": 0.01,
+                                    "tooltip": "How strongly the LoRA changes the model: strength x alpha / rank "
+                                               "x B @ A, core's LoRA math. 0 runs the model without it."}),
+    }
 
 
 class QwenLM:
@@ -30,37 +88,9 @@ class QwenLM:
 
     @classmethod
     def INPUT_TYPES(cls):
-        from ..pipelines.lm import catalog, lora_choices
-
-        model_folders, _ = family_folders(cls.FAMILY)
-        view = catalog(cls.FAMILY, model_folders)
-        if view.error:
-            logging.error("[BCNodes] Qwen LM: %s. The model list holds the built-in models until it is fixed; "
-                          "a run raises this error.", view.error)
         return {
             "required": {
-                "model": (list(view.models), {"default": "Qwen3.5-9B",
-                                              "tooltip": "The chat model (the built-in ones all see images): the built-in list plus the "
-                                                         "models.yaml in models/Qwen-LM. The file is looked for by name "
-                                                         "in models/Qwen-LM (subfolders too), then anywhere under "
-                                                         "models/text_encoders, and downloaded into models/Qwen-LM "
-                                                         "when missing."}),
-                "precision": (list(view.precisions), {"default": "INT8 ConvRot",
-                                                      "tooltip": "The model file's weights: BF16 (full), INT8 ConvRot "
-                                                                 "(8-bit, about half the size), W4A8 (4-bit, Qwen3.8-27B "
-                                                                 "only). Only the selected model's precisions are shown; "
-                                                                 "another one is an error."}),
-                "lora": (lora_choices(cls.FAMILY, model_folders), {"default": "None",
-                                                                   "tooltip": "A LoRA from models/Qwen-LM/loras: a .safetensors "
-                                                                              "file (PEFT or ComfyUI key names) or a PEFT folder "
-                                                                              "(adapter_config.json + adapter_model.safetensors). "
-                                                                              "Its alpha is read from the file, its metadata or "
-                                                                              "its config file (a file in ComfyUI's names "
-                                                                              "without one: alpha = rank, core's convention); a "
-                                                                              "LoRA trained on another base model is refused."}),
-                "lora_strength": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01,
-                                            "tooltip": "How strongly the LoRA changes the model: strength x alpha / rank "
-                                                       "x B @ A, core's LoRA math. 0 runs the model without it."}),
+                **model_inputs((cls.FAMILY,), NODE_DISPLAY_NAME_MAPPINGS["BC_QwenLM"], lora_note=""),
                 "thinking": ("BOOLEAN", {"default": False,
                                          "tooltip": "The model reasons before it answers: the reasoning comes out on "
                                                     "thinking, the answer on text, and sampling takes the model's "
@@ -79,7 +109,7 @@ class QwenLM:
                                             "on). Its control starts at fixed, so queueing again gives the cached "
                                             "answer instead of a new run; set it to randomize for a new answer "
                                             "each time."}),
-                "keep_model_loaded": ("BOOLEAN", {"default": True,
+                "keep_model_loaded": ("BOOLEAN", {"default": MODEL_DEFAULTS["keep_model_loaded"],
                                                   "tooltip": "On: the model (with its LoRA) stays loaded for the next "
                                                              "run; one model file is held at a time, another one "
                                                              "replaces it. Off: it is unloaded when the run ends, "
@@ -214,13 +244,138 @@ class LMConfig:
         return (LMConfigValues(**{name: fields[name](values[name]) for name in names}),)
 
 
+class LMLoader:
+    @classmethod
+    def INPUT_TYPES(cls):
+        from ..pipelines.lm import family_keys
+
+        families = family_keys()  # {name: registry key}: the widget shows the names
+        return {
+            "required": {
+                "family": (list(families), {"default": MODEL_DEFAULTS["family"],
+                                            "tooltip": "The LM family: the catalog, folder and chat templates the "
+                                                       "model comes from. The model, precision and lora lists show "
+                                                       "the selected family's; a value of another family is an "
+                                                       "error that names this family's."}),
+                **model_inputs(tuple(families.values()), NODE_DISPLAY_NAME_MAPPINGS["BC_LMLoader"],
+                               lora_note="Only the selected family's LoRAs are shown."),
+                "keep_model_loaded": ("BOOLEAN", {"default": MODEL_DEFAULTS["keep_model_loaded"],
+                                                  "tooltip": "On: the model (with its LoRA) stays loaded after the "
+                                                             "node that runs it, for the next run; one LM model is "
+                                                             "held at a time, shared with the other LM nodes. Off: "
+                                                             "that node unloads it once when its call ends, after "
+                                                             "an error too."}),
+            },
+        }
+
+    RETURN_TYPES = ("BC_LM",)
+    RETURN_NAMES = ("lm",)
+    OUTPUT_TOOLTIPS = ("The model for a wrapper node's lm input (Captioner): a description, nothing is loaded "
+                       "here.",)
+    FUNCTION = "load"
+    CATEGORY = "BCNodes/lm"
+    SEARCH_ALIASES = ["BCNodes", "lm loader", "llm loader", "model loader", "chat model", "qwen", "lora"]
+    DESCRIPTION = ("Picks the chat model a wrapper node runs (Captioner): the family, its model and precision, one "
+                   "LoRA and its strength, and whether the model stays loaded. It loads nothing: lm describes the "
+                   "model, and the node it feeds finds the file (or downloads it on first use), reads the LoRA and "
+                   "loads them when it runs. The lists follow the selected family and model.")
+
+    def load(self, family, model, precision, lora, lora_strength, keep_model_loaded):
+        """`family` is the family's name (the widget); the LMSpec holds its registry key."""
+        from ..pipelines.lm import family_key_of, lm_spec
+
+        key = family_key_of(family)
+        return (lm_spec(key, model, precision, lora, lora_strength, keep_model_loaded, family_folders(key)[0]),)
+
+
+class Captioner:
+    @classmethod
+    def INPUT_TYPES(cls):
+        from ..pipelines.captioner.caption import MAX_NEW_TOKENS, MAX_SIDE, STYLES
+
+        return {
+            "required": {
+                "image": ("IMAGE", {"tooltip": "The images to caption, one caption per frame: a single image, a "
+                                               "batch, or a list of batches (each frame of each, in order). The "
+                                               f"model sees each frame with its long side capped at {MAX_SIDE} "
+                                               "(never enlarged), then sized as its family sizes images."}),
+                "lm": ("BC_LM", {"tooltip": "The chat model, from an LM Loader: its model, precision and LoRA (at "
+                                            "its strength), and whether it stays loaded after this node (off: "
+                                            "unloaded once after the last frame, after an error too)."}),
+                "style": (list(STYLES), {"default": "prose",
+                                         "tooltip": "The built-in prompt. tags: one line of attribute groups (class "
+                                                    "word, shot type, pose, expression, clothing, accessory, "
+                                                    "setting, lighting, background), each field only when the image "
+                                                    "shows it. prose: two or three sentences, 30 to 50 words. Both "
+                                                    "open with the class word, woman or man, read off the image, "
+                                                    "and never describe hair or identity. none: no prompt, the "
+                                                    "model gets the image alone (a LoRA trained to caption without "
+                                                    "one). A connected instruction replaces it. Any style works "
+                                                    "with a LoRA."}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": "fixed",
+                                 "tooltip": "The sampling seed, the same for every frame. Its control starts at "
+                                            "fixed, so queueing again gives the cached captions instead of a new "
+                                            "run; set it to randomize for new captions each time."}),
+            },
+            "optional": {
+                "instruction": ("STRING", {"forceInput": True,
+                                           "tooltip": "Your own prompt in place of the style's built-in one, with any "
+                                                      "style; the model gets the image, then this text. Not "
+                                                      "connected, or only whitespace: the style decides. "
+                                                      f"The answer is cut at {MAX_NEW_TOKENS} tokens."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("image", "caption")
+    OUTPUT_IS_LIST = (True, True)
+    OUTPUT_TOOLTIPS = ("Every frame of the input as it came in (not the resized copy the model saw), one list item "
+                       "per frame.",
+                       "Each frame's caption, in the same order: connect both outputs to Save Image With Caption to "
+                       "save every frame with its caption.")
+    FUNCTION = "caption"
+    CATEGORY = "BCNodes/lm"
+    SEARCH_ALIASES = ["BCNodes", "captioner", "caption", "captioning", "auto caption", "dataset", "lora training",
+                      "tags"]
+    DESCRIPTION = ("Writes one training caption per image: each frame of the batch (or of each batch in a list) goes "
+                   "on its own to the chat model of the connected LM Loader, with the style's built-in prompt (tags "
+                   "or prose) or your instruction, and comes out as two lists in the same order: image (the frame as "
+                   "it came in) and caption. Connect both to Save Image With Caption to write a dataset folder. Fixed "
+                   "for captions: thinking off, no system turn, temperature 0.7, top_p 0.8, top_k 20, no presence "
+                   "penalty, at most 600 tokens, one seed for every frame, each frame's long side capped at 1024. "
+                   "Style none sends the image alone, for an image-to-caption LoRA of your own (chosen on the LM "
+                   "Loader), with or without an instruction.")
+
+    def caption(self, image, lm, style, seed, instruction=None):
+        """The flow (pipelines/captioner/caption) with start: the model of `lm` (an LMSpec) prepared once per node
+        call, then one generate per frame: the frame then the user text as the user turn, no system turn, no
+        prefill, thinking off, DECODING, MAX_NEW_TOKENS, `seed`. The model stays loaded from one frame to the next;
+        with the spec's keep_model_loaded off it is unloaded once afterwards, after an error too."""
+        from ..pipelines.captioner import caption as flow
+        from ..pipelines.lm import generate, prepare, unload_backends
+
+        def start():
+            model_folders, text_encoder_folders = family_folders(lm.family)
+            prepared = prepare(lm, node=NODE_DISPLAY_NAME_MAPPINGS["BC_Captioner"], thinking=False,
+                               max_new_tokens=flow.MAX_NEW_TOKENS, seed=seed, config=dict(flow.DECODING),
+                               model_folders=model_folders, text_encoder_folders=text_encoder_folders)
+            return lambda frame, user: generate(prepared, "", user, "", frame).text
+
+        try:
+            return flow.caption(image, style, instruction, start)
+        finally:
+            if not lm.keep_model_loaded:
+                unload_backends()
+
+
 def catalog_payload():
     """GET /bcnodes/lm/catalog's body, a pipelines/lm.CatalogPayload: {"families": {family key: FamilyInfo
-    (pipelines/lm.catalog_json)}, "config_node"}."""
+    (pipelines/lm.catalog_json, with the family's name, which LM Loader's family widget holds)}, "config_node",
+    "loader_node"}."""
     from ..pipelines.lm import CatalogPayload, catalog_json
 
     families = {node: (family, family_folders(family)[0]) for node, family in FAMILY_NODES.items()}
-    return CatalogPayload(families=catalog_json(families), config_node="BC_LMConfig")
+    return CatalogPayload(families=catalog_json(families), config_node="BC_LMConfig", loader_node="BC_LMLoader")
 
 
 def register_routes():
@@ -245,12 +400,17 @@ def register_routes():
 NODE_CLASS_MAPPINGS = {
     "BC_QwenLM": QwenLM,
     "BC_LMConfig": LMConfig,
+    "BC_LMLoader": LMLoader,
+    "BC_Captioner": Captioner,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "BC_QwenLM": "Qwen LM",
     "BC_LMConfig": "LM Config",
+    "BC_LMLoader": "LM Loader",
+    "BC_Captioner": "Captioner",
 }
 
-# Each LM node and its family (models/common/registry.py LM_FAMILY), for the catalog route.
+# Each LM node and its family (models/common/registry.py LM_FAMILY), for the catalog route: every registered
+# family has its node, so the route covers every family LM Loader offers.
 FAMILY_NODES = {"BC_QwenLM": QwenLM.FAMILY}

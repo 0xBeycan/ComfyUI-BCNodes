@@ -176,6 +176,21 @@ def main():
           and r["lora"][0] == ["None"])(qlm.INPUT_TYPES()["required"]) or _fail())
     check("QwenLM empty user, no image -> ValueError (before any file search)",
           lambda: _raises(ValueError, lambda: qlm.generate("Qwen3.5-9B", "INT8 ConvRot", "None", 1.0, False, 8, 0, True, "", "", "")))
+    lml = m["lm"].LMLoader()
+    check("LMLoader INPUT_TYPES with no file or LoRA on disk", lambda: (lambda r: r["model"][1]["default"] in r["model"][0]
+          and r["family"][1]["default"] in r["family"][0] and r["lora"][0] == ["None"])(lml.INPUT_TYPES()["required"])
+          or _fail())
+    check("LMLoader with no file on disk -> its spec, nothing loaded",
+          lambda: lml.load("Qwen LM", "Qwen3.5-9B", "INT8 ConvRot", "None", 1.0, True)[0].model == "Qwen3.5-9B" or _fail())
+    check("LMLoader precision of another model -> ValueError",
+          lambda: _raises(ValueError, lambda: lml.load("Qwen LM", "Qwen3.5-9B", "W4A8", "None", 1.0, True)))
+    cap = m["lm"].Captioner()
+    check("Captioner INPUT_TYPES", lambda: (lambda r: r["lm"][0] == "BC_LM" and r["style"][1]["default"] == "prose")(
+          cap.INPUT_TYPES()["required"]) or _fail())
+    check("Captioner empty batch -> ValueError (before any file search)",
+          lambda: _raises(ValueError, lambda: cap.caption(torch.zeros((0, 8, 8, 3)),
+                                                          lml.load("Qwen LM", "Qwen3.5-9B", "INT8 ConvRot", "None", 1.0,
+                                                                   True)[0], "prose", 0)))
     lmc = m["lm"].LMConfig()
     check("LMConfig nothing edited -> {}", lambda: lmc.build(True, 0.7, 20, 0.8, 0.0, 1.0, 1.5, "auto", "") == ({},) or _fail())
 

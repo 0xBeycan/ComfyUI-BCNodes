@@ -30,6 +30,8 @@ Nodes:
     BC_ShowText                  show incoming text on the node, pass it on
     BC_QwenLM                    Qwen chat model (+ one LoRA, images) -> text, thinking; ComfyUI core runs it
     BC_LMConfig                  sampling settings for an LM node, only the edited fields
+    BC_LMLoader                  the chat model a wrapper node runs (BC_LM): family, model, precision, LoRA, keep
+    BC_Captioner                 one training caption per image frame with an LM Loader's model (tags / prose / none)
     BC_ImageComparer             two images, divider comparison on the node
     BC_PowerLoraLoader           MODEL + LoRA rows -> MODEL (no CLIP)
     BC_LoraLoaderKeyFix          MODEL + one LoRA -> MODEL, keys core's loader drops renamed first

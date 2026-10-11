@@ -1,7 +1,7 @@
 import { app } from "../../../scripts/app.js";
 import { callJson } from "./bcnodes_api.js";
 
-// LM nodes (Qwen LM, and any later family node) and LM Config — the frontend half of nodes/lm.py.
+// LM nodes (Qwen LM, and any later family node), LM Loader and LM Config — the frontend half of nodes/lm.py.
 // The data comes from GET /bcnodes/lm/catalog, read once (again after a node-definition refresh).
 //
 // LM node: the precision combo lists only the selected model's precisions, and `thinking` is disabled
@@ -12,6 +12,13 @@ import { callJson } from "./bcnodes_api.js";
 // only, so a precision a user models.yaml adds would look invalid). Otherwise a value the model does
 // not take is kept and the run's error names the valid ones: a saved workflow's values come back as
 // saved. A model the catalog does not know changes nothing.
+//
+// LM Loader (the catalog's loader_node): its family is the catalog family whose `name` its `family` widget
+// holds (the family's display name; the catalog's keys are internal), and its model, precision and lora combos
+// list only that family's models, the selected model's precisions and that family's LoRAs (None first), by the
+// same rules: a user family change also fits the values (each kept when the new list has it, else the list's
+// first: the family's first model, its first precision, None), a user model change fits the precision; not
+// while that family's catalog has an error. A family the catalog does not know changes nothing.
 //
 // The frontend also calls a widget's callback with its value unchanged (Rename Widget, a subgraph
 // promote): only a callback with a value other than the one last seen is a change.
@@ -29,6 +36,7 @@ import { callJson } from "./bcnodes_api.js";
 
 const ROUTE = "/bcnodes/lm/catalog";
 const CONFIG_TYPE = "BC_LM_CONFIG";
+const LM_TYPE = "BC_LM"; // LM Loader's output
 const EDITED = "edited";
 // BC_LMConfig's fields in widget order; `edited` lists them in this order.
 const FIELDS = ["do_sample", "temperature", "top_k", "top_p", "min_p", "repetition_penalty", "presence_penalty", "mtp"];
@@ -85,8 +93,8 @@ function getCatalog() {
 	if (!catalog) {
 		catalog = callJson(ROUTE)
 			.then((data) => {
-				for (const [key, family] of Object.entries(data.families ?? {})) {
-					if (family.error) console.warn(`[BCNodes] LM catalog, family ${key}: ${family.error}`);
+				for (const family of Object.values(data.families ?? {})) {
+					if (family.error) console.warn(`[BCNodes] LM catalog, family ${family.name}: ${family.error}`);
 				}
 				return data;
 			})
@@ -114,9 +122,15 @@ function catalogRefreshed(defs) {
 	catalog = null;
 }
 
-// The catalog family of an LM node; undefined for a node type the catalog does not know.
+// The catalog family of an LM node, or on LM Loader the one named by its family widget; undefined for a node
+// type or a family the catalog does not know.
 function catalogFamily(cat, node) {
-	return Object.values(cat.families ?? {}).find((f) => f.node === node.type);
+	const families = Object.values(cat.families ?? {});
+	if (node.type === cat.loader_node) {
+		const name = widget(node, "family")?.value;
+		return families.find((f) => f.name === name);
+	}
+	return families.find((f) => f.node === node.type);
 }
 
 // The catalog entry of the model an LM node has selected; undefined for a node type or a model the
@@ -131,17 +145,23 @@ function catalogModel(cat, node) {
 // LM node
 // ---------------------------------------------------------------------------
 
-// modelChanged: a user model change, which also fits the values.
+// The combo w lists `values` (a new array: the node definition's list is shared by every node of the type);
+// with `fit`, a value the list does not hold becomes its first.
+function narrow(w, values, fit) {
+	if (!w || !values?.length) return;
+	w.options.values = [...values];
+	if (fit && !values.includes(w.value)) {
+		w.value = values[0];
+		see(w);
+	}
+}
+
+// modelChanged: a user model (or LM Loader family) change, which also fits the values.
 function applyModel(node, cat, modelChanged = false) {
 	const model = catalogModel(cat, node);
 	if (!model) return;
 	const fit = modelChanged && !catalogFamily(cat, node).error;
-	const precision = widget(node, "precision");
-	if (precision && model.precisions?.length) {
-		// A new array: the node definition's list is shared by every node of the type.
-		precision.options.values = [...model.precisions];
-		if (fit && !model.precisions.includes(precision.value)) precision.value = model.precisions[0];
-	}
+	narrow(widget(node, "precision"), model.precisions, fit);
 	const thinking = widget(node, "thinking");
 	if (thinking) {
 		if (fit && !model.thinking && thinking.value) thinking.value = false;
@@ -151,6 +171,19 @@ function applyModel(node, cat, modelChanged = false) {
 	node.setDirtyCanvas?.(true, false);
 }
 
+// LM Loader: the model and lora combos list the selected family's, then the precision follows the model.
+// familyChanged: a user family change, which also fits the values. On an LM node (no family widget): applyModel.
+function applyFamily(node, cat, familyChanged = false) {
+	if (widget(node, "family")) {
+		const family = catalogFamily(cat, node);
+		if (!family?.models) return;
+		const fit = familyChanged && !family.error;
+		narrow(widget(node, "model"), Object.keys(family.models), fit);
+		narrow(widget(node, "lora"), family.loras, fit);
+	}
+	applyModel(node, cat, familyChanged);
+}
+
 // The config node plugged into this LM node shows its defaults when this is its first LM node.
 function refreshLinkedConfig(node, cat) {
 	const slot = node.findInputSlot("config");
@@ -158,10 +191,13 @@ function refreshLinkedConfig(node, cat) {
 	if (config?.type === cat.config_node) refreshDefaults(config, cat);
 }
 
+// An LM node or LM Loader (a family widget, no thinking, no config input: the calls on the missing ones do
+// nothing).
 function installLMNode(nodeType) {
 	const proto = nodeType.prototype;
 	after(proto, "onNodeCreated", function () {
 		const node = this;
+		afterChange(widget(node, "family"), () => withCatalog((cat) => applyFamily(node, cat, true)));
 		afterChange(widget(node, "model"), () =>
 			withCatalog((cat) => {
 				applyModel(node, cat, true);
@@ -174,16 +210,17 @@ function installLMNode(nodeType) {
 				refreshLinkedConfig(node, cat);
 			}),
 		);
-		withCatalog((cat) => applyModel(node, cat));
+		withCatalog((cat) => applyFamily(node, cat));
 	});
 	after(proto, "onConfigure", function () {
+		see(widget(this, "family"));
 		see(widget(this, "model"));
-		withCatalog((cat) => applyModel(this, cat));
+		withCatalog((cat) => applyFamily(this, cat));
 	});
 	after(proto, "refreshComboInNode", function (defs) {
-		// Runs before the refresh puts the full precision list back, hence after the catalog read.
+		// Runs before the refresh puts the full lists back, hence after the catalog read.
 		catalogRefreshed(defs);
-		withCatalog((cat) => applyModel(this, cat));
+		withCatalog((cat) => applyFamily(this, cat));
 	});
 }
 
@@ -309,14 +346,18 @@ function installConfigNode(nodeType) {
 // Extension
 // ---------------------------------------------------------------------------
 
-// The config node makes a BC_LM_CONFIG; an LM node takes one on its `config` input.
+// The config node makes a BC_LM_CONFIG.
 function isConfigDef(nodeData) {
 	return (nodeData?.output ?? []).includes(CONFIG_TYPE);
 }
 
+// An LM node takes a BC_LM_CONFIG on its `config` input; LM Loader makes a BC_LM.
 function isLMDef(nodeData) {
 	const input = nodeData?.input ?? {};
-	return [input.required?.config, input.optional?.config].some((spec) => spec?.[0] === CONFIG_TYPE);
+	return (
+		[input.required?.config, input.optional?.config].some((spec) => spec?.[0] === CONFIG_TYPE) ||
+		(nodeData?.output ?? []).includes(LM_TYPE)
+	);
 }
 
 app.registerExtension({

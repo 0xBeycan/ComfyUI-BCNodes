@@ -76,16 +76,6 @@ def observe_generator(frames):
     return generate
 
 
-def unload_lm():
-    """Unloads every registered LM backend (models/common/registry.py LM_BACKEND): the one slot that holds
-    Observe's model, shared with the LM nodes."""
-    from ..models.common import registry
-    from ..models.common.registry import LM_BACKEND
-
-    for name in registry.names(LM_BACKEND):
-        registry.get(LM_BACKEND, name).unload()
-
-
 class PreFlightObserve:
     @classmethod
     def INPUT_TYPES(cls):
@@ -115,13 +105,14 @@ class PreFlightObserve:
         "never break the graph: a problem comes back as {\"error\": ...} so Report can fail closed.")
 
     def observe(self, image, max_frames, keep_model_loaded):
+        from ..pipelines.lm import unload_backends
         from ..pipelines.preflight.observe import observe
 
         try:
             return observe(image, max_frames, observe_generator)
         finally:
             if not keep_model_loaded:
-                unload_lm()
+                unload_backends()
 
 
 class PreFlightReport:

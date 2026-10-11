@@ -1231,7 +1231,13 @@ async def lm_nodes():
     a seed of 2**64 - 1, and the same prompt queued again comes from the cache (seed fixed: the backend is not
     called again); thinking on a model without it fails the run with the template's message; an LM Config field
     fed by a link (a PrimitiveFloat) is applied with edited empty, the node reading the link from its hidden
-    PROMPT."""
+    PROMPT. LM Loader -> Captioner: a list of two batches of different sizes (3 + 2 frames, Join Image Lists) ->
+    Captioner -> Save Image With Caption gives 5 PNG + 5 caption files, each caption next to its own frame; the
+    backend gets each frame alone then the tags prompt, the fixed decoding and 600 tokens, the model is prepared
+    once per list item (the file looked for once) and unloaded once per list item (the loader's
+    keep_model_loaded off); a connected instruction (PrimitiveString) replaces the prompt; the loader's model,
+    precision, LoRA and strength reach the backend; a Captioner without an LM Loader fails validation (lm is
+    required: no default model); a loader precision of another model fails the run."""
     import importlib
 
     import folder_paths
@@ -1243,10 +1249,13 @@ async def lm_nodes():
                     if r.method == "GET" and r.path == "/bcnodes/lm/catalog"), None)
     body = json.loads((await handler(None)).body) if handler else {}
     family = body.get("families", {}).get("qwen_lm", {})
-    check("LM: GET /bcnodes/lm/catalog answers per family (node, error, models with thinking / mtp / precisions / defaults)",
-          body.get("config_node") == "BC_LMConfig" and family.get("node") == "BC_QwenLM" and family.get("error") is None
+    check("LM: GET /bcnodes/lm/catalog answers per family (name, node, error, models with thinking / mtp / "
+          "precisions / defaults, loras) and names the config and loader nodes",
+          body.get("config_node") == "BC_LMConfig" and body.get("loader_node") == "BC_LMLoader"
+          and family.get("name") == "Qwen LM" and family.get("node") == "BC_QwenLM" and family.get("error") is None
           and family.get("models", {}).get("Qwen3.8-27B", {}).get("precisions") == ["BF16", "INT8 ConvRot", "W4A8"]
-          and list(family["models"]["Qwen3-VL-8B Instruct"]["defaults"]) == ["thinking_off"], f"{str(body)[:300]}")
+          and list(family["models"]["Qwen3-VL-8B Instruct"]["defaults"]) == ["thinking_off"]
+          and family.get("loras", [None])[0] == "None", f"{str(body)[:300]}")
     paths, exts = folder_paths.folder_names_and_paths.get("Qwen-LM", ([], set()))
     check("LM: the Qwen-LM folder is registered (models/Qwen-LM) with the .safetensors filter",
           os.path.join(folder_paths.models_dir, "Qwen-LM") in paths and exts == {".safetensors"}, f"{paths} {exts}")
@@ -1307,9 +1316,133 @@ async def lm_nodes():
         check("LM: a linked LM Config field is applied with edited empty; the other fields keep the model's defaults",
               out is not None and (params.temperature, params.top_p, params.top_k, params.presence_penalty, params.mtp)
               == (0.42, 0.8, 20, 1.5, "auto"), f"{valid[1] if not valid[0] else params}")
+        await captioner(registry, pkg)
     finally:
         registry._FAMILIES[registry.LM_BACKEND]["core"] = real
         folder_paths.folder_names_and_paths["Qwen-LM"][0].remove(qwen)
+
+
+async def captioner(registry, pkg):
+    """LM Loader -> Captioner inside ComfyUI (lm_nodes' docstring); the caller holds the Qwen-LM folder with the
+    model file and puts the real "core" backend back."""
+    import importlib
+
+    import folder_paths
+    from PIL import Image
+
+    flow = importlib.import_module(f"{pkg}.pipelines.captioner.caption")
+    lm_pipe = importlib.import_module(f"{pkg}.pipelines.lm")
+    calls = []
+
+    class StandIn:
+        """Answers "caption <n> <the frame's colour>" for its n-th generate."""
+        name = "core"
+
+        def load(self, path, lora):
+            calls.append(("load", path, lora))
+            return "handle"
+
+        def generate(self, handle, prompt, images, params):
+            calls.append(("generate", prompt, params))
+            colour = "red" if float(images[..., 0].mean()) > 0.5 else "blue"
+            return f" caption {len([c for c in calls if c[0] == 'generate'])} {colour}\n"
+
+        def unload(self):
+            calls.append(("unload",))
+            return {}
+
+    searches = []
+    model_path = lm_pipe.model_path
+    lm_pipe.model_path = lambda *args: searches.append(args[0].file) or model_path(*args)
+    registry._FAMILIES[registry.LM_BACKEND]["core"] = StandIn()
+    try:
+        def loader(**changes):
+            return N("BC_LMLoader", **{**dict(family="Qwen LM", model="Qwen3.5-9B", precision="INT8 ConvRot",
+                                              lora="None", lora_strength=1.0, keep_model_loaded=False), **changes})
+
+        folder = tempfile.mkdtemp(prefix="bcnodes_captioner_")
+        prompt = {
+            "1": N("EmptyImage", width=64, height=48, batch_size=3, color=0xFF0000),
+            "2": N("EmptyImage", width=40, height=56, batch_size=2, color=0x0000FF),
+            "3": N("BC_JoinImageLists", In1=["1", 0], In2=["2", 0]),
+            "8": loader(),
+            "4": N("BC_Captioner", image=["3", 0], lm=["8", 0], style="tags", seed=7),
+            "5": N("BC_SaveImageWithCaption", images=["4", 0], caption=["4", 1], filename_prefix="set",
+                   output_folder=folder, caption_file_extension=".txt"),
+        }
+        out, valid = await run(prompt, "captioner")
+        files = sorted(os.listdir(folder))
+        names = [f"set_{i:05}_" for i in range(1, 6)]
+        pairs = []
+        for name in names:
+            png, txt = os.path.join(folder, name + ".png"), os.path.join(folder, name + ".txt")
+            if os.path.isfile(png) and os.path.isfile(txt):
+                with Image.open(png) as im, open(txt, encoding="utf-8") as f:
+                    pairs.append((im.size, im.convert("RGB").getpixel((0, 0)), f.read()))
+        red, blue = ((64, 48), (255, 0, 0)), ((40, 56), (0, 0, 255))
+        expected = [(*red, "caption 1 red"), (*red, "caption 2 red"), (*red, "caption 3 red"),
+                    (*blue, "caption 4 blue"), (*blue, "caption 5 blue")]
+        check("Captioner: LM Loader -> a list of 3 + 2 frames -> Save Image With Caption writes 5 PNG + 5 captions, "
+              "each next to its frame",
+              out is not None and files == sorted(n + e for n in names for e in (".png", ".txt")) and pairs == expected,
+              f"{valid[1] if not valid[0] else (files, pairs)}")
+        generated = [c for c in calls if c[0] == "generate"]
+        tags = flow.user_text("tags", None)
+        check("Captioner: each frame alone then the tags prompt, the fixed decoding, seed 7, 600 tokens; the file looked "
+              "for and the model unloaded once per list item",
+              len(generated) == 5 and all(c[1] == "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>" + tags
+                                          + "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+                                          for c in generated)
+              and all((c[2].temperature, c[2].top_p, c[2].top_k, c[2].presence_penalty, c[2].seed, c[2].max_new_tokens)
+                      == (0.7, 0.8, 20, 0.0, 7, 600) for c in generated)
+              and [c[0] for c in calls] == ["load", "generate"] * 3 + ["unload"] + ["load", "generate"] * 2 + ["unload"]
+              and searches == ["Qwen3.5-9B_int8_convrot.safetensors"] * 2,
+              f"{[c[0] for c in calls]} {searches} {[c[2] for c in generated[:1]]}")
+
+        calls.clear()
+        qwen = folder_paths.get_folder_paths("Qwen-LM")[0]
+        lora_path = os.path.join(qwen, "loras", "my_caption_lora.safetensors")
+        os.makedirs(os.path.dirname(lora_path), exist_ok=True)
+        import torch
+        from safetensors.torch import save_file
+
+        module = "text_encoders.transformer.model.layers.0.mlp.down_proj"
+        save_file({f"{module}.lora_A.weight": torch.zeros(2, 3), f"{module}.lora_B.weight": torch.zeros(4, 2),
+                   f"{module}.alpha": torch.tensor(4.0)}, lora_path)
+        instructed = {"1": prompt["1"], "6": N("PrimitiveString", value="Describe the outfit."),
+                      "8": loader(lora="my_caption_lora.safetensors", lora_strength=0.6, keep_model_loaded=True),
+                      "4": N("BC_Captioner", image=["1", 0], lm=["8", 0], style="none", seed=7, instruction=["6", 0]),
+                      "7": N("PreviewAny", source=["4", 1])}
+        out, valid = await run(instructed, "captioner-instruction")
+        generated = [c for c in calls if c[0] == "generate"]
+        loads = [c for c in calls if c[0] == "load"]
+        check("Captioner: a connected instruction (PrimitiveString) follows each frame; the loader's LoRA at its strength, "
+              "the same LoraSpec on every frame; kept loaded: no unload",
+              out is not None and out["7"]["text"] == ["caption 1 red", "caption 2 red", "caption 3 red"]
+              and len(generated) == 3 and generated[0][1].endswith("<|vision_end|>Describe the outfit.<|im_end|>\n"
+                                                                  "<|im_start|>assistant\n<think>\n\n</think>\n\n")
+              and len(loads) == 3 and loads[0][2] is not None and loads[0][2].strength == 0.6
+              and all(c[2] is loads[0][2] for c in loads) and ("unload",) not in calls,
+              f"{valid[1] if not valid[0] else (out, [c[0] for c in calls], loads[:1])}")
+        os.remove(lora_path)
+
+        calls.clear()
+        unlinked = {"1": prompt["1"], "4": N("BC_Captioner", image=["1", 0], style="prose", seed=7),
+                    "7": N("PreviewAny", source=["4", 1])}
+        out, valid = await run(unlinked, "captioner-no-lm")
+        errors = valid[3].get("4", {}).get("errors", []) if not valid[0] else []
+        check("Captioner without an LM Loader fails validation: lm is a required input (no default model)",
+              out is None and not valid[0] and [(e["type"], e["extra_info"].get("input_name")) for e in errors]
+              == [("required_input_missing", "lm")] and calls == [], f"{valid}")
+
+        wrong = {"1": prompt["1"], "8": loader(precision="W4A8"),
+                 "4": N("BC_Captioner", image=["1", 0], lm=["8", 0], style="prose", seed=7),
+                 "7": N("PreviewAny", source=["4", 1])}
+        out, valid = await run(wrong, "captioner-wrong-precision")
+        check("LM Loader: a precision of another model (W4A8 on Qwen3.5-9B) passes validation and fails the run",
+              out is None and valid[0] and calls == [], f"{valid[1]} {calls}")
+    finally:
+        lm_pipe.model_path = model_path
 
 
 async def preflight_nodes():

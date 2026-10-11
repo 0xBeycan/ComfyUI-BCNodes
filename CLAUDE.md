@@ -31,6 +31,12 @@ nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, co
                               registered; Qwen LM and PreFlight Observe), the unused-heavy-outputs helper (LinkStamp,
                               register_link_stamp, stamps_last, heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
 nodes/<domain>.py             one per domain (28); social_specs.json is the user-editable platform table
+nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, precision, LoRA, keep -> a BC_LM value, an
+                              LMSpec; loads nothing), Captioner (a wrapper: its model only from its required lm input,
+                              no family or model named; one caption per frame: a start callable over pipelines/lm
+                              prepare + generate handed to pipelines/captioner); model_inputs and MODEL_DEFAULTS, the
+                              model / precision / lora / lora_strength widgets and initial values Qwen LM and LM
+                              Loader share; the catalog route
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
@@ -44,8 +50,18 @@ pipelines/depth_anything.py   Depth Anything: output size (short side, or cover 
 pipelines/lora.py             apply_lora: a LoRA file through core's conversion, libs/lora_keys' renames and core's
                               loader; Lora Loader (Key Fix) and each Power Lora Loader row
 pipelines/lm.py               the LM flow: one LM node run (family, catalog, model file found or downloaded, LoRA,
-                              sampling, images, backend; keep_model_loaded off unloads in a finally); the catalog,
-                              LoRA list and catalog route data the LM nodes show
+                              sampling, images, backend; keep_model_loaded off unloads in a finally); LMSpec (the
+                              BC_LM value: family, model, precision, lora, lora_strength, keep_model_loaded; no
+                              weights), lm_spec (LM Loader's checks), prepare (once per wrapper call: catalog, file,
+                              LoRA, sampling -> Prepared) and generate (once per model call: prompt, images, load,
+                              generate, split), each step one function run, prepare and generate order;
+                              unload_backends (a node running the model several times unloads once after them:
+                              PreFlight Observe, Captioner); the catalog, LoRA list and catalog route data the LM
+                              nodes show
+pipelines/captioner/          caption (the batch split into frames, the user text: a built-in style prompt or the
+                              instruction, each frame's long side capped at 1024 as PIL's thumbnail, the model started
+                              once, one generate per frame; the fixed decoding, 600 tokens), prompts/ (tags.txt,
+                              prose.txt, read at call time); the node hands in the start callable
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/preflight/          prompts (the observation prompt and schema), observe (frames sampled, generate -> parse
                               -> one retry -> validate -> meta, fail closed; the fixed model and greedy decoding),
@@ -238,9 +254,12 @@ where it is.
   raises `KeyError`. A second matting implementation needs the owner's decision on dispatch.
 - Vendored code keeps its LICENSE in its own subdirectory (as `models/birefnet/arch/`).
 - An LM family is a `models/<name>/` package with its own `models.yaml` (its built-in catalog),
-  registered as an `LMFamily` under `LM_FAMILY` (as `models/qwen_lm/`), served by one LM node. A
-  backend registers under `LM_BACKEND` (as `models/common/lm/` registers `core`);
-  `release_pack_models` unloads every registered backend.
+  registered as an `LMFamily` under `LM_FAMILY` (as `models/qwen_lm/`), served by one LM node (its
+  entry in `nodes/lm.py` `FAMILY_NODES`) and offered by LM Loader. A wrapper node (Captioner) lists
+  no model and names no family: it takes a required `BC_LM` input (`pipelines/lm.LMSpec`, from LM
+  Loader) and reaches the family only through `pipelines/lm` (`prepare`, `generate`,
+  `unload_backends`). A backend registers under `LM_BACKEND` (as `models/common/lm/` registers
+  `core`); `release_pack_models` unloads every registered backend.
 
 ## Coding style
 

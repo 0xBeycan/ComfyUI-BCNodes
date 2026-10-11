@@ -1,6 +1,7 @@
 """The Qwen LM family over the LM runtime (models/common/lm): the built-in catalog (models.yaml), the
 official chat templates and output split (chat.py) and the official image sizing (images.py), registered
-as qwen_lm in the LM family registry. Model files live in models/Qwen-LM/, LoRAs in models/Qwen-LM/loras/.
+as qwen_lm in the LM family registry, named Qwen LM (what LM Loader shows). Model files live in
+models/Qwen-LM/, LoRAs in models/Qwen-LM/loras/.
 """
 
 import os
@@ -12,6 +13,7 @@ from .images import prepare_images
 
 FAMILY = LMFamily(
     key="qwen_lm",
+    name="Qwen LM",
     folder="Qwen-LM",
     lora_subfolder="loras",
     catalog_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.yaml"),

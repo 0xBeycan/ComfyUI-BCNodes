@@ -1,5 +1,5 @@
-"""Qwen LM and LM Config (nodes/lm.py) through the node classes, on the stub folder_paths (core's folder
-semantics: a folder kept once, get_folder_paths a copy, KeyError for an unknown key) and the real Qwen LM
+"""Qwen LM, LM Config and LM Loader (nodes/lm.py) through the node classes, on the stub folder_paths (core's
+folder semantics: a folder kept once, get_folder_paths a copy, KeyError for an unknown key) and the real Qwen LM
 catalog:
 
   - the surface: BC_QwenLM's and BC_LMConfig's widgets in the brief's order with their defaults, ranges,
@@ -14,8 +14,14 @@ catalog:
     linked field is applied with edited empty; no prompt: edited alone; an unknown name is an error naming
     the fields;
   - Qwen LM hands every input to pipelines/lm.run unchanged;
-  - GET /bcnodes/lm/catalog: the payload's shape (pipelines/lm.CatalogPayload), and the route on a stand-in
-    server.
+  - LM Loader: family (the families' names, never their registry keys), then Qwen LM's model, precision, lora
+    and lora_strength widgets (the same specs, one MODEL_DEFAULTS for both nodes), keep_model_loaded; the lists
+    of every registered family (a second family registered for the test); its output, a pipelines/lm.LMSpec of
+    the widgets with the family's name mapped to its key, with nothing loaded or looked for; an unknown family
+    name, a model of another family, a precision of another model and a LoRA of another family are errors
+    naming what to pick (families by name); two families with one name are refused, naming both;
+  - GET /bcnodes/lm/catalog: the payload's shape (pipelines/lm.CatalogPayload: each family's name and LoRA
+    list, the loader node), every registered family listed, and the route on a stand-in server.
 The flow itself is tests/layers/pipelines/test_pipe_lm.py.
 """
 
@@ -118,8 +124,11 @@ def test_outputs_and_names(lm):
     assert (lm.QwenLM.RETURN_TYPES, lm.QwenLM.RETURN_NAMES, lm.QwenLM.FUNCTION) == (("STRING", "STRING"), ("text", "thinking"), "generate")
     assert (lm.LMConfig.RETURN_TYPES, lm.LMConfig.RETURN_NAMES, lm.LMConfig.FUNCTION) == (("BC_LM_CONFIG",), ("config",), "build")
     assert lm.QwenLM.CATEGORY == lm.LMConfig.CATEGORY == "BCNodes/lm"
-    assert lm.NODE_CLASS_MAPPINGS == {"BC_QwenLM": lm.QwenLM, "BC_LMConfig": lm.LMConfig}
-    assert lm.NODE_DISPLAY_NAME_MAPPINGS == {"BC_QwenLM": "Qwen LM", "BC_LMConfig": "LM Config"}
+    # the menu order: Qwen LM, LM Config, LM Loader, Captioner (tests/layers/nodes/test_node_captioner.py)
+    assert list(lm.NODE_CLASS_MAPPINGS.items()) == [("BC_QwenLM", lm.QwenLM), ("BC_LMConfig", lm.LMConfig),
+                                                    ("BC_LMLoader", lm.LMLoader), ("BC_Captioner", lm.Captioner)]
+    assert lm.NODE_DISPLAY_NAME_MAPPINGS == {"BC_QwenLM": "Qwen LM", "BC_LMConfig": "LM Config",
+                                             "BC_LMLoader": "LM Loader", "BC_Captioner": "Captioner"}
     assert lm.FAMILY_NODES == {"BC_QwenLM": "qwen_lm"}
     for cls in (lm.QwenLM, lm.LMConfig):
         assert cls.DESCRIPTION and cls.SEARCH_ALIASES[0] == "BCNodes" and not getattr(cls, "OUTPUT_NODE", False)
@@ -248,24 +257,205 @@ def test_generate_hands_everything_to_the_pipeline(lm, fp, tmp_path, monkeypatch
     assert seen[-1].config == {} and seen[-1].image is None
 
 
+# --- LM Loader -----------------------------------------------------------------------------------------------
+
+LOADER_REQUIRED = ["family", "model", "precision", "lora", "lora_strength", "keep_model_loaded"]
+OTHER_CATALOG = """models:
+  Other-1B:
+    template: qwen3.5
+    thinking: false
+    mtp: false
+    defaults:
+      thinking_off: {do_sample: true, temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0, mtp: auto}
+    precisions:
+      FP8: {file: Other-1B_fp8.safetensors, url: "https://example.org/Other-1B_fp8.safetensors"}
+"""
+
+
+@pytest.fixture
+def other(bcnodes, monkeypatch, tmp_path):
+    """A second LM family, other_lm named Other LM: the Qwen LM family's templates over a catalog of one model
+    (Other-1B, FP8), its folder models/Other-LM holding one LoRA."""
+    registry = bcnodes["models.common.registry"]
+    catalog = tmp_path / "other_models.yaml"
+    catalog.write_text(OTHER_CATALOG, encoding="utf-8")
+    family = dataclasses.replace(bcnodes["models.qwen_lm"].FAMILY, key="other_lm", name="Other LM",
+                                 folder="Other-LM", catalog_path=str(catalog))
+    monkeypatch.setitem(registry._FAMILIES[registry.LM_FAMILY], "other_lm", family)
+    loras = tmp_path / "models" / "Other-LM" / "loras"
+    loras.mkdir(parents=True)
+    (loras / "other_style.safetensors").write_bytes(b"")
+    return family
+
+
+def test_loader_inputs(lm, fp, bcnodes):
+    spec = lm.LMLoader.INPUT_TYPES()
+    req = spec["required"]
+    assert list(spec) == ["required"] and list(req) == LOADER_REQUIRED
+    registry = bcnodes["models.common.registry"]
+    # the families' names, in registry order; the registry key stays internal
+    names = [registry.get("lm_family", key).name for key in registry.names("lm_family")]
+    assert req["family"][0] == names == ["Qwen LM"]
+    qwen_name = registry.get("lm_family", lm.QwenLM.FAMILY).name
+    assert req["family"][1]["default"] == lm.MODEL_DEFAULTS["family"] == qwen_name
+    qwen = lm.QwenLM.INPUT_TYPES()["required"]
+    for name in ("model", "precision", "lora_strength"):
+        assert req[name] == qwen[name], name  # Qwen LM's widgets: one spec, one tooltip
+    assert req["lora"][0] == qwen["lora"][0] and req["lora"][1]["default"] == qwen["lora"][1]["default"]
+    assert req["lora"][1]["tooltip"] == qwen["lora"][1]["tooltip"] + " Only the selected family's LoRAs are shown."
+    keep = req["keep_model_loaded"]
+    assert keep[0] == "BOOLEAN" and keep[1]["default"] is qwen["keep_model_loaded"][1]["default"] is True
+    assert all(v[1].get("tooltip") for v in req.values())
+
+
+def test_one_place_for_the_defaults(lm, fp, bcnodes):
+    """Qwen LM's and LM Loader's initial values are nodes/lm.MODEL_DEFAULTS (family: LM Loader's only, the Qwen
+    LM family's name); a wrapper node has none."""
+    assert lm.MODEL_DEFAULTS == {"family": "Qwen LM", "model": "Qwen3.5-9B", "precision": "INT8 ConvRot",
+                                 "lora": "None", "lora_strength": 1.0, "keep_model_loaded": True}
+    assert lm.MODEL_DEFAULTS["lora"] == bcnodes["pipelines.lm"].NO_LORA
+    assert lm.MODEL_DEFAULTS["family"] == bcnodes["models.qwen_lm"].FAMILY.name
+    loader = lm.LMLoader.INPUT_TYPES()["required"]
+    assert {name: loader[name][1]["default"] for name in lm.MODEL_DEFAULTS} == lm.MODEL_DEFAULTS
+    qwen = lm.QwenLM.INPUT_TYPES()["required"]
+    assert "family" not in qwen
+    assert {name: qwen[name][1]["default"] for name in lm.MODEL_DEFAULTS if name != "family"} == {
+        name: value for name, value in lm.MODEL_DEFAULTS.items() if name != "family"}
+    assert not hasattr(bcnodes["pipelines.lm"], "DEFAULT_LM")
+    assert all("default" not in v[1] for v in lm.Captioner.INPUT_TYPES()["required"].values() if v[0] == "BC_LM")
+
+
+def test_loader_lists_every_family(lm, fp, other, tmp_path):
+    req = lm.LMLoader.INPUT_TYPES()["required"]
+    assert req["family"][0] == ["Qwen LM", "Other LM"]
+    assert req["model"][0] == MODELS + ["Other-1B"]
+    assert req["precision"][0] == ["BF16", "INT8 ConvRot", "W4A8", "FP8"]
+    assert req["lora"][0] == ["None", "other_style.safetensors"]
+    # Qwen LM keeps its own family's lists
+    qwen = lm.QwenLM.INPUT_TYPES()["required"]
+    assert qwen["model"][0] == MODELS and qwen["lora"][0] == ["None"]
+
+
+def test_loader_output(lm, fp, bcnodes):
+    assert (lm.LMLoader.RETURN_TYPES, lm.LMLoader.RETURN_NAMES, lm.LMLoader.FUNCTION) == (("BC_LM",), ("lm",), "load")
+    assert lm.LMLoader.CATEGORY == "BCNodes/lm" and not getattr(lm.LMLoader, "OUTPUT_NODE", False)
+    assert lm.LMLoader.DESCRIPTION and lm.LMLoader.SEARCH_ALIASES[0] == "BCNodes" and len(lm.LMLoader.OUTPUT_TOOLTIPS) == 1
+    pipe = bcnodes["pipelines.lm"]
+    out = lm.LMLoader().load("Qwen LM", "Qwen3.8-27B", "W4A8", "None", 0.5, False)
+    assert out == (pipe.LMSpec(family="qwen_lm", model="Qwen3.8-27B", precision="W4A8", lora="None",
+                               lora_strength=0.5, keep_model_loaded=False),)
+    assert list(pipe.LMSpec.__dataclass_fields__) == ["family", "model", "precision", "lora", "lora_strength",
+                                                       "keep_model_loaded"]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        out[0].model = "Qwen3.5-4B"
+
+
+def test_loader_loads_nothing(lm, fp, bcnodes, monkeypatch, other):
+    """No file is looked for or downloaded, no LoRA read, no backend called: the model file is not on disk."""
+    pipe = bcnodes["pipelines.lm"]
+    registry = bcnodes["models.common.registry"]
+    for name in ("model_path", "lora_spec", "read_lora", "fetch_with_progress"):
+        monkeypatch.setattr(pipe, name, lambda *a, _name=name, **k: pytest.fail(f"LM Loader called {_name}"))
+
+    class Untouchable:
+        name = "core"
+
+        def __getattr__(self, attr):
+            pytest.fail(f"LM Loader used the backend ({attr})")
+
+    monkeypatch.setitem(registry._FAMILIES[registry.LM_BACKEND], "core", Untouchable())
+    spec = lm.LMLoader().load("Other LM", "Other-1B", "FP8", "other_style.safetensors", 1.0, True)[0]
+    assert (spec.family, spec.model, spec.precision, spec.lora) == ("other_lm", "Other-1B", "FP8",
+                                                                     "other_style.safetensors")
+
+
+@pytest.mark.parametrize("args, match", [
+    (("Gemma LM", "Qwen3.5-9B", "INT8 ConvRot", "None"),
+     "LM family 'Gemma LM' is not registered; pick one of: Qwen LM, Other LM$"),
+    # a registry key is not a family's name
+    (("qwen_lm", "Qwen3.5-9B", "INT8 ConvRot", "None"),
+     "LM family 'qwen_lm' is not registered; pick one of: Qwen LM, Other LM$"),
+    (("Other LM", "Qwen3.5-9B", "INT8 ConvRot", "None"),
+     "model 'Qwen3.5-9B' is not in the Other-LM catalog; the models are: Other-1B$"),
+    (("Qwen LM", "Other-1B", "FP8", "None"), "model 'Other-1B' is not in the Qwen-LM catalog; the models are: Qwen3.5-4B, "),
+    (("Qwen LM", "Qwen3.5-9B", "W4A8", "None"), "Qwen3.5-9B has no precision 'W4A8'; its precisions are: BF16, INT8 ConvRot$"),
+    (("Other LM", "Other-1B", "BF16", "None"), "Other-1B has no precision 'BF16'; its precisions are: FP8$"),
+    (("Qwen LM", "Qwen3.5-9B", "BF16", "other_style.safetensors"),
+     r"LoRA 'other_style.safetensors' is not in the LoRA folders of the Qwen LM family \(.*Qwen-LM.loras\); pick one "
+     r"of: None$"),
+])
+def test_loader_errors_say_what_to_pick(lm, fp, other, args, match):
+    with pytest.raises(ValueError, match=match):
+        lm.LMLoader().load(*args, 1.0, True)
+
+
+def test_family_names_map_to_keys(lm, fp, bcnodes, other):
+    """pipelines/lm.family_keys: {name: key} in registry order; LM Loader's name maps to the key its spec holds."""
+    pipe = bcnodes["pipelines.lm"]
+    assert pipe.family_keys() == {"Qwen LM": "qwen_lm", "Other LM": "other_lm"}
+    assert (pipe.family_key_of("Qwen LM"), pipe.family_key_of("Other LM")) == ("qwen_lm", "other_lm")
+    assert lm.LMLoader().load("Other LM", "Other-1B", "FP8", "None", 1.0, True)[0].family == "other_lm"
+
+
+def test_two_families_with_one_name_are_refused(lm, fp, bcnodes, monkeypatch):
+    registry = bcnodes["models.common.registry"]
+    copy = dataclasses.replace(bcnodes["models.qwen_lm"].FAMILY, key="copy_lm")  # keeps the name Qwen LM
+    monkeypatch.setitem(registry._FAMILIES[registry.LM_FAMILY], "copy_lm", copy)
+    match = "LM families 'qwen_lm' and 'copy_lm' both have the name 'Qwen LM'; give each family its own name"
+    with pytest.raises(ValueError, match=match):
+        lm.LMLoader.INPUT_TYPES()
+    with pytest.raises(ValueError, match=match):
+        lm.LMLoader().load("Qwen LM", "Qwen3.5-9B", "INT8 ConvRot", "None", 1.0, True)
+
+
+def test_an_unknown_family_key_names_the_families(lm, fp, bcnodes, other):
+    """A key no family is registered under (a node's code, never a widget) names the families by name."""
+    with pytest.raises(ValueError, match="^no LM family is registered as 'gemma_lm'; the families are: Qwen LM, "
+                                         "Other LM$"):
+        lm.family_folders("gemma_lm")
+
+
+def test_every_family_has_its_node(lm, bcnodes):
+    """The catalog route lists FAMILY_NODES' families: every family LM Loader offers (the registered ones)."""
+    registry = bcnodes["models.common.registry"]
+    assert sorted(lm.FAMILY_NODES.values()) == sorted(registry.names(registry.LM_FAMILY))
+
+
 # --- the catalog route ---------------------------------------------------------------------------------------
 
 
-def test_catalog_payload(lm, fp, bcnodes):
+def test_catalog_payload(lm, fp, bcnodes, tmp_path):
+    os.makedirs(os.path.join(qwen_folder(tmp_path), "loras", "sub"))
+    for rel in ("b.safetensors", os.path.join("sub", "a.safetensors")):
+        open(os.path.join(qwen_folder(tmp_path), "loras", rel), "wb").close()
     payload = lm.catalog_payload()
     assert json.loads(json.dumps(payload)) == payload
-    assert list(payload) == ["families", "config_node"] and payload["config_node"] == "BC_LMConfig"
+    assert list(payload) == ["families", "config_node", "loader_node"] and payload["config_node"] == "BC_LMConfig"
+    assert payload["loader_node"] == "BC_LMLoader" and lm.NODE_CLASS_MAPPINGS["BC_LMLoader"] is lm.LMLoader
     pipe = bcnodes["pipelines.lm"]
     assert list(payload) == list(pipe.CatalogPayload.__annotations__)  # the TypedDict, keys in its order
     family = payload["families"]["qwen_lm"]
     assert list(payload["families"]) == ["qwen_lm"] and family["node"] == "BC_QwenLM" and family["error"] is None
+    assert family["name"] == "Qwen LM"  # what LM Loader's family widget holds; web/js/lm.js finds the family by it
+    assert list(family) == list(pipe.FamilyInfo.__annotations__)
     assert list(family["models"]) == MODELS
+    assert family["loras"] == ["None", "b.safetensors", os.path.join("sub", "a.safetensors")]  # the lora widget's list
+    assert family["models"]["Qwen3.8-27B"]["precisions"] == ["BF16", "INT8 ConvRot", "W4A8"]
     assert family["models"]["Qwen3.5-9B"] == {
         "thinking": True, "mtp": True, "precisions": ["BF16", "INT8 ConvRot"],
         "defaults": {"thinking_off": {"do_sample": True, "temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0,
                                       "presence_penalty": 1.5, "repetition_penalty": 1.0, "mtp": "auto"},
                      "thinking_on": {"do_sample": True, "temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
                                      "presence_penalty": 1.5, "repetition_penalty": 1.0, "mtp": "auto"}}}
+
+
+def test_catalog_payload_names_every_family(lm, fp, other, monkeypatch):
+    monkeypatch.setitem(lm.FAMILY_NODES, "BC_OtherLM", "other_lm")  # the second family's node
+    families = lm.catalog_payload()["families"]
+    assert {key: (family["name"], family["node"]) for key, family in families.items()} == {
+        "qwen_lm": ("Qwen LM", "BC_QwenLM"), "other_lm": ("Other LM", "BC_OtherLM")}
+    assert families["other_lm"]["loras"] == ["None", "other_style.safetensors"]
+    assert [family["name"] for family in families.values()] == lm.LMLoader.INPUT_TYPES()["required"]["family"][0]
 
 
 def test_catalog_payload_with_a_broken_user_catalog(lm, fp, tmp_path):
