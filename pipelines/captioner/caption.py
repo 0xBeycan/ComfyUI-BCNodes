@@ -7,18 +7,19 @@ caption(image, style, instruction, start), in this order:
   2. the batch split into frames, in order, each a (1, H, W, C) view of `image` (no copy, no dtype change);
      a batch without frames raises with what to connect;
   3. start() -> generate, once: the node prepares the model of its LM Loader (the model file found, the
-     LoRA read and checked, the sampling: thinking off, DECODING, MAX_NEW_TOKENS, its seed for every frame)
-     and returns generate(frame, user) -> the model's answer, which runs that prepared model: no system
-     turn, no prefill, the model kept loaded from one frame to the next;
-  4. per frame: the frame the model sees (model_frame), then generate(that frame, the user text) -> the
-     caption as the model wrote it (its surrounding whitespace stripped).
+     LoRA read and checked, the sampling: thinking off, DECODING or the connected LM Config's value,
+     MAX_NEW_TOKENS, its seed for every frame) and returns generate(frame, user) -> the model's answer, which
+     runs that prepared model: no system turn, no prefill, the model kept loaded from one frame to the next;
+  4. per frame: the frame the model sees (libs/image.thumbnail_frame, long side capped at MAX_SIDE), then
+     generate(that frame, the user text) -> the caption as the model wrote it (its surrounding whitespace
+     stripped).
 Returns (frames, captions): element i of each belongs to frame i of the batch; the frames are the input's
 own, not the copies the model saw.
 """
 
 import os
 
-from ...libs.image import pil_to_tensor_hwc, tensor_to_pil_u8
+from ...libs.image import thumbnail_frame
 
 # The style widget's values. A new style is appended at the end: a saved workflow keeps its value.
 STYLES = ("none", "tags", "prose")
@@ -33,7 +34,8 @@ MAX_NEW_TOKENS = 600
 # (temperature 0.7, top_p 0.8, top_k 20, min_p 0) with presence_penalty 0 instead of Qwen's 1.5. A presence
 # penalty is subtracted from every token already generated, and a caption reuses tokens by design (the comma
 # between every pair of tags, the pronoun of the class word), so 1.5 pushes it off its format. The fields of an
-# LM Config's edited set; given as fixed values, whatever the model's own defaults are.
+# LM Config's edited set, given whatever the model's own defaults are; used when no LM Config is connected (a
+# connected one replaces it whole: the model's thinking-off defaults with that node's edited and linked fields).
 DECODING = {"do_sample": True, "temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0,
             "repetition_penalty": 1.0}
 
@@ -51,18 +53,6 @@ def user_text(style, instruction):
         return f.read().strip()
 
 
-def model_frame(frame):
-    """The frame (1, H, W, C) as the model is given it: a frame whose long side is within MAX_SIDE as it is;
-    a larger one as PIL's Image.thumbnail((MAX_SIDE, MAX_SIDE)) leaves it (long side MAX_SIDE, aspect kept,
-    never enlarged) on the frame as 8-bit RGB, back as a float32 (1, h, w, 3) frame. The LM family's own image
-    sizing then runs on it as on any image."""
-    if max(frame.shape[1], frame.shape[2]) <= MAX_SIDE:
-        return frame
-    pil = tensor_to_pil_u8(frame[0, :, :, :3])
-    pil.thumbnail((MAX_SIDE, MAX_SIDE))
-    return pil_to_tensor_hwc(pil).unsqueeze(0)
-
-
 def caption(image, style, instruction, start):
     """(frames, captions) of the IMAGE batch `image` (module docstring); `start()`, called once after the input
     checks, returns generate(frame, user) -> the model's answer for one frame."""
@@ -75,4 +65,4 @@ def caption(image, style, instruction, start):
                          "caption list would stop the nodes it feeds with an error of their own)")
     frames = [image[i:i + 1] for i in range(image.shape[0])]
     generate = start()
-    return frames, [generate(model_frame(frame), text).strip() for frame in frames]
+    return frames, [generate(thumbnail_frame(frame, MAX_SIDE), text).strip() for frame in frames]

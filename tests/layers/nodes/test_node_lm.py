@@ -124,11 +124,14 @@ def test_outputs_and_names(lm):
     assert (lm.QwenLM.RETURN_TYPES, lm.QwenLM.RETURN_NAMES, lm.QwenLM.FUNCTION) == (("STRING", "STRING"), ("text", "thinking"), "generate")
     assert (lm.LMConfig.RETURN_TYPES, lm.LMConfig.RETURN_NAMES, lm.LMConfig.FUNCTION) == (("BC_LM_CONFIG",), ("config",), "build")
     assert lm.QwenLM.CATEGORY == lm.LMConfig.CATEGORY == "BCNodes/lm"
-    # the menu order: Qwen LM, LM Config, LM Loader, Captioner (tests/layers/nodes/test_node_captioner.py)
+    # the menu order: Qwen LM, LM Config, LM Loader, Captioner, Prompter (tests/layers/nodes/test_node_captioner.py,
+    # test_node_prompter.py)
     assert list(lm.NODE_CLASS_MAPPINGS.items()) == [("BC_QwenLM", lm.QwenLM), ("BC_LMConfig", lm.LMConfig),
-                                                    ("BC_LMLoader", lm.LMLoader), ("BC_Captioner", lm.Captioner)]
+                                                    ("BC_LMLoader", lm.LMLoader), ("BC_Captioner", lm.Captioner),
+                                                    ("BC_Prompter", lm.Prompter)]
     assert lm.NODE_DISPLAY_NAME_MAPPINGS == {"BC_QwenLM": "Qwen LM", "BC_LMConfig": "LM Config",
-                                             "BC_LMLoader": "LM Loader", "BC_Captioner": "Captioner"}
+                                             "BC_LMLoader": "LM Loader", "BC_Captioner": "Captioner",
+                                             "BC_Prompter": "Prompter"}
     assert lm.FAMILY_NODES == {"BC_QwenLM": "qwen_lm"}
     for cls in (lm.QwenLM, lm.LMConfig):
         assert cls.DESCRIPTION and cls.SEARCH_ALIASES[0] == "BCNodes" and not getattr(cls, "OUTPUT_NODE", False)
@@ -322,7 +325,8 @@ def test_one_place_for_the_defaults(lm, fp, bcnodes):
     assert {name: qwen[name][1]["default"] for name in lm.MODEL_DEFAULTS if name != "family"} == {
         name: value for name, value in lm.MODEL_DEFAULTS.items() if name != "family"}
     assert not hasattr(bcnodes["pipelines.lm"], "DEFAULT_LM")
-    assert all("default" not in v[1] for v in lm.Captioner.INPUT_TYPES()["required"].values() if v[0] == "BC_LM")
+    for wrapper in (lm.Captioner, lm.Prompter):
+        assert all("default" not in v[1] for v in wrapper.INPUT_TYPES()["required"].values() if v[0] == "BC_LM")
 
 
 def test_loader_lists_every_family(lm, fp, other, tmp_path):

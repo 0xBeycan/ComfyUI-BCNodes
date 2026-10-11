@@ -2,13 +2,16 @@
 recording stand-in for the "core" LM backend (no weights):
 
   - the surface: image, lm (BC_LM, required, no default), style (none / tags / prose, prose), seed (its `fixed`
-    control), the instruction a socket (forceInput), a tooltip on every input; no model, precision, lora or
+    control), the instruction a socket (forceInput), then config (BC_LM_CONFIG, optional, appended after
+    instruction), a tooltip on every input; no model, precision, lora or
     keep widget; outputs image + caption, both lists; no INPUT_IS_LIST, no heavy output, not an output node;
     category, display name; no family, model or Qwen name in its code;
   - through pipelines/lm.prepare + generate: one prepare per node call from the LMSpec (the model file looked
     for once, the LoRA read once, its console notes once), one generate per frame; the backend's prompt per
     frame (the frame then the style's text; the frame alone for none; the instruction in place of the style),
-    its GenerateParams (the fixed decoding, 600 tokens, the seed), the frame the model gets capped at 1024 on
+    its GenerateParams (DECODING without an LM Config, 600 tokens, the seed; with one connected, prepare gets
+    its value as it is: the model's thinking-off defaults with its fields over them, DECODING not used), the
+    frame the model gets capped at 1024 on
     its long side; the LMSpec's model, precision and LoRA at its strength; a LoRA with tags or prose keeps the
     style; the outputs: one list element per frame, each image a view of the input frame, each caption its
     frame's answer;
@@ -99,9 +102,9 @@ def spec(pipe, **changes):
     return pipe.LMSpec(**{**fields, **changes})
 
 
-def run(lm, pipe, image, style="prose", keep=True, instruction=None, seed=5, **changes):
+def run(lm, pipe, image, style="prose", keep=True, instruction=None, seed=5, config=None, **changes):
     return lm.Captioner().caption(image, spec(pipe, keep_model_loaded=keep, **changes), style, seed,
-                                  instruction=instruction)
+                                  instruction=instruction, config=config)
 
 
 def kinds(backend):
@@ -124,7 +127,8 @@ def save_lora(path):
 def test_the_inputs_and_their_defaults(lm, fp):
     spec = lm.Captioner.INPUT_TYPES()
     req, opt = spec["required"], spec["optional"]
-    assert list(spec) == ["required", "optional"] and list(req) == REQUIRED and list(opt) == ["instruction"]
+    assert list(spec) == ["required", "optional"] and list(req) == REQUIRED and list(opt) == ["instruction", "config"]
+    assert opt["config"][0] == "BC_LM_CONFIG" and "default" not in opt["config"][1]
     assert req["image"][0] == "IMAGE"
     assert req["lm"][0] == "BC_LM" and "default" not in req["lm"][1]  # required: no default model, no fallback
     assert req["style"][0] == ["none", "tags", "prose"] and req["style"][1]["default"] == "prose"
@@ -202,6 +206,43 @@ def test_the_instruction_replaces_the_style(lm, pipe, backend, style):
 def test_a_whitespace_instruction_is_not_connected(lm, pipe, flow, backend):
     run(lm, pipe, torch.rand(1, 32, 32, 3), style="tags", instruction="  \n")
     assert backend.generated[0][0] == "<|im_start|>user\n" + IMAGE_BLOCK + flow.user_text("tags", None) + THINK_OFF
+
+
+def params_of(backend):
+    p = backend.generated[0][2]
+    return (p.do_sample, p.temperature, p.top_p, p.top_k, p.min_p, p.presence_penalty, p.repetition_penalty, p.mtp,
+            p.seed, p.max_new_tokens)
+
+
+def test_without_a_config_prepare_gets_the_decoding(lm, pipe, flow, backend, monkeypatch):
+    seen = []
+    monkeypatch.setattr(pipe, "prepare", lambda *a, _fn=pipe.prepare, **k: seen.append(k["config"]) or _fn(*a, **k))
+    run(lm, pipe, torch.rand(1, 16, 16, 3))
+    assert seen == [flow.DECODING] and seen[0] is not flow.DECODING  # a copy: the constant is never handed out
+    assert params_of(backend) == (True, 0.7, 0.8, 20, 0.0, 0.0, 1.0, "auto", 5, 600)
+
+
+@pytest.mark.parametrize("config, expected", [
+    # nothing edited: the model's thinking-off defaults (Qwen3.5-9B: presence_penalty 1.5), DECODING not used
+    ({}, (True, 0.7, 0.8, 20, 0.0, 1.5, 1.0, "auto", 5, 600)),
+    # edited fields over the model's defaults, not over DECODING
+    ({"temperature": 0.3, "mtp": "off"}, (True, 0.3, 0.8, 20, 0.0, 1.5, 1.0, "off", 5, 600)),
+    ({"do_sample": False, "presence_penalty": 0.0}, (False, 0.7, 0.8, 20, 0.0, 0.0, 1.0, "auto", 5, 600)),
+])
+def test_a_connected_config_reaches_prepare_as_it_is(lm, pipe, backend, monkeypatch, config, expected):
+    seen = []
+    monkeypatch.setattr(pipe, "prepare", lambda *a, _fn=pipe.prepare, **k: seen.append(k["config"]) or _fn(*a, **k))
+    run(lm, pipe, torch.rand(2, 16, 16, 3), config=config)
+    assert len(seen) == 1 and seen[0] is config
+    assert params_of(backend) == expected and len(backend.generated) == 2
+    assert all(g[2] == backend.generated[0][2] for g in backend.generated)
+
+
+def test_an_lm_config_node_feeds_the_captioner(lm, pipe, backend):
+    """LM Config's own output (one field edited) on the Captioner: that field over the model's defaults."""
+    (config,) = lm.LMConfig().build(True, 0.42, 20, 0.8, 0.0, 1.0, 1.5, "auto", "temperature")
+    run(lm, pipe, torch.rand(1, 16, 16, 3), config=config)
+    assert params_of(backend) == (True, 0.42, 0.8, 20, 0.0, 1.5, 1.0, "auto", 5, 600)
 
 
 def test_the_model_gets_the_frame_capped_at_1024(lm, pipe, backend):

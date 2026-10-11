@@ -191,6 +191,17 @@ def main():
           lambda: _raises(ValueError, lambda: cap.caption(torch.zeros((0, 8, 8, 3)),
                                                           lml.load("Qwen LM", "Qwen3.5-9B", "INT8 ConvRot", "None", 1.0,
                                                                    True)[0], "prose", 0)))
+    prm = m["lm"].Prompter()
+    check("Prompter INPUT_TYPES", lambda: (lambda r: r["lm"][0] == "BC_LM" and r["instructions"][1]["default"]
+                                           == "include identity" and r["text"][1]["default"] == "")(
+          prm.INPUT_TYPES()["required"]) or _fail())
+    check("Prompter no brief and no image -> ValueError (before any file search)",
+          lambda: _raises(ValueError, lambda: prm.write(lml.load("Qwen LM", "Qwen3.5-9B", "INT8 ConvRot", "None", 1.0,
+                                                                 True)[0], "  ", "include identity", 0)))
+    check("Prompter image batch of 2 -> ValueError (before any file search)",
+          lambda: _raises(ValueError, lambda: prm.write(lml.load("Qwen LM", "Qwen3.5-9B", "INT8 ConvRot", "None", 1.0,
+                                                                 True)[0], "", "none", 0,
+                                                        image=torch.zeros((2, 8, 8, 3)))))
     lmc = m["lm"].LMConfig()
     check("LMConfig nothing edited -> {}", lambda: lmc.build(True, 0.7, 20, 0.8, 0.0, 1.0, 1.5, "auto", "") == ({},) or _fail())
 

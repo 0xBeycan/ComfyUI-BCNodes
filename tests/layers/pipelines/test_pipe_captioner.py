@@ -8,15 +8,14 @@
   - the batch split into frames in order, each a (1, H, W, C) view of the input (same storage, same dtype),
     start called once after the input checks (never for an unknown style, an empty batch or a tensor that is
     not a batch, which are errors), then one generate per frame with the same text;
-  - the frame the model sees: within MAX_SIDE as it is (the same tensor), above it exactly what PIL's
-    Image.thumbnail((1024, 1024)) gives on the frame as 8-bit RGB (alpha dropped), never enlarged; the frames
-    returned are the originals;
+  - the frame the model sees: each frame through libs/image.thumbnail_frame at MAX_SIDE 1024 (its own cases are
+    tests/layers/libs/test_lib_image.py), so a large frame reaches generate capped; the frames returned are the
+    originals;
   - the caption: the model's answer as written, its surrounding whitespace stripped, for every style.
 """
 
 import os
 
-import numpy as np
 import pytest
 import torch
 
@@ -157,43 +156,14 @@ def test_an_unknown_style_starts_nothing(flow):
 # --- the frame the model sees --------------------------------------------------------------------------------
 
 
-def thumbnail(frame):
-    """PIL's Image.thumbnail((1024, 1024)) on the frame as 8-bit RGB, as a float32 (1, h, w, 3) tensor."""
-    from PIL import Image
-
-    u8 = np.clip(255.0 * frame[0, :, :, :3].numpy(), 0, 255).astype(np.uint8)
-    pil = Image.fromarray(u8)
-    pil.thumbnail((1024, 1024))
-    return torch.from_numpy(np.array(pil).astype(np.float32) / 255.0).unsqueeze(0)
-
-
-@pytest.mark.parametrize("h, w, size", [(1536, 2048, (768, 1024)), (2048, 1536, (1024, 768)), (1025, 10, (1024, 10)),
-                                        (1100, 1100, (1024, 1024))])
-def test_a_large_frame_is_pil_thumbnail_of_it(flow, h, w, size):
-    frame = torch.rand(1, h, w, 3)
-    out = flow.model_frame(frame)
-    expected = thumbnail(frame)
-    assert out.dtype == torch.float32 and tuple(out.shape) == (1, *size, 3) == tuple(expected.shape)
-    assert torch.equal(out, expected)
-
-
-def test_alpha_is_dropped_on_a_large_frame(flow):
-    frame = torch.rand(1, 1200, 900, 4)
-    out = flow.model_frame(frame)
-    assert out.shape == (1, 1024, 768, 3) and torch.equal(out, thumbnail(frame))
-
-
-@pytest.mark.parametrize("h, w", [(600, 800), (1024, 1024), (1024, 300), (8, 8)])
-def test_a_frame_within_the_cap_is_never_changed_or_enlarged(flow, h, w):
-    frame = torch.rand(1, h, w, 4, dtype=torch.float16)
-    assert flow.model_frame(frame) is frame
-
-
-def test_the_model_gets_the_capped_frame_the_output_keeps_the_original(flow):
+def test_the_model_gets_the_capped_frame_the_output_keeps_the_original(flow, bcnodes):
     image = torch.rand(2, 1200, 1600, 3)
     generate = Generate()
     frames, _ = flow.caption(image, "tags", None, generate.start)
+    assert flow.MAX_SIDE == 1024
     assert [tuple(f.shape) for f, _ in generate.calls] == [(1, 768, 1024, 3)] * 2
+    thumbnail_frame = bcnodes["libs.image"].thumbnail_frame
+    assert all(torch.equal(f, thumbnail_frame(image[i:i + 1], 1024)) for i, (f, _) in enumerate(generate.calls))
     assert [tuple(f.shape) for f in frames] == [(1, 1200, 1600, 3)] * 2
     assert all(f.data_ptr() == image[i].data_ptr() for i, f in enumerate(frames))
 

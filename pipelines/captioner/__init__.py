@@ -2,7 +2,8 @@
 
     caption    the flow: the batch split into frames, the user text (a built-in style prompt or the
                instruction), the frame the model sees (long side capped at 1024 as PIL's thumbnail does
-               it), the model started once, one generate per frame; the fixed decoding and token budget
+               it, libs/image.thumbnail_frame), the model started once, one generate per frame; the decoding
+               used without an LM Config, and the token budget
     prompts/   the built-in style prompts (tags.txt, prose.txt), read at call time
 
 Nothing here imports ComfyUI or pipelines/lm: the node layer (nodes/lm.py) hands in start, which prepares the

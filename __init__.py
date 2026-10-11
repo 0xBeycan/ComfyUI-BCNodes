@@ -32,6 +32,7 @@ Nodes:
     BC_LMConfig                  sampling settings for an LM node, only the edited fields
     BC_LMLoader                  the chat model a wrapper node runs (BC_LM): family, model, precision, LoRA, keep
     BC_Captioner                 one training caption per image frame with an LM Loader's model (tags / prose / none)
+    BC_Prompter                  one text-to-image prompt from a brief / image with an LM Loader's model, CLIP-encoded
     BC_ImageComparer             two images, divider comparison on the node
     BC_PowerLoraLoader           MODEL + LoRA rows -> MODEL (no CLIP)
     BC_LoraLoaderKeyFix          MODEL + one LoRA -> MODEL, keys core's loader drops renamed first

@@ -1237,7 +1237,13 @@ async def lm_nodes():
     once per list item (the file looked for once) and unloaded once per list item (the loader's
     keep_model_loaded off); a connected instruction (PrimitiveString) replaces the prompt; the loader's model,
     precision, LoRA and strength reach the backend; a Captioner without an LM Loader fails validation (lm is
-    required: no default model); a loader precision of another model fails the run."""
+    required: no default model); a loader precision of another model fails the run. LM Loader -> Prompter, with
+    a stand-in CLIP from a test-only node: a brief with include identity, an LM Config and a CLIP gives the brief
+    prompt then the brief, the config's field over the model's defaults, the model unloaded before the encode and
+    the conditioning of the written prompt; an image alone with exclude identity gives the image then the image
+    prompt and DECODING; conditioning linked without a CLIP fails the run before the model; queued again with a
+    node newly linked to conditioning, the cached Prompter is not run again and that node is blocked with the
+    same message (ComfyUI's ExecutionBlocker)."""
     import importlib
 
     import folder_paths
@@ -1317,6 +1323,7 @@ async def lm_nodes():
               out is not None and (params.temperature, params.top_p, params.top_k, params.presence_penalty, params.mtp)
               == (0.42, 0.8, 20, 1.5, "auto"), f"{valid[1] if not valid[0] else params}")
         await captioner(registry, pkg)
+        await prompter(registry, pkg)
     finally:
         registry._FAMILIES[registry.LM_BACKEND]["core"] = real
         folder_paths.folder_names_and_paths["Qwen-LM"][0].remove(qwen)
@@ -1443,6 +1450,137 @@ async def captioner(registry, pkg):
               out is None and valid[0] and calls == [], f"{valid[1]} {calls}")
     finally:
         lm_pipe.model_path = model_path
+
+
+async def prompter(registry, pkg):
+    """LM Loader -> Prompter inside ComfyUI (lm_nodes' docstring); the caller holds the Qwen-LM folder with the
+    model file and puts the real "core" backend back."""
+    import importlib
+
+    flow = importlib.import_module(f"{pkg}.pipelines.prompter.write")
+    lm_nodes_module = importlib.import_module(f"{pkg}.nodes.lm")
+    calls = []
+
+    class StandIn:
+        name = "core"
+
+        def load(self, path, lora):
+            calls.append(("load", path, lora))
+            return "handle"
+
+        def generate(self, handle, prompt, images, params):
+            calls.append(("generate", prompt, params, None if images is None else tuple(images.shape)))
+            return " A half-body shot at eye level of one woman reading.\n"
+
+        def unload(self):
+            calls.append(("unload",))
+            return {}
+
+    class StandInClip:
+        """What core's CLIPTextEncode calls on a CLIP."""
+
+        def tokenize(self, text):
+            calls.append(("tokenize", text))
+            return {"text": text}
+
+        def encode_from_tokens_scheduled(self, tokens):
+            calls.append(("encode", tokens))
+            return [["encoded: " + tokens["text"], {}]]
+
+    class ClipSource:
+        """A test-only node whose CLIP output is the stand-in."""
+        RETURN_TYPES = ("CLIP",)
+        FUNCTION = "make"
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {}}
+
+        def make(self):
+            return (StandInClip(),)
+
+    nodes.NODE_CLASS_MAPPINGS["BCTest_StandInClip"] = ClipSource
+    registry._FAMILIES[registry.LM_BACKEND]["core"] = StandIn()
+    answer = "A half-body shot at eye level of one woman reading."
+    user, think_off = "<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    try:
+        loader = N("BC_LMLoader", family="Qwen LM", model="Qwen3.5-9B", precision="INT8 ConvRot", lora="None",
+                   lora_strength=1.0, keep_model_loaded=False)
+        brief = {
+            "8": loader,
+            "1": N("BC_LMConfig", do_sample=True, temperature=0.3, top_k=20, top_p=0.8, min_p=0.0, repetition_penalty=1.0,
+                   presence_penalty=1.5, mtp="off", edited="temperature"),
+            "2": N("BCTest_StandInClip"),
+            "4": N("BC_Prompter", lm=["8", 0], text="kafede kitap okuyan kadın", instructions="include identity",
+                   seed=7, clip=["2", 0], config=["1", 0]),
+            "5": N("PreviewAny", source=["4", 0]),
+            "6": N("PreviewAny", source=["4", 1]),
+        }
+        out, valid = await run(brief, "prompter-brief")
+        generated = [c for c in calls if c[0] == "generate"]
+        params = generated[0][2] if generated else None
+        check("Prompter: LM Loader + LM Config + CLIP -> a brief with include identity: the brief prompt then the "
+              "brief, no image; text and the conditioning of the written prompt reach the outputs",
+              out is not None and out["5"]["text"] == [answer]
+              and json.loads(out["6"]["text"][0]) == [["encoded: " + answer, {}]]
+              and len(generated) == 1 and generated[0][3] is None
+              and generated[0][1] == user + flow.instruction_text("include identity", None, "brief")
+              + "\n\nkafede kitap okuyan kadın" + think_off,
+              f"{valid[1] if not valid[0] else (out, [c[:2] for c in calls])}")
+        check("Prompter: the LM Config's field over the model's defaults (DECODING not used), seed 7, 600 tokens; the "
+              "model unloaded (keep off) before the CLIP encodes the prompt",
+              params is not None and (params.temperature, params.top_p, params.presence_penalty, params.seed,
+                                      params.max_new_tokens) == (0.3, 0.8, 1.5, 7, 600)
+              and [c[0] for c in calls] == ["load", "generate", "unload", "tokenize", "encode"]
+              and calls[3] == ("tokenize", answer),
+              f"{params} {[c[0] for c in calls]}")
+
+        calls.clear()
+        image = {
+            "8": loader,
+            "3": N("EmptyImage", width=64, height=48, batch_size=1, color=0xFF0000),
+            "4": N("BC_Prompter", lm=["8", 0], text="", instructions="exclude identity", seed=7, image=["3", 0]),
+            "5": N("PreviewAny", source=["4", 0]),
+        }
+        server = Server()
+        ex = execution.PromptExecutor(server, cache_type=execution.CacheType.CLASSIC,
+                                      cache_args={"lru": 0, "ram": 0, "ram_inactive": 0})
+        valid = await execution.validate_prompt(str(uuid.uuid4()), image, None)
+        await ex.execute_async(copy.deepcopy(image), str(uuid.uuid4()), {"client_id": "test"}, valid[2])
+        generated = [c for c in calls if c[0] == "generate"]
+        check("Prompter: an image alone with exclude identity and no CLIP: the image then the image prompt, DECODING, "
+              "no error with conditioning unlinked",
+              valid[0] and ex.success and ex.history_result["outputs"]["5"]["text"] == [answer] and len(generated) == 1
+              and generated[0][1] == user + "<|vision_start|><|image_pad|><|vision_end|>"
+              + flow.instruction_text("exclude identity", None, "image") + think_off
+              and generated[0][3][0] == 1
+              and (generated[0][2].temperature, generated[0][2].presence_penalty) == (0.7, 0.0),
+              f"{valid[1]} {ex.success} {ex.status_messages[-1:]} {[c[:2] for c in calls]}")
+
+        # the same Prompter queued again with a node newly linked to conditioning: it comes from the cache, and the
+        # node meets the ExecutionBlocker it carries
+        calls.clear()
+        server.events.clear()
+        relinked = {**image, "6": N("PreviewAny", source=["4", 1])}
+        valid = await execution.validate_prompt(str(uuid.uuid4()), relinked, None)
+        await ex.execute_async(copy.deepcopy(relinked), str(uuid.uuid4()), {"client_id": "test"}, valid[2])
+        blocked = [d for e, d in server.events if e == "execution_error" and d.get("node_id") == "6"]
+        check("Prompter: queued again with conditioning newly linked and no CLIP, the cached run is reused (the model "
+              "is not called) and the linked node is blocked with the connect-a-CLIP message",
+              valid[0] and calls == [] and "4" not in executed_nodes(server)
+              and len(blocked) == 1 and blocked[0]["exception_message"] == "Execution Blocked: " + lm_nodes_module.NO_CLIP,
+              f"{valid[1]} {calls} {executed_nodes(server)} {blocked}")
+
+        calls.clear()
+        unlinked_clip = {**image, "4": N("BC_Prompter", lm=["8", 0], text="a man on a pier", instructions="none",
+                                         seed=8, image=["3", 0]),
+                         "6": N("PreviewAny", source=["4", 1])}
+        out, valid = await run(unlinked_clip, "prompter-no-clip")
+        check("Prompter: conditioning linked without a CLIP fails the run before the model runs (keep off: unloaded)",
+              out is None and valid[0] and [c[0] for c in calls] == ["unload"], f"{valid[1]} {calls}")
+    finally:
+        nodes.NODE_CLASS_MAPPINGS.pop("BCTest_StandInClip", None)
 
 
 async def preflight_nodes():

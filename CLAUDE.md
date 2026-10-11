@@ -34,7 +34,11 @@ nodes/<domain>.py             one per domain (28); social_specs.json is the user
 nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, precision, LoRA, keep -> a BC_LM value, an
                               LMSpec; loads nothing), Captioner (a wrapper: its model only from its required lm input,
                               no family or model named; one caption per frame: a start callable over pipelines/lm
-                              prepare + generate handed to pipelines/captioner); model_inputs and MODEL_DEFAULTS, the
+                              prepare + generate handed to pipelines/captioner; an optional LM Config replaces its
+                              decoding), Prompter (a wrapper as Captioner: one prompt from a brief and / or one image,
+                              a start callable handed to pipelines/prompter; text, and conditioning from an optional
+                              CLIP as core's CLIPTextEncode, a linked conditioning without a CLIP an error read from
+                              the hidden prompt graph, else an ExecutionBlocker); model_inputs and MODEL_DEFAULTS, the
                               model / precision / lora / lora_strength widgets and initial values Qwen LM and LM
                               Loader share; the catalog route
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
@@ -59,9 +63,16 @@ pipelines/lm.py               the LM flow: one LM node run (family, catalog, mod
                               PreFlight Observe, Captioner); the catalog, LoRA list and catalog route data the LM
                               nodes show
 pipelines/captioner/          caption (the batch split into frames, the user text: a built-in style prompt or the
-                              instruction, each frame's long side capped at 1024 as PIL's thumbnail, the model started
-                              once, one generate per frame; the fixed decoding, 600 tokens), prompts/ (tags.txt,
-                              prose.txt, read at call time); the node hands in the start callable
+                              instruction, each frame's long side capped at 1024 (libs/image.thumbnail_frame), the
+                              model started once, one generate per frame; the decoding without an LM Config, 600
+                              tokens), prompts/ (tags.txt, prose.txt, read at call time); the node hands in the start
+                              callable
+pipelines/prompter/           write (the path from what is connected: brief or image; the user text: a built-in
+                              prompt per path and identity mode, the instruction, or none; one image capped at 1024
+                              (libs/image.thumbnail_frame), the model started once, one generate; the decoding without
+                              an LM Config, 600 tokens), prompts/ (brief-include.txt, brief-exclude.txt,
+                              image-include.txt, image-exclude.txt, read at call time); the node hands in the start
+                              callable
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/preflight/          prompts (the observation prompt and schema), observe (frames sampled, generate -> parse
                               -> one retry -> validate -> meta, fail closed; the fixed model and greedy decoding),
@@ -97,7 +108,8 @@ models/seedvr2/               VAE adapter (tile_for: the auto tile, rows and col
                               VRAM law and safety margin, from measurements) (no registry)
 models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 3)
 libs/image.py                 is_half, float_frame, output_dtype (half-precision inputs), tensor_to_u8, tensor_to_pil_u8,
-                              pil_to_tensor_hwc, fit_image
+                              pil_to_tensor_hwc, fit_image, thumbnail_frame (a frame's long side capped as PIL's
+                              thumbnail: Captioner, Prompter)
 libs/mask.py filters.py       mask ops; the two Gaussians (reflect / replicate), kept apart on purpose
 libs/frequency.py             Frequency Merge: one image's Gaussian low-pass + another's high-pass
 libs/color.py texture.py image_metrics.py
@@ -262,7 +274,7 @@ where it is.
 - Vendored code keeps its LICENSE in its own subdirectory (as `models/birefnet/arch/`).
 - An LM family is a `models/<name>/` package with its own `models.yaml` (its built-in catalog),
   registered as an `LMFamily` under `LM_FAMILY` (as `models/qwen_lm/`), served by one LM node (its
-  entry in `nodes/lm.py` `FAMILY_NODES`) and offered by LM Loader. A wrapper node (Captioner) lists
+  entry in `nodes/lm.py` `FAMILY_NODES`) and offered by LM Loader. A wrapper node (Captioner, Prompter) lists
   no model and names no family: it takes a required `BC_LM` input (`pipelines/lm.LMSpec`, from LM
   Loader) and reaches the family only through `pipelines/lm` (`prepare`, `generate`,
   `unload_backends`). A backend registers under `LM_BACKEND` (as `models/common/lm/` registers

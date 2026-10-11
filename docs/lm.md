@@ -1,6 +1,6 @@
 # LM
 
-Chat models run by ComfyUI core: one node per model family (Qwen LM today) and one config node, LM Config, for all of them; LM Loader, which picks a model of any family for a wrapper node; and Captioner, a wrapper that writes one training caption per image with the LM Loader's model. Text and images in, text out. The prompt is built as the model's official chat template renders it, sampling starts from the official defaults of each model and mode, and the model files come from a public repository on first use. Type `qwen`, `llm`, `vlm`, `caption` or `prompt enhancer` in the node search to find the node.
+Chat models run by ComfyUI core: one node per model family (Qwen LM today) and one config node, LM Config, for all of them; LM Loader, which picks a model of any family for a wrapper node; and two wrappers that run the LM Loader's model: Captioner, which writes one training caption per image, and Prompter, which writes one text-to-image prompt from a brief or a reference image. Text and images in, text out. The prompt is built as the model's official chat template renders it, sampling starts from the official defaults of each model and mode, and the model files come from a public repository on first use. Type `qwen`, `llm`, `vlm`, `caption` or `prompt enhancer` in the node search to find the node.
 
 ## `BC_QwenLM` — Qwen LM
 
@@ -178,7 +178,7 @@ The Process Monitor's [full clear](process-monitor.md) unloads it too (its `pack
 
 ## `BC_LMConfig` — LM Config
 
-`do_sample`, `temperature`, `top_k`, `top_p`, `min_p`, `repetition_penalty`, `presence_penalty`, `mtp`, `edited` (hidden) → `config` (`BC_LM_CONFIG`), for the `config` input of an LM node (Qwen LM). Only the fields you change, or feed by a link, are applied; every other field keeps the linked model's official default for its mode (thinking on / off). The widget defaults are Qwen3.5-9B's thinking-off values.
+`do_sample`, `temperature`, `top_k`, `top_p`, `min_p`, `repetition_penalty`, `presence_penalty`, `mtp`, `edited` (hidden) → `config` (`BC_LM_CONFIG`), for the `config` input of an LM node (Qwen LM) or a wrapper ([Captioner](#bc_captioner--captioner), [Prompter](#bc_prompter--prompter)). Only the fields you change, or feed by a link, are applied; every other field keeps the linked model's official default for its mode (thinking on / off; a wrapper runs thinking off). The widget defaults are Qwen3.5-9B's thinking-off values.
 
 | Widget | Default | Range | Meaning |
 | --- | --- | --- | --- |
@@ -194,7 +194,7 @@ The Process Monitor's [full clear](process-monitor.md) unloads it too (its `pack
 
 **What is applied.** The `config` output is `{field: value}` for the fields named in `edited`, then every other field whose input is fed by a link, nothing else. The node reads the links from the prompt it runs in (ComfyUI's hidden `PROMPT` and `UNIQUE_ID` inputs), so a linked field is always applied: with `edited` empty, after *Reset to model defaults*, and in an API prompt whose `edited` does not name it. A call without a prompt (code calling the node directly, a node made by another node's expansion) applies `edited` alone. The frontend keeps `edited`: a change you make to a field's value adds it (a value the frontend sets itself, or renaming the field, does not). The node's menu item *Reset to model defaults* (in both renderers' node menu) clears `edited` and, when an LM node is linked, shows its defaults again. Through the API, set `edited` yourself, e.g. `"temperature, top_p"`: names are trimmed, empty ones skipped, a repeated one counted once, and an unknown name is an error that lists the fields. `edited` is an ordinary widget value and a link is part of the node's inputs, so both are part of ComfyUI's cache key; so is the node's id (ComfyUI adds it for a node with a hidden `UNIQUE_ID` input), so a new LM Config node with the same values runs the LM node again.
 
-**What is shown.** The fields not in `edited` show the defaults of the first LM node the `config` output is linked to (the oldest link), for that node's model and thinking mode: refreshed when that link changes, when that node's model or `thinking` changes, on *Reset to model defaults* and on a node-definition refresh, never on load (a saved workflow's values come back as saved; only the edited and linked ones reach the model anyway). On the classic canvas they are drawn greyed and still take input; the Vue node renderer has no greyed look that still takes input, so there they look like edited fields. A default outside a widget's range (a `models.yaml` may give `temperature: 0`) is shown at the nearest end, since ComfyUI refuses a prompt with a widget value out of range; the model still gets the real default. One LM Config linked to several LM nodes shows the first one's defaults; each LM node applies its own model's defaults to the fields not edited.
+**What is shown.** The fields not in `edited` show the defaults of the first LM node the `config` output is linked to (the oldest link), for that node's model and thinking mode: refreshed when that link changes, when that node's model or `thinking` changes, on *Reset to model defaults* and on a node-definition refresh, never on load (a saved workflow's values come back as saved; only the edited and linked ones reach the model anyway). On the classic canvas they are drawn greyed and still take input; the Vue node renderer has no greyed look that still takes input, so there they look like edited fields. A default outside a widget's range (a `models.yaml` may give `temperature: 0`) is shown at the nearest end, since ComfyUI refuses a prompt with a widget value out of range; the model still gets the real default. One LM Config linked to several LM nodes shows the first one's defaults; each LM node applies its own model's defaults to the fields not edited. Linked only to a wrapper (Captioner, Prompter), whose model is chosen on an LM Loader, the fields keep the values they show; the wrapper still applies its model's thinking-off defaults to the fields not edited.
 
 ## Sampling
 
@@ -224,9 +224,9 @@ Multi-token prediction: core's speculative decoding with the multi-token-predict
 
 ## `BC_LMLoader` — LM Loader
 
-`family`, `model`, `precision`, `lora`, `lora_strength`, `keep_model_loaded` → `lm` (`BC_LM`), for the `lm` input of a wrapper node (Captioner).
+`family`, `model`, `precision`, `lora`, `lora_strength`, `keep_model_loaded` → `lm` (`BC_LM`), for the `lm` input of a wrapper node (Captioner, Prompter).
 
-The model a wrapper node runs. A wrapper (Captioner today) lists no model and names no family: it takes the model from an LM Loader, so a model family added later works in it with no change to its code. The loader loads nothing: `lm` is a description of the model (`pipelines/lm.py` `LMSpec`: family, model, precision, LoRA, strength, keep), and the wrapper finds the file (or downloads it on first use), reads the LoRA and loads them when it runs, as [Qwen LM](#bc_qwenlm--qwen-lm) does ([Models and files](#models-and-files), [LoRA](#lora)).
+The model a wrapper node runs. A wrapper (Captioner, Prompter) lists no model and names no family: it takes the model from an LM Loader, so a model family added later works in it with no change to its code. The loader loads nothing: `lm` is a description of the model (`pipelines/lm.py` `LMSpec`: family, model, precision, LoRA, strength, keep), and the wrapper finds the file (or downloads it on first use), reads the LoRA and loads them when it runs, as [Qwen LM](#bc_qwenlm--qwen-lm) does ([Models and files](#models-and-files), [LoRA](#lora)).
 
 | Widget | Default | Range | Meaning |
 | --- | --- | --- | --- |
@@ -247,7 +247,7 @@ A saved workflow stores the family's name (`models/common/lm/family.py` `LMFamil
 
 ## `BC_Captioner` — Captioner
 
-`image`, `lm` (`BC_LM`), `style`, `seed`; optional `instruction` (`STRING`, a socket) → `image` (`IMAGE`, a list), `caption` (`STRING`, a list).
+`image`, `lm` (`BC_LM`), `style`, `seed`; optional `instruction` (`STRING`, a socket), `config` (`BC_LM_CONFIG`) → `image` (`IMAGE`, a list), `caption` (`STRING`, a list).
 
 One training caption per image: every frame of the input goes to the model on its own, with the style's built-in prompt or your instruction, and comes out as one element of each output list. The model comes from an [LM Loader](#bc_lmloader--lm-loader) connected to `lm`, which the Captioner needs: it has no model of its own and no default (without a loader ComfyUI refuses the prompt: `Required input is missing: lm`). The Captioner names no family or model; it reaches the model only through the LM runtime (`pipelines/lm.py` `prepare` and `generate`), so any family the loader offers works in it. Qwen LM itself is unchanged and still gives a whole batch to the model in one prompt.
 
@@ -258,6 +258,7 @@ One training caption per image: every frame of the input goes to the model on it
 | `style` | `prose` | `none`, `tags`, `prose` | The built-in prompt ([below](#the-built-in-prompts)). `none`: no prompt, the model gets the image alone. A connected `instruction` replaces any style's prompt. A LoRA does not change the style: `tags` and `prose` work with one, and `none` applies only when it is selected. |
 | `seed` | `0` | `0`–`2^64 − 1` | The sampling seed, the same for every frame. Its control starts at `fixed`, as on Qwen LM: queueing again gives ComfyUI's cached captions. |
 | `instruction` | not connected | `STRING` socket | Your own prompt in place of the style's built-in one, with any style: the model gets the image, then this text. Not connected, or only whitespace: the style decides. |
+| `config` | not connected | `BC_LM_CONFIG` | An [LM Config](#bc_lmconfig--lm-config) in place of the Captioner's own sampling (below). |
 
 | Output | Type | Meaning |
 | --- | --- | --- |
@@ -268,11 +269,11 @@ One training caption per image: every frame of the input goes to the model on it
 
 **Lists and batches.** Both outputs are lists (`OUTPUT_IS_LIST`), so the node after them runs once per element: connect `image` and `caption` to [Save Image With Caption](image.md#bc_saveimagewithcaption--save-image-with-caption) and every frame is saved with its own caption, `set_00001_.png` next to `set_00001_.txt`, and so on. The input is not a list input: given a list of batches (from [Join Image Lists](image.md#bc_joinimagelists--join-image-lists), a folder loader that outputs a list, …), ComfyUI calls the node once per batch and joins the results in order, so batches of 3 and 2 frames give 5 images and 5 captions; the batches may differ in size. The model is prepared once per call, so once per batch of a list, and with `keep_model_loaded` off it is unloaded once per batch. A batch with no frames is an error that says what to connect, raised before the model is prepared: an empty output list would stop the node after it with an error of its own (ComfyUI's executor indexes the last element of a list input).
 
-**Fixed for captions.** No widget changes these:
+**For captions.** No widget changes these; the sampling changes only through a connected LM Config:
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Sampling | `do_sample` on, `temperature` 0.7, `top_p` 0.8, `top_k` 20, `min_p` 0, `repetition_penalty` 1.0, `presence_penalty` 0 | The decoding the image-to-caption serving code this node was built for uses: Qwen3.5's thinking-off sampling, without its presence penalty of 1.5. A presence penalty is subtracted from every token already generated, and a caption repeats tokens by design (the comma between every pair of tags, the class word's pronoun), so 1.5 pushes it off its format. Fixed whatever the model's own defaults are; no LM Config input. |
+| Sampling | Without an LM Config: `do_sample` on, `temperature` 0.7, `top_p` 0.8, `top_k` 20, `min_p` 0, `repetition_penalty` 1.0, `presence_penalty` 0. With an LM Config connected, its value replaces this whole: the model's thinking-off defaults ([Sampling](#sampling)) with the fields edited or linked there over them, so an LM Config with nothing edited gives the model's own defaults (`presence_penalty` 1.5 on Qwen3.5) | The decoding the image-to-caption serving code this node was built for uses: Qwen3.5's thinking-off sampling, without its presence penalty of 1.5. A presence penalty is subtracted from every token already generated, and a caption repeats tokens by design (the comma between every pair of tags, the class word's pronoun), so 1.5 pushes it off its format. Given whatever the model's own defaults are. |
 | Thinking | off | Captions are the answer itself, with the thinking-off sampling above; reasoning would also cost tokens on every frame. |
 | Turns | no system turn, no prefill; the user turn is the frame, then the text | The style's prompt (or the instruction) is the whole request. With `none` and no instruction the user turn is the frame alone (no empty text part), the official template's rendering of an image with no text. |
 | `max_new_tokens` | 600 | A caption is one line of tags or two or three sentences, well under 200 tokens; the budget only stops a runaway answer, and core reserves the KV cache for prompt + 600 tokens ([Memory](#memory)). |
@@ -290,6 +291,58 @@ Each frame is a separate run, so the model never sees the other captions: nothin
 ### Your own image-to-prompt LoRA
 
 A LoRA trained to write a caption or a prompt from an image alone: put it in the family's `loras` folder (`models/Qwen-LM/loras` for Qwen LM), choose it in the LM Loader's `lora` (`lora_strength` `1.0` applies it as trained), connect the loader to the Captioner's `lm`, and set `style` to `none`. Each frame then goes to the model as the user turn with no text, no system turn and no prefill, and the caption is what the LoRA writes; the image is capped at 1024 on its long side first (Image size above). If the LoRA was trained with a short brief after the image (the "image + brief" case), connect that brief as `instruction`: with `none` the user turn is then the frame followed by the brief. The LoRA must be trained on the loader's `model` (a LoRA of another base model is refused, [LoRA](#lora)). `none` is never chosen for you: with `tags` or `prose` the LoRA gets the style's prompt after the image.
+
+## `BC_Prompter` — Prompter
+
+`lm` (`BC_LM`), `text`, `instructions`, `seed`; optional `image` (`IMAGE`), `instruction` (`STRING`, a socket), `clip` (`CLIP`), `config` (`BC_LM_CONFIG`) → `text` (`STRING`), `conditioning` (`CONDITIONING`).
+
+One text-to-image prompt from a short brief, a reference image, or both, written by the model of an [LM Loader](#bc_lmloader--lm-loader) connected to `lm` (required, with no default, as on the Captioner; any family the loader offers works). One prepare and one generate per run. Type `prompter` or `prompt enhancer` in the node search to find it.
+
+| Input | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `lm` | | `BC_LM`, required | The model, from an LM Loader: its model, precision, LoRA at its strength, and `keep_model_loaded` (on: the model stays loaded after the node; off: unloaded once the prompt is written, before the CLIP encode, after an error too). |
+| `text` | empty | multiline | The brief: the picture you want, short and informal, in any language. It counts when it holds more than whitespace. |
+| `instructions` | `include identity` | `none`, `include identity`, `exclude identity` | The built-in prompt ([below](#prompters-built-in-prompts)). `none`: no prompt, for a prompter LoRA of your own. |
+| `seed` | `0` | `0`–`2^64 − 1` | The sampling seed. Its control starts at `fixed`, as on Qwen LM: queueing again gives ComfyUI's cached prompt. |
+| `image` | not connected | `IMAGE`, one image | A reference photograph. A batch of other than one frame is an error: `Prompter takes one image, got a batch of 3 frames: connect a single image (pick one frame of a batch with an image-from-batch node)`. Capped at 1024 on its long side as on the Captioner (`Image.thumbnail((1024, 1024))`, never enlarged), then sized as the family sizes images. |
+| `instruction` | not connected | `STRING` socket | Your own prompt in place of the built-in one, with any `instructions` value (below). Not connected, or only whitespace: `instructions` decides. |
+| `clip` | not connected | `CLIP` | The text encoder for `conditioning` ([below](#conditioning)). |
+| `config` | not connected | `BC_LM_CONFIG` | An [LM Config](#bc_lmconfig--lm-config) in place of Prompter's own sampling ([below](#decoding)). |
+
+| Output | Type | Meaning |
+| --- | --- | --- |
+| `text` | `STRING` | The prompt: the model's answer, its surrounding whitespace stripped. The positive prompt only. |
+| `conditioning` | `CONDITIONING` | `text` encoded by `clip` exactly as core's CLIP Text Encode encodes it (`clip.tokenize`, then `clip.encode_from_tokens_scheduled`). The positive conditioning only. |
+
+**What the model gets.** No system turn, no prefill, thinking off; the user turn is built from what is connected:
+
+| Input | `include identity` / `exclude identity` | `none` |
+| --- | --- | --- |
+| text only | the brief prompt, a blank line, the brief | the brief alone |
+| image only | the image, then the image prompt | the image alone |
+| text + image | as text only: the brief prompt, a blank line, the brief; the image is not used | the image, then the brief |
+| neither | an error: `Prompter has nothing to work from: type a brief in text, or connect an image` | the same error |
+
+A connected `instruction` (more than whitespace) takes the built-in prompt's place in every cell, with any `instructions` value, `none` included: text only gives the instruction, a blank line and the brief; image only the image, then the instruction; text + image with `none` the image, then the instruction, a blank line and the brief (with `include identity` / `exclude identity` the image is still not used). An empty instruction text (`none` without an instruction) leaves out its blank line too. The brief and an instruction go in as written; the built-in prompts with their surrounding whitespace stripped.
+
+#### Decoding
+
+Without an LM Config: `do_sample` on, `temperature` 0.7, `top_p` 0.8, `top_k` 20, `min_p` 0, `repetition_penalty` 1.0, `presence_penalty` 0: the decoding the prompter LoRA was trained and is served with (Qwen3.5's thinking-off sampling, without its presence penalty of 1.5). With an LM Config connected, its value replaces this whole: the model's thinking-off defaults ([Sampling](#sampling)) with the fields edited or linked there over them; an LM Config with nothing edited gives the model's own defaults, `presence_penalty` 1.5 included. `max_new_tokens` is 600 (a prompt of 150 to 200 words is well under half of it; core reserves the KV cache for prompt + 600 tokens, [Memory](#memory)); the seed is the node's.
+
+#### Conditioning
+
+Plain models use the `conditioning` output: connect the model's CLIP (from its checkpoint loader or a CLIP loader) to `clip`, and the prompt is encoded as the standard CLIP Text Encode node encodes it. Workflows that need another encode node (a model-specific text encode, a prompt scheduler) encode the `text` output with it and leave `conditioning` unlinked. The negative prompt comes from outside: Prompter writes only the positive. With the LM Loader's `keep_model_loaded` off, the chat model is unloaded before the CLIP encodes.
+
+Without a CLIP, leave `conditioning` unlinked: `text` works on its own and nothing is raised. Linked, the run stops before the model runs: `Prompter: its conditioning output is linked, but no CLIP is connected: connect a CLIP (from a checkpoint or CLIP loader) to Prompter's clip input, or encode the text output with a node of your own`. The node reads the link from the prompt it runs in (ComfyUI's hidden `PROMPT` and `UNIQUE_ID` inputs). A node linked to `conditioning` after a run without one gets ComfyUI's cached result, so Prompter does not run again; that node is then blocked with the same message (`Execution Blocked: …`, ComfyUI's `ExecutionBlocker`), and the rest of the workflow runs.
+
+### Prompter's built-in prompts
+
+The files are `pipelines/prompter/prompts/brief-include.txt`, `brief-exclude.txt`, `image-include.txt` and `image-exclude.txt`, read on every run (an edit takes effect on the next queue; their surrounding whitespace is stripped). A brief uses the brief file of the mode, an image alone the image file.
+
+- **include identity**: the person's appearance is written. From a brief, exactly as far as the brief describes the person and in the brief's own words (the subject word the brief gives, `a person` with they/their when it names no person; nothing about the person is invented, everything else is). From an image, the opening fills in what the photograph shows: ethnicity, decade of life, build, hair, eyes and skin.
+- **exclude identity**: for a character LoRA that carries the appearance, nothing about how the person looks (ethnicity, age, hair, skin, build, face). The class word, `woman` or `man`, comes from the brief (`woman` when the brief says nothing about the person's gender) or from the person in the image; the pronouns follow it. From a brief, what a person can change for a shoot (hair colour, makeup, contact lenses, a tan, jewelry) is written when the brief asks for it; from an image, everything that could be taken off and handed to someone else (clothing, footwear, jewelry, held objects) is copied, and the body is not.
+
+All four write one paragraph on one line, 150 to 200 words of English prose, that opens with the shot type and camera height, then the subject: `A half-body shot at eye level of one woman standing …` (exclude identity), `A chest-up shot at eye level of an East Asian woman in her mid twenties, …` (include identity, from an image). The shot type is read off where the frame cuts the body (extreme close-up, close-up, chest-up shot, half-body shot, three-quarter shot, full-body shot) and written once. The background is sharp, with a deep depth of field written into its description, unless a brief asks for a shallow one; the prompt ends on its last content sentence, with no style label or quality tail after it.
 
 ## `models.yaml`
 

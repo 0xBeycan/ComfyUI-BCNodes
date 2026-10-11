@@ -5,9 +5,12 @@ LM Loader whose model a wrapper node runs.
     BC_LMConfig  (LM Config)  sampling settings for an LM node: only the fields edited on it or fed by a link
     BC_LMLoader  (LM Loader)  family, model, precision, LoRA, keep -> BC_LM (a pipelines/lm.LMSpec), no load
     BC_Captioner (Captioner)  one training caption per image frame, with the LM Loader's model
+    BC_Prompter  (Prompter)   one text-to-image prompt from a brief and / or an image, with the LM Loader's model;
+                              the prompt encoded by a connected CLIP
 
 The flow is pipelines/lm.py: run for an LM node, prepare + generate for a wrapper (Captioner's flow is
-pipelines/captioner, handed a start callable over them); the catalog, families and backend are
+pipelines/captioner, Prompter's pipelines/prompter, each handed a start callable over them); the catalog,
+families and backend are
 models/common/lm and models/qwen_lm. A wrapper lists no model and names no family: it gets an LMSpec on its
 lm input and reaches the family only through pipelines/lm. This module holds the surface: the widgets
 (model_inputs: the model, precision, lora and lora_strength widgets Qwen LM and LM Loader share, with
@@ -20,7 +23,7 @@ functions.
 
 import logging
 
-from .common import LINK_INPUTS, _is_link, lm_folders
+from .common import LINK_INPUTS, _is_link, _links, lm_folders
 
 # The model widgets' initial values, Qwen LM's and LM Loader's (both INPUT_TYPES read them here): a model of the
 # Qwen LM family, LM Loader's initial family (its family widget, which Qwen LM does not have, holds the family's
@@ -270,15 +273,15 @@ class LMLoader:
 
     RETURN_TYPES = ("BC_LM",)
     RETURN_NAMES = ("lm",)
-    OUTPUT_TOOLTIPS = ("The model for a wrapper node's lm input (Captioner): a description, nothing is loaded "
-                       "here.",)
+    OUTPUT_TOOLTIPS = ("The model for a wrapper node's lm input (Captioner, Prompter): a description, nothing is "
+                       "loaded here.",)
     FUNCTION = "load"
     CATEGORY = "BCNodes/lm"
     SEARCH_ALIASES = ["BCNodes", "lm loader", "llm loader", "model loader", "chat model", "qwen", "lora"]
-    DESCRIPTION = ("Picks the chat model a wrapper node runs (Captioner): the family, its model and precision, one "
-                   "LoRA and its strength, and whether the model stays loaded. It loads nothing: lm describes the "
-                   "model, and the node it feeds finds the file (or downloads it on first use), reads the LoRA and "
-                   "loads them when it runs. The lists follow the selected family and model.")
+    DESCRIPTION = ("Picks the chat model a wrapper node runs (Captioner, Prompter): the family, its model and "
+                   "precision, one LoRA and its strength, and whether the model stays loaded. It loads nothing: lm "
+                   "describes the model, and the node it feeds finds the file (or downloads it on first use), reads "
+                   "the LoRA and loads them when it runs. The lists follow the selected family and model.")
 
     def load(self, family, model, precision, lora, lora_strength, keep_model_loaded):
         """`family` is the family's name (the widget); the LMSpec holds its registry key."""
@@ -323,6 +326,11 @@ class Captioner:
                                                       "style; the model gets the image, then this text. Not "
                                                       "connected, or only whitespace: the style decides. "
                                                       f"The answer is cut at {MAX_NEW_TOKENS} tokens."}),
+                "config": ("BC_LM_CONFIG", {"tooltip": "Sampling from an LM Config node in place of the Captioner's "
+                                                       "own (temperature 0.7, top_p 0.8, top_k 20, no presence "
+                                                       "penalty): the model's thinking-off defaults with the fields "
+                                                       "edited there, or fed by a link, over them. Not connected: the "
+                                                       "Captioner's own."}),
             },
         }
 
@@ -340,24 +348,27 @@ class Captioner:
     DESCRIPTION = ("Writes one training caption per image: each frame of the batch (or of each batch in a list) goes "
                    "on its own to the chat model of the connected LM Loader, with the style's built-in prompt (tags "
                    "or prose) or your instruction, and comes out as two lists in the same order: image (the frame as "
-                   "it came in) and caption. Connect both to Save Image With Caption to write a dataset folder. Fixed "
-                   "for captions: thinking off, no system turn, temperature 0.7, top_p 0.8, top_k 20, no presence "
-                   "penalty, at most 600 tokens, one seed for every frame, each frame's long side capped at 1024. "
+                   "it came in) and caption. Connect both to Save Image With Caption to write a dataset folder. For "
+                   "captions: thinking off, no system turn, at most 600 tokens, one seed for every frame, each "
+                   "frame's long side capped at 1024; sampling temperature 0.7, top_p 0.8, top_k 20, no presence "
+                   "penalty, or a connected LM Config's (the model's own defaults with the fields edited there). "
                    "Style none sends the image alone, for an image-to-caption LoRA of your own (chosen on the LM "
                    "Loader), with or without an instruction.")
 
-    def caption(self, image, lm, style, seed, instruction=None):
+    def caption(self, image, lm, style, seed, instruction=None, config=None):
         """The flow (pipelines/captioner/caption) with start: the model of `lm` (an LMSpec) prepared once per node
         call, then one generate per frame: the frame then the user text as the user turn, no system turn, no
-        prefill, thinking off, DECODING, MAX_NEW_TOKENS, `seed`. The model stays loaded from one frame to the next;
-        with the spec's keep_model_loaded off it is unloaded once afterwards, after an error too."""
+        prefill, thinking off, MAX_NEW_TOKENS, `seed`, and DECODING, or `config` (an LM Config's value) as it is
+        when one is connected. The model stays loaded from one frame to the next; with the spec's
+        keep_model_loaded off it is unloaded once afterwards, after an error too."""
         from ..pipelines.captioner import caption as flow
         from ..pipelines.lm import generate, prepare, unload_backends
 
         def start():
             model_folders, text_encoder_folders = family_folders(lm.family)
             prepared = prepare(lm, node=NODE_DISPLAY_NAME_MAPPINGS["BC_Captioner"], thinking=False,
-                               max_new_tokens=flow.MAX_NEW_TOKENS, seed=seed, config=dict(flow.DECODING),
+                               max_new_tokens=flow.MAX_NEW_TOKENS, seed=seed,
+                               config=dict(flow.DECODING) if config is None else config,
                                model_folders=model_folders, text_encoder_folders=text_encoder_folders)
             return lambda frame, user: generate(prepared, "", user, "", frame).text
 
@@ -366,6 +377,131 @@ class Captioner:
         finally:
             if not lm.keep_model_loaded:
                 unload_backends()
+
+
+# The error of a linked conditioning output without a CLIP: raised before the model runs when the prompt links it,
+# and the message of the ExecutionBlocker the output carries otherwise (a node linked to it after a cached run).
+NO_CLIP = ("Prompter: its conditioning output is linked, but no CLIP is connected: connect a CLIP (from a checkpoint "
+           "or CLIP loader) to Prompter's clip input, or encode the text output with a node of your own")
+
+
+class Prompter:
+    @classmethod
+    def INPUT_TYPES(cls):
+        from ..pipelines.prompter.write import INSTRUCTIONS, MAX_NEW_TOKENS, MAX_SIDE
+
+        return {
+            "required": {
+                "lm": ("BC_LM", {"tooltip": "The chat model, from an LM Loader: its model, precision and LoRA (at "
+                                            "its strength), and whether it stays loaded after this node (off: "
+                                            "unloaded once the prompt is written, before the clip encode, after an "
+                                            "error too)."}),
+                "text": ("STRING", {"default": "", "multiline": True,
+                                    "tooltip": "The brief: the picture you want, short and informal, in any "
+                                               "language. With include / exclude identity it follows the built-in "
+                                               "brief prompt and a connected image is not used; with none it is the "
+                                               "user text itself, after the image when one is connected. Empty (or "
+                                               "only whitespace): the image alone is used."}),
+                "instructions": (list(INSTRUCTIONS), {"default": "include identity",
+                                                      "tooltip": "The built-in prompt. include identity: the "
+                                                                 "person's appearance is written (as the brief gives "
+                                                                 "it, or read off the image). exclude identity: "
+                                                                 "nothing about how the person looks, for a "
+                                                                 "character LoRA that carries it; the class word, "
+                                                                 "woman or man, comes from the brief (woman when it "
+                                                                 "says nothing) or the image. Both write one "
+                                                                 "paragraph that opens with the shot type and camera "
+                                                                 "height. A brief uses the brief prompt, an image "
+                                                                 "alone the image prompt. none: no prompt, the model "
+                                                                 "gets the brief and / or the image alone (a "
+                                                                 "prompter LoRA of your own). A connected instruction "
+                                                                 "replaces it."}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": "fixed",
+                                 "tooltip": "The sampling seed. Its control starts at fixed, so queueing again gives "
+                                            "the cached prompt instead of a new run; set it to randomize for a new "
+                                            "prompt each time."}),
+            },
+            "optional": {
+                "image": ("IMAGE", {"tooltip": "A reference photograph: one image (a batch of more frames is an "
+                                               "error). Used when the brief is empty, or with instructions none (the "
+                                               "image, then the brief); with include / exclude identity and a brief "
+                                               "it is not used. The model sees it with its long side capped at "
+                                               f"{MAX_SIDE} (never enlarged), then sized as its family sizes "
+                                               "images."}),
+                "instruction": ("STRING", {"forceInput": True,
+                                           "tooltip": "Your own prompt in place of the built-in one, with any "
+                                                      "instructions value: before the brief, a blank line between, "
+                                                      "or after the image when the brief is empty. Not connected, "
+                                                      "or only whitespace: instructions decides. The answer is cut "
+                                                      f"at {MAX_NEW_TOKENS} tokens."}),
+                "clip": ("CLIP", {"tooltip": "A CLIP (text encoder) for the conditioning output: the prompt is "
+                                             "encoded as the standard CLIP Text Encode encodes it. Not connected: "
+                                             "leave conditioning unlinked (linked, it is an error asking for a "
+                                             "CLIP); text works either way."}),
+                "config": ("BC_LM_CONFIG", {"tooltip": "Sampling from an LM Config node in place of Prompter's own "
+                                                       "(temperature 0.7, top_p 0.8, top_k 20, no presence "
+                                                       "penalty): the model's thinking-off defaults with the fields "
+                                                       "edited there, or fed by a link, over them. Not connected: "
+                                                       "Prompter's own."}),
+            },
+            "hidden": dict(LINK_INPUTS),
+        }
+
+    RETURN_TYPES = ("STRING", "CONDITIONING")
+    RETURN_NAMES = ("text", "conditioning")
+    OUTPUT_TOOLTIPS = ("The prompt the model wrote, its surrounding whitespace stripped: the positive prompt. Take "
+                       "it to your own encode node when the workflow needs another one.",
+                       "The prompt encoded by the connected CLIP, as CLIP Text Encode encodes it: the positive "
+                       "conditioning only (the negative comes from elsewhere). Needs the clip input.")
+    FUNCTION = "write"
+    CATEGORY = "BCNodes/lm"
+    SEARCH_ALIASES = ["BCNodes", "prompter", "prompt", "prompt enhancer", "prompt writer", "image to prompt",
+                      "enhance prompt", "positive prompt"]
+    DESCRIPTION = ("Writes one text-to-image prompt with the chat model of the connected LM Loader, from a short "
+                   "brief (text), a reference image, or both. include identity and exclude identity (the person's "
+                   "appearance written or left to a character LoRA) choose a built-in prompt: with a brief the brief "
+                   "prompt, the brief after it and the image not used; with an image alone the image prompt, after "
+                   "the image. none sends the brief and / or the image (the image first) with no prompt, for a "
+                   "prompter LoRA of your own. A connected instruction replaces the built-in prompt. Thinking off, "
+                   "no system turn, at most 600 tokens, the image's long side capped at 1024; sampling temperature "
+                   "0.7, top_p 0.8, top_k 20, no presence penalty, or a connected LM Config's (the model's own "
+                   "defaults with the fields edited there). With a CLIP connected, conditioning is the prompt "
+                   "encoded as CLIP Text Encode encodes it, the positive only, after the model is unloaded when the "
+                   "LM Loader does not keep it.")
+
+    def write(self, lm, text, instructions, seed, image=None, instruction=None, clip=None, config=None,
+              prompt_graph=None, unique_id=None):
+        """The flow (pipelines/prompter/write) with start: the model of `lm` (an LMSpec) prepared once, then one
+        generate: no system turn, no prefill, thinking off, MAX_NEW_TOKENS, `seed`, and DECODING, or `config` (an
+        LM Config's value) as it is when one is connected. With the spec's keep_model_loaded off the model is
+        unloaded afterwards, after an error too, before `clip` encodes the prompt (core's CLIPTextEncode:
+        tokenize, then encode_from_tokens_scheduled). Without a clip: an error before the model runs when the
+        prompt (`prompt_graph`, this node `unique_id`) links conditioning, else conditioning is an
+        ExecutionBlocker with that error, which only a node linked to it after a cached run meets."""
+        from ..pipelines.lm import generate, prepare, unload_backends
+        from ..pipelines.prompter import write as flow
+
+        def start():
+            model_folders, text_encoder_folders = family_folders(lm.family)
+            prepared = prepare(lm, node=NODE_DISPLAY_NAME_MAPPINGS["BC_Prompter"], thinking=False,
+                               max_new_tokens=flow.MAX_NEW_TOKENS, seed=seed,
+                               config=dict(flow.DECODING) if config is None else config,
+                               model_folders=model_folders, text_encoder_folders=text_encoder_folders)
+            return lambda frame, user: generate(prepared, "", user, "", frame).text
+
+        try:
+            if clip is None and isinstance(prompt_graph, dict) and _links(
+                    prompt_graph, {unique_id: {self.RETURN_NAMES.index("conditioning"): "conditioning"}})[unique_id]:
+                raise ValueError(NO_CLIP)
+            prompt = flow.write(text, image, instructions, instruction, start)
+        finally:
+            if not lm.keep_model_loaded:
+                unload_backends()
+        if clip is None:
+            from comfy_execution.graph import ExecutionBlocker
+
+            return (prompt, ExecutionBlocker(NO_CLIP))
+        return (prompt, clip.encode_from_tokens_scheduled(clip.tokenize(prompt)))
 
 
 def catalog_payload():
@@ -402,6 +538,7 @@ NODE_CLASS_MAPPINGS = {
     "BC_LMConfig": LMConfig,
     "BC_LMLoader": LMLoader,
     "BC_Captioner": Captioner,
+    "BC_Prompter": Prompter,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -409,6 +546,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BC_LMConfig": "LM Config",
     "BC_LMLoader": "LM Loader",
     "BC_Captioner": "Captioner",
+    "BC_Prompter": "Prompter",
 }
 
 # Each LM node and its family (models/common/registry.py LM_FAMILY), for the catalog route: every registered

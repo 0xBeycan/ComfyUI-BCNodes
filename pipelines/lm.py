@@ -1,5 +1,5 @@
 """The LM flow: one chat-model run of an LM node (Qwen LM today); a model prepared once and run per call by a
-wrapper node (Captioner) from an LM Loader's LMSpec; and the catalog, LoRA list and catalog route data the
+wrapper node (Captioner, Prompter) from an LM Loader's LMSpec; and the catalog, LoRA list and catalog route data the
 nodes show.
 
 The steps:
@@ -116,9 +116,9 @@ class LMRequest:
 
 @dataclass(frozen=True)
 class LMSpec:
-    """The value of the BC_LM type: LM Loader's output, a wrapper node's lm input (Captioner). Which model a
-    wrapper runs and whether it stays loaded; a description only, it never holds weights (prepare finds the
-    file and reads the LoRA)."""
+    """The value of the BC_LM type: LM Loader's output, a wrapper node's lm input (Captioner, Prompter). Which
+    model a wrapper runs and whether it stays loaded; a description only, it never holds weights (prepare finds
+    the file and reads the LoRA)."""
     family: str               # the LM family's registry key, e.g. 'qwen_lm' (LM Loader maps its name to it)
     model: str                # a model name of that family's catalog
     precision: str            # one of that model's precision names

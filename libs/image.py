@@ -1,4 +1,5 @@
-"""Image conversions and fitting shared by the nodes. PIL is imported inside the functions.
+"""Image conversions, fitting and the image-to-text frame cap shared by the nodes. PIL is imported inside the
+functions.
 
 Half-precision inputs: an IMAGE or MASK may come as float16 or bfloat16 (BCVideoNodes' Load Video
 gives float16 8-bit frames; SeedVR2 PostProcess gives float16 continuous values). The nodes read such
@@ -87,6 +88,18 @@ def tensor_to_pil_u8(frame, stored=None):
 def pil_to_tensor_hwc(pil):
     """PIL image -> float32 (H, W) or (H, W, C) tensor in 0..1."""
     return torch.from_numpy(np.array(pil).astype(np.float32) / 255.0)
+
+
+def thumbnail_frame(frame, max_side):
+    """The frame (1, H, W, C) with its long side capped at `max_side`: a frame within it as it is (the same
+    tensor); a larger one as PIL's Image.thumbnail((max_side, max_side)) leaves it (long side max_side, aspect
+    kept, never enlarged) on the frame as 8-bit RGB (an alpha channel dropped), back as a float32 (1, h, w, 3)
+    frame. The size an image-to-text model's training and serving code gives it (Captioner, Prompter)."""
+    if max(frame.shape[1], frame.shape[2]) <= max_side:
+        return frame
+    pil = tensor_to_pil_u8(frame[0, :, :, :3])
+    pil.thumbnail((max_side, max_side))
+    return pil_to_tensor_hwc(pil).unsqueeze(0)
 
 
 def fit_image(image, target_width, target_height, fit, sampler, background):
