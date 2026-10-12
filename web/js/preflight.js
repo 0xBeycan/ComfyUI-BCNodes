@@ -134,17 +134,17 @@ function installOutcomeNode(nodeType) {
 // Extension
 // ---------------------------------------------------------------------------
 
+// Report logged a prediction: the event carries the whole list. Added when this module loads, not in
+// setup(): ComfyUI opens its socket before it runs setup(), and an event that comes before its listener is
+// lost and logged as "Unknown message type".
+api.addEventListener(EVENT, ({ detail }) => {
+	if (!Array.isArray(detail?.records)) return;
+	records = Promise.resolve(detail.records);
+	for (const node of outcomeNodes()) applyList(node, detail.records);
+});
+
 app.registerExtension({
 	name: "BCNodes.PreFlight",
-
-	setup() {
-		// Report logged a prediction: the event carries the whole list.
-		api.addEventListener(EVENT, ({ detail }) => {
-			if (!Array.isArray(detail?.records)) return;
-			records = Promise.resolve(detail.records);
-			for (const node of outcomeNodes()) applyList(node, detail.records);
-		});
-	},
 
 	beforeRegisterNodeDef(nodeType, nodeData) {
 		if (nodeData?.name === NODE_TYPE) installOutcomeNode(nodeType);

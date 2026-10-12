@@ -562,11 +562,15 @@ async function askOnFirstOpen() {
 // Extension
 // ---------------------------------------------------------------------------
 
+// Added when this module loads, not in setup(): ComfyUI opens its socket before it runs setup(), and an
+// event that comes before its listener (a page opened while a download runs) is lost and logged as
+// "Unknown message type".
+api.addEventListener(EVENT, onEvent);
+
 app.registerExtension({
 	name: "BCNodes.AutoModelDownloader",
 
 	setup() {
-		api.addEventListener(EVENT, onEvent);
 		call("tokens")
 			.then((res) => {
 				tokensPresent = res.tokens ?? tokensPresent;

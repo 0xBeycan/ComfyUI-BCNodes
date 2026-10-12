@@ -522,6 +522,23 @@ async function setEnabled(enabled) {
 	renderBar();
 }
 
+// These two are added when this module loads, not in setup(): ComfyUI imports every extension, opens its
+// socket, and runs setup() only after the node definitions have loaded. The server sends the queue state on
+// connect and the live sample every second; a message that comes before its listener is lost, and a custom
+// type without one is logged as "Unknown message type". Until setup() builds the bar they only store state.
+
+// ComfyUI's queue state: queue_remaining counts the running prompt and the pending ones; null while the
+// server is unreachable (the clear's own request then fails anyway)
+api.addEventListener("status", (e) => {
+	state.queueBusy = (e.detail?.exec_info?.queue_remaining ?? 0) > 0;
+	renderClear();
+});
+api.addEventListener(EVENT, (e) => {
+	state.sample = e.detail;
+	renderBar();
+	if (state.modal && state.tab === "Live") state.modal.body.replaceChildren(liveTab());
+});
+
 app.registerExtension({
 	name: "BCNodes.ProcessMonitor",
 	settings: [{
@@ -536,17 +553,6 @@ app.registerExtension({
 
 	setup() {
 		buildBar();
-		// ComfyUI's queue state: queue_remaining counts the running prompt and the pending ones; null
-		// while the server is unreachable (the clear's own request then fails anyway)
-		api.addEventListener("status", (e) => {
-			state.queueBusy = (e.detail?.exec_info?.queue_remaining ?? 0) > 0;
-			renderClear();
-		});
-		api.addEventListener(EVENT, (e) => {
-			state.sample = e.detail;
-			renderBar();
-			if (state.modal && state.tab === "Live") state.modal.body.replaceChildren(liveTab());
-		});
 		// A finished run clears the crash flag; the monitor notices the end within 100 ms. A reconnect
 		// can be a server that was restarted after a killed run: its crash turns the button red.
 		const later = () => setTimeout(refreshStatus, 500);
