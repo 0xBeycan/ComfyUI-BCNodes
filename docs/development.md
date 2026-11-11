@@ -20,6 +20,7 @@ ComfyUI-BCNodes/
     image_comparer.py      BC_ImageComparer
     power_lora_loader.py   BC_PowerLoraLoader
     lora_key_fix.py        BC_LoraLoaderKeyFix
+    sage_attention.py      BC_PatchSageAttention
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
     seedvr2.py             BC_SeedVR2FramingDownscale, BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2ChunkSize,
                            BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess, BC_SeedVR2PreprocessCompact, BC_SeedVR2PostProcessCompact
@@ -157,6 +158,8 @@ ComfyUI-BCNodes/
     lora_keys.py           LoRA keys core's loader leaves out (.diff_m, PEFT keys without the prefix), renamed to the
                            names it maps; the keys still unmapped
     lm_lora.py             LM LoRAs: the format table, alpha resolution, config checks, base-model check, the list
+    sage_attention.py      SageAttention kernels as ComfyUI's attention override: the kernel table, resolve + test call,
+                           layouts, the calls that run the original attention, nan_guard, the per-run counts
   docs/                    the node documentation, one page per menu category; README.md links them
   luts/                    drop .cube LUTs here for PostFx LUT (gitignored)
   web/js/
@@ -189,6 +192,7 @@ ComfyUI-BCNodes/
     layers/                pytest unit tests per layer (nodes/, pipelines/, models/, libs/)
     conftest.py _harness.py  ComfyUI stubs, package binding
     parity_seedvr2_video.py  BC_SeedVR2VAEEncode / VAEDecode / PostProcess vs ComfyUI's own nodes, numerically
+    compare_sage_attention.py  Patch Sage Attention's kernels vs torch SDPA on a CUDA GPU: accuracy, time, fallbacks
 ```
 
 Tests:
@@ -199,6 +203,7 @@ python tests/test_nodes.py                        # None / empty input never rai
 COMFYUI_DIR=../ComfyUI python tests/test_runtime.py   # nodes through ComfyUI's validate_prompt + PromptExecutor
 python -m pytest tests -q                         # layer rule, unit tests
 python tests/parity_seedvr2_video.py --comfy ../ComfyUI --vae ../ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors   # SeedVR2 VAE Encode / Decode / PostProcess against ComfyUI's nodes (GPU for the VAE)
+python tests/compare_sage_attention.py            # SageAttention kernels against torch SDPA (CUDA GPU; SKIP without one)
 ```
 
 The tests need `postfx` and `caption-audit` importable: `pip install -r requirements.txt`, or `PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts.

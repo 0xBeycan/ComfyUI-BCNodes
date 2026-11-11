@@ -230,6 +230,54 @@ def main():
     check("LoraLoaderKeyFix strength 0 -> model untouched, no file read", lambda: lkf.load("M", "missing.safetensors", 0.0) == ("M",) or _fail())
     check("LoraLoaderKeyFix INPUT_TYPES with no LoRA on disk", lambda: lkf.INPUT_TYPES()["required"]["lora_name"][0] == [] or _fail())
 
+    # Patch Sage Attention: a stand-in patcher; ComfyUI's attention module (0.3.60+, wrap_attn) and
+    # patcher_extension as stubs; sageattention reported missing whatever this Python has installed.
+    import logging
+    import types
+
+    class Patcher:
+        load_device = "cuda:0"
+
+        def __init__(self):
+            self.model_options = {"transformer_options": {}}
+
+        def clone(self):
+            return Patcher()
+
+    attention = types.ModuleType("comfy.ldm.modules.attention")
+    attention.wrap_attn = lambda func: func
+    extension = types.ModuleType("comfy.patcher_extension")
+    extension.CallbacksMP = types.SimpleNamespace(ON_PRE_RUN="on_pre_run", ON_CLEANUP="on_cleanup")
+    sys.modules["comfy.ldm.modules"] = types.ModuleType("comfy.ldm.modules")
+    sys.modules["comfy.ldm.modules"].attention = attention
+    sys.modules["comfy.ldm"].modules = sys.modules["comfy.ldm.modules"]
+    sys.modules["comfy.ldm.modules.attention"] = attention
+    sys.modules["comfy.patcher_extension"] = extension
+    sage_lib = m["libs.sage_attention"]
+    sage_lib._installed = lambda package: None
+    psa = m["sage_attention"].PatchSageAttention()
+    model = Patcher()
+
+    def unpatched_clone(out):
+        return out is not model and "optimized_attention_override" not in out.model_options["transformer_options"]
+
+    class Warnings(logging.Handler):
+        def __init__(self):
+            super().__init__(logging.WARNING)
+            self.lines = []
+
+        def emit(self, record):
+            self.lines.append(record.getMessage())
+
+    warnings = Warnings()
+    logging.getLogger().addHandler(warnings)
+    check("PatchSageAttention no model -> None", lambda: psa.patch(None, "auto", True, "once") == (None,) or _fail())
+    check("PatchSageAttention disabled -> an unpatched clone", lambda: unpatched_clone(psa.patch(model, "disabled", True, "once")[0]) or _fail())
+    check("PatchSageAttention without sageattention -> an unpatched clone and a warning, no error",
+          lambda: (unpatched_clone(psa.patch(model, "auto", True, "once")[0])
+                   and warnings.lines[-1].endswith("sageattention is not installed; the model keeps ComfyUI's attention.")) or _fail())
+    logging.getLogger().removeHandler(warnings)
+
     ae = m["everywhere"].AnythingEverywhere()
     check("AnythingEverywhere noop", lambda: ae.noop(anything=None) == () or _fail())
     check("FastGroupsBypasser noop", lambda: m["everywhere"].FastGroupsBypasser().noop() == () or _fail())

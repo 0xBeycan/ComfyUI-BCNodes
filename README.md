@@ -34,6 +34,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_ImageComparer` | [Image Comparer](docs/workflow.md#bc_imagecomparer--image-comparer) | Two images on the node, compared with a sliding divider |
 | `BC_PowerLoraLoader` | [Power Lora Loader](docs/loaders.md#bc_powerloraloader--power-lora-loader) | `MODEL` + any number of LoRA rows → `MODEL`, no CLIP; each LoRA with the key fix of Lora Loader (Key Fix) |
 | `BC_LoraLoaderKeyFix` | [Lora Loader (Key Fix)](docs/loaders.md#bc_loraloaderkeyfix--lora-loader-key-fix) | `MODEL` + one LoRA → `MODEL`, with the keys ComfyUI's own loader leaves out renamed first (lightx2v `.diff_m`, PEFT keys without the `diffusion_model.` prefix); the console says how many were renamed and how many match no module |
+| `BC_PatchSageAttention` | [Patch Sage Attention](docs/model.md#bc_patchsageattention--patch-sage-attention) | `MODEL` → a clone whose attention runs one SageAttention kernel, for that model only (no global `--use-sage-attention`); `auto` takes the most accurate kernel, and a call the kernel cannot take, a kernel error or a NaN output runs the original attention; the console counts both per run |
 | `BC_AnythingEverywhere` | [Anything Everywhere](docs/workflow.md#bc_anythingeverywhere--anything-everywhere) | Feeds unconnected inputs of a type at prompt time |
 | `BC_FastGroupsBypasser` | [Fast Groups Bypasser](docs/workflow.md#bc_fastgroupsbypasser--fast-groups-bypasser) | One bypass toggle per group |
 | `BC_BiRefNetRemoveBackground` | [BiRefNet Remove Background](docs/mask.md#bc_birefnetremovebackground--birefnet-remove-background) | Background removal with BiRefNet, plain torch |
@@ -75,6 +76,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | [`BCNodes/lm`](docs/lm.md) | Qwen LM, LM Config, LM Loader, Captioner, Prompter |
 | [`BCNodes/preflight`](docs/preflight.md) | PreFlight Observe, Report, Outcome, Calibrate |
 | [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Lora Loader (Key Fix), Auto Model Downloader |
+| [`BCNodes/model`](docs/model.md) | Patch Sage Attention |
 | [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, Chunk Size, VAE Decode, PostProcess; Compact: Preprocess (Compact), PostProcess (Compact) |
 | [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
 
@@ -89,7 +91,7 @@ git clone https://github.com/0xBeycan/ComfyUI-BCNodes
 pip install -r ComfyUI-BCNodes/requirements.txt
 ```
 
-Restart ComfyUI. `requirements.txt` holds `opencv-python` (the morphology of MaskGrow and the hole filling of Mask Fill Holes) and the two packages that back the PostFx and Caption Audit nodes, [`postfx`](https://github.com/0xBeycan/postfx) and [`caption-audit`](https://github.com/0xBeycan/caption-audit); everything else ships with ComfyUI. Without `postfx` and `caption-audit` the pack still loads and only those nodes are absent. If this repository is still present under its old name `ComfyUI-AutoBypass`, delete that folder — its `AutoBypass` node is this pack's `BC_AutoBypass`.
+Restart ComfyUI. `requirements.txt` holds `opencv-python` (the morphology of MaskGrow and the hole filling of Mask Fill Holes) and the two packages that back the PostFx and Caption Audit nodes, [`postfx`](https://github.com/0xBeycan/postfx) and [`caption-audit`](https://github.com/0xBeycan/caption-audit); everything else ships with ComfyUI. Without `postfx` and `caption-audit` the pack still loads and only those nodes are absent. Patch Sage Attention needs SageAttention 2.2.x, which is not in `requirements.txt` (see [Model](docs/model.md#install)); without it the node leaves the model on ComfyUI's attention. If this repository is still present under its old name `ComfyUI-AutoBypass`, delete that folder — its `AutoBypass` node is this pack's `BC_AutoBypass`.
 
 The Align buttons are not a node; they appear in the toolbox above a multi-selection.
 
@@ -104,6 +106,7 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [LM](docs/lm.md) — chat models through ComfyUI core: Qwen LM, LM Config, LM Loader, Captioner, Prompter, the models and their files, sampling, LoRAs, `models.yaml`
 - [PreFlight](docs/preflight.md) — how Instagram, TikTok and X would likely treat an image or video before it is published: the observation sensor, the rules engine, reading a verdict, the feedback loop and calibration
 - [Loaders](docs/loaders.md) — LoRA loading (with the key fix for LoRAs core loads only in part) and the model downloader
+- [Model](docs/model.md) — SageAttention for one model in one workflow: the modes, the calls that run the original attention, `nan_guard`, the console, install, an A/B test
 - [SeedVR2](docs/seedvr2.md) — the downscale factor from the framing, the SeedVR2 input stage, streaming VAE encode / decode, the chunk size and the VAE tile for the card, post-processing
 - [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, Auto Bypass, the Align buttons
 - [Unused outputs](docs/unused-outputs.md) — unconnected whole-batch outputs come out empty

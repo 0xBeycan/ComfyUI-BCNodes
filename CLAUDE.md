@@ -30,7 +30,7 @@ nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, co
                               lm_folders (an LM family's model and text_encoders folders, its folder_paths key
                               registered; Qwen LM and PreFlight Observe), the unused-heavy-outputs helper (LinkStamp,
                               register_link_stamp, stamps_last, heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (28); social_specs.json is the user-editable platform table
+nodes/<domain>.py             one per domain (29); social_specs.json is the user-editable platform table
 nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, precision, LoRA, keep -> a BC_LM value, an
                               LMSpec; loads nothing), Captioner (a wrapper: its model only from its required lm input,
                               no family or model named; one caption per frame: a start callable over pipelines/lm
@@ -128,6 +128,10 @@ libs/lora_keys.py             LoRA keys core's loader leaves out (.diff_m, PEFT 
                               "first five, then ..." list of names in messages)
 libs/lm_lora.py               LM LoRA files (PEFT, core's names) -> the tensors core applies: the alpha resolved, the
                               base-model and tied-head check; the LoRA folder listing
+libs/sage_attention.py        Patch Sage Attention: SageAttention kernels as core's optimized_attention_override (the
+                              kernel table from the official code, resolve + one test call, core's layouts, the calls
+                              that run the original attention, nan_guard, the per-run counts); the node hangs it on a
+                              model clone with ON_PRE_RUN / ON_CLEANUP callbacks
 web/js/preflight.js           PreFlight Outcome's record list: GET /bcnodes/preflight/records on creation / load, the
                               bcnodes.preflight.records event after Report logs; a saved value never rewritten
 ```
@@ -233,8 +237,8 @@ where it is.
 ## How to add a node
 
 - Key `BC_<Name>`, a display name, and a `CATEGORY` under `BCNodes/`. The groups today:
-  `analysis`, `image`, `lm`, `loaders`, `logic`, `mask`, `postfx`, `preflight`, `seedvr2` (with its
-  subcategory `seedvr2/compact`), `text`, `workflow`. A new group is added when a new kind of node needs one.
+  `analysis`, `image`, `lm`, `loaders`, `logic`, `mask`, `model`, `postfx`, `preflight`, `seedvr2` (with
+  its subcategory `seedvr2/compact`), `text`, `workflow`. A new group is added when a new kind of node needs one.
 - A literal `INPUT_TYPES` in the node class. The node file holds the surface only; the work goes
   to a pipeline (or straight to libs/models when there is no flow).
 - Import the module in the root `__init__.py` and add it to the registration loop (order = menu
@@ -366,6 +370,8 @@ python -m pytest tests -q                             # layer rule, unit tests
   `PromptExecutor` with a stand-in backend).
 - `tests/parity_seedvr2_video.py` compares the SeedVR2 nodes with ComfyUI's own and needs a GPU
   for the VAE; it is not part of the suite.
+- `tests/compare_sage_attention.py` measures Patch Sage Attention's kernels against torch SDPA on a
+  CUDA GPU (no ComfyUI needed; SKIP without CUDA); it is not part of the suite.
 
 ## Compatibility locks
 

@@ -763,6 +763,7 @@ async def main():
     check("AutoModelDownloader: runs every queue by design", out is not None and executed == ["1"], f"{executed}")
 
     await lora_key_fix()
+    await sage_attention()
     lm_core()
     await lm_nodes()
     await preflight_nodes()
@@ -961,6 +962,185 @@ async def lora_key_fix():
                    "[BCNodes] Lora Loader (Key Fix): peft.safetensors: 4 keys, 4 renamed (0 .diff_m -> .modulation.diff, "
                    "4 given the diffusion_model. prefix), 0 match no module of this model"]
           and not any(line.startswith("lora key not loaded") for line in lines.lines), f"{lines.lines}")
+
+
+async def sage_attention():
+    """Patch Sage Attention through ComfyUI itself. No SageAttention kernel runs here (no GPU): the
+    kernel is a stand-in, torch SDPA with SageAttention's call signature, in an Active whose device
+    type is the one the tensors are on (the kernel path runs) or another (every call is declined).
+
+    Core's entry points, called the way the models call them, reach the override: Qwen-Image's
+    optimized_attention_masked with (B, H, N, D) and skip_reshape, with and without its text mask;
+    Wan's self-attention with AttentionTensorContainers; Wan's image cross-attention with
+    low_precision_attention=False; Wan's audio attention with skip_output_reshape. A call the kernel
+    takes matches core's own attention, a declined one is core's own result.
+
+    Through validate_prompt + PromptExecutor: UNETLoader (a tiny Wan 2.1 T2V, one block, fp16 on
+    ComfyUI's device) -> Patch Sage Attention -> KSampler (2 steps, cfg 1: 2 attention calls per step). With the
+    kernel path every call runs the stand-in and the run summary says so; with every call declined the
+    summary is a warning naming the reason, and the latent is bit-identical to mode "disabled"; the
+    real resolve here (no sageattention, or no CUDA under --cpu) leaves the model unpatched with a warning."""
+    import importlib
+
+    import comfy.ldm.modules.attention as attention
+    import comfy.model_management
+    import comfy.ops
+    import folder_paths
+    import torch
+    import torch.nn.functional as F
+    from comfy.ldm.wan.model import WanModel
+    from safetensors.torch import save_file
+
+    node_class = nodes.NODE_CLASS_MAPPINGS["BC_PatchSageAttention"]
+    lib = importlib.import_module(node_class.__module__.rsplit(".", 2)[0] + ".libs.sage_attention")
+
+    def kernel(q, k, v, tensor_layout="HND", is_causal=False, sm_scale=None, **kwargs):
+        if tensor_layout == "NHD":
+            q, k, v = (t.transpose(1, 2) for t in (q, k, v))
+        out = F.scaled_dot_product_attention(q.float(), k.float(), v.float(), scale=sm_scale).to(q.dtype)
+        return out.transpose(1, 2) if tensor_layout == "NHD" else out
+
+    def stand_in(device_type):
+        return lib.Active(lib.KERNELS[lib.AUTO], "stand-in", kernel, {}, "CPU", (0, 0), "test", device_type=device_type)
+
+    # --- core's entry points -----------------------------------------------------------------------
+    override = lib.SageOverride(stand_in("cpu"), None, True, False)
+    patched = {"optimized_attention_override": override}
+    torch.manual_seed(0)
+
+    def close(a, b):
+        return a.shape == b.shape and torch.allclose(a.float(), b.float(), atol=2e-2, rtol=2e-2)
+
+    q, k, v = (torch.randn(1, 4, 96, 128, dtype=torch.float16) for _ in range(3))  # Qwen: (B, H, N, D)
+    text_mask = torch.zeros(1, 1, 96, dtype=torch.float16)
+    text_mask[..., 80:] = -65504.0
+    qwen = [attention.optimized_attention_masked(q, k, v, 4, mask, transformer_options=to, skip_reshape=True)
+            for mask in (None, text_mask) for to in ({}, patched)]
+    b, s, n, d = 1, 64, 2, 128
+    wq, wk, wv = (torch.randn(b, s, n * d, dtype=torch.float16) for _ in range(3))  # Wan: (B, N, H*D)
+    wan_self = [attention.optimized_attention(*(attention.AttentionTensorContainer(t.clone()) for t in (wq, wk, wv)),
+                                              heads=n, transformer_options=to) for to in ({}, patched)]
+    kimg, vimg = (torch.randn(b, 257, n * d, dtype=torch.float16) for _ in range(2))
+    wan_img = [attention.optimized_attention(wq, kimg, vimg, heads=n, transformer_options=to, low_precision_attention=False)
+               for to in ({}, patched)]
+    aq, ak, av = (torch.randn(4, n, 16, d, dtype=torch.float16) for _ in range(3))
+    wan_audio = [attention.optimized_attention(aq, ak, av, heads=n, skip_reshape=True, skip_output_reshape=True,
+                                               transformer_options=to) for to in ({}, patched)]
+    check("PatchSageAttention: Qwen-Image's call (HND, skip_reshape) runs the kernel and matches core's attention",
+          close(qwen[0], qwen[1]), f"{qwen[0].shape} {qwen[1].shape}")
+    check("PatchSageAttention: Qwen-Image's call with its text mask is core's own result",
+          torch.equal(qwen[2], qwen[3]))
+    check("PatchSageAttention: Wan's self-attention (AttentionTensorContainers) runs the kernel and matches core's",
+          close(wan_self[0], wan_self[1]))
+    check("PatchSageAttention: Wan's image cross-attention (low_precision_attention=False) is core's own result",
+          torch.equal(wan_img[0], wan_img[1]))
+    check("PatchSageAttention: Wan's audio attention (skip_output_reshape) runs the kernel and matches core's",
+          close(wan_audio[0], wan_audio[1]))
+    check("PatchSageAttention: the entry points counted 3 kernel calls, 2 declined (mask, low precision)",
+          (override.stats.sage, override.stats.fallbacks) == (3, {"mask": 1, "low_precision_attention=False": 1}),
+          f"{override.stats.sage} {override.stats.fallbacks}")
+
+    # --- through the executor ----------------------------------------------------------------------
+    root = tempfile.mkdtemp(prefix="bcnodes_sage_")
+    os.makedirs(os.path.join(root, "diffusion_models"))
+    folder_paths.add_model_folder_path("diffusion_models", os.path.join(root, "diffusion_models"))
+    net = WanModel(model_type="t2v", dim=128, ffn_dim=256, num_heads=1, num_layers=1, operations=comfy.ops.disable_weight_init)
+    save_file({key: torch.randn(t.shape) * 0.02 for key, t in net.state_dict().items()},
+              os.path.join(root, "diffusion_models", "tiny_sage_wan.safetensors"))
+    kept = []
+
+    class WanCond:
+        """A test-only node: a zero Wan text conditioning (8 tokens of 4096)."""
+        RETURN_TYPES = ("CONDITIONING",)
+        FUNCTION = "make"
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {}}
+
+        def make(self):
+            return ([[torch.zeros(1, 8, 4096), {}]],)
+
+    class KeepLatent:
+        """A test-only output node: keeps the latent it gets."""
+        RETURN_TYPES = ()
+        FUNCTION = "keep"
+        OUTPUT_NODE = True
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {"samples": ("LATENT",)}}
+
+        def keep(self, samples):
+            kept.append(samples["samples"].clone())
+            return {}
+
+    nodes.NODE_CLASS_MAPPINGS["BCTest_WanCond"] = WanCond
+    nodes.NODE_CLASS_MAPPINGS["BCTest_KeepLatent"] = KeepLatent
+
+    def prompt(mode):
+        return {
+            "1": N("UNETLoader", unet_name="tiny_sage_wan.safetensors", weight_dtype="default"),
+            "2": N("BC_PatchSageAttention", model=["1", 0], mode=mode, nan_guard=True, log_level="once"),
+            "3": N("BCTest_WanCond"),
+            "4": N("EmptyHunyuanLatentVideo", width=32, height=32, length=1, batch_size=1),
+            "5": N("KSampler", model=["2", 0], seed=0, steps=2, cfg=1.0, sampler_name="euler", scheduler="simple",
+                   positive=["3", 0], negative=["3", 0], latent_image=["4", 0], denoise=1.0),
+            "6": N("BCTest_KeepLatent", samples=["5", 0]),
+        }
+
+    async def sample(mode, active=None):
+        """-> (the latent or None, our console lines with their levels)."""
+        lines = []
+
+        class Ours(logging.Handler):
+            def emit(self, record):
+                if record.getMessage().startswith(lib.PREFIX):
+                    lines.append((record.levelname, record.getMessage()[len(lib.PREFIX) + 1:]))
+
+        handler = Ours()
+        root_logger = logging.getLogger()
+        level = root_logger.level
+        root_logger.addHandler(handler)
+        root_logger.setLevel(logging.INFO)
+        real_resolve = lib.resolve
+        if active is not None:
+            lib.resolve = lambda mode, device: active
+        kept.clear()
+        try:
+            out, _ = await run(prompt(mode), f"sage-{mode}")
+        finally:
+            lib.resolve = real_resolve
+            root_logger.removeHandler(handler)
+            root_logger.setLevel(level)
+        return (kept[0] if out is not None and kept else None), lines
+
+    device = comfy.model_management.get_torch_device().type  # where KSampler runs the model
+    other = "cpu" if device == "cuda" else "cuda"
+    try:
+        base, base_lines = await sample("disabled")
+        ran, ran_lines = await sample("auto", stand_in(device))
+        declined, declined_lines = await sample("auto", stand_in(other))
+        real, real_lines = await sample("auto")
+    finally:
+        del nodes.NODE_CLASS_MAPPINGS["BCTest_WanCond"], nodes.NODE_CLASS_MAPPINGS["BCTest_KeepLatent"]
+    check("PatchSageAttention: mode disabled samples, no console line", base is not None and base_lines == [], f"{base_lines}")
+    check("PatchSageAttention: kernel path: the run's start names the kernel, its end counts 4 kernel calls",
+          ran_lines == [("INFO", "stand-in [] on CPU (sm_00), sageattention test, nan_guard on"),
+                        ("INFO", "run summary: 4 attention calls, 4 ran stand-in, 0 ran the original attention")],
+          f"{ran_lines}")
+    check("PatchSageAttention: kernel path: the latent matches mode disabled's",
+          ran is not None and base is not None and close(ran, base))
+    check("PatchSageAttention: every call declined: the summary is a warning with the reason, and the latent is "
+          "bit-identical to mode disabled's",
+          declined_lines[-1:] == [("WARNING", "run summary: 4 attention calls, 0 ran stand-in, 4 ran the original "
+                                              f"attention (not on {other.upper()}: 4)")]
+          and declined is not None and base is not None and torch.equal(declined, base), f"{declined_lines}")
+    check("PatchSageAttention: the real resolve without sageattention / CUDA leaves the model unpatched with a warning",
+          len(real_lines) == 1 and real_lines[0][0] == "WARNING" and real_lines[0][1].endswith("the model keeps ComfyUI's attention.")
+          and real is not None and base is not None and torch.equal(real, base), f"{real_lines}")
 
 
 def lm_core():
