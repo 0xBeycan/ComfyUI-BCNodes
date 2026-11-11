@@ -15,7 +15,7 @@ import logging
 class PatchSageAttention:
     @classmethod
     def INPUT_TYPES(cls):
-        from ..libs.sage_attention import MODES
+        from ..libs.sage_attention import MODES, QUANTS
 
         return {
             "required": {
@@ -26,6 +26,12 @@ class PatchSageAttention:
                          "INT8 QK with fp16 PV (CUDA), on Ampere, Ada, Hopper and Blackwell; never triton, fp8 PV or "
                          "sageattn3. The other modes name one kernel; one this GPU or the installed package cannot run "
                          "leaves the model on ComfyUI's attention, with the reason in the console."}),
+                "qk_quant": (list(QUANTS), {"default": "auto", "tooltip":
+                             "How Q and K are quantized to INT8, for auto, fp16_cuda, fp8_cuda and fp8_cuda++ (the Triton "
+                             "kernel and sageattn3 ignore it). per_thread: one scale per thread's tokens, the most accurate; "
+                             "slower on short sequences (~4k tokens). per_warp: one scale per warp's tokens. auto: per_thread "
+                             "when its test call passes on this GPU, else per_warp. A per_thread call on tensors past 2^31 "
+                             "elements of offset (long video, fused QKV) runs per_warp: per_thread's indexing wraps there."}),
                 "nan_guard": ("BOOLEAN", {"default": True, "tooltip":
                               "Check every kernel output for NaN / inf and run that call again with the original attention "
                               "when it has any. Costs one GPU sync per attention call."}),
@@ -41,12 +47,13 @@ class PatchSageAttention:
     CATEGORY = "BCNodes/model"
     SEARCH_ALIASES = ["BCNodes", "sage attention", "sageattention", "sageattn", "attention patch"]
     DESCRIPTION = ("Runs this model's attention with a SageAttention kernel, for this model only: no global "
-                   "--use-sage-attention, every other model keeps ComfyUI's attention. A call the kernel cannot take "
-                   "(a mask, fp32, a head size over 128, a non-CUDA tensor, core's low_precision_attention=False), a "
+                   "--use-sage-attention, every other model keeps ComfyUI's attention. qk_quant picks how Q and K are "
+                   "quantized (per_thread or per_warp). A call the kernel cannot take (a mask, fp32, a head size over "
+                   "128, a non-CUDA tensor, core's low_precision_attention=False, offsets past the kernel's indexing), a "
                    "kernel error and, with nan_guard, a NaN / inf output run the original attention instead. The console "
                    "names the kernel at each run's start and counts the calls per path at its end.")
 
-    def patch(self, model, mode, nan_guard, log_level):
+    def patch(self, model, mode, qk_quant, nan_guard, log_level):
         # as the pack's other MODEL nodes: nothing to patch
         if model is None:
             return (model,)
@@ -62,7 +69,7 @@ class PatchSageAttention:
 
         from ..libs.sage_attention import PREFIX, SageOverride, resolve
 
-        active = resolve(mode, patched.load_device)
+        active = resolve(mode, qk_quant, patched.load_device)
         if isinstance(active, str):
             logging.warning("%s %s; the model keeps ComfyUI's attention.", PREFIX, active)
             return (patched,)

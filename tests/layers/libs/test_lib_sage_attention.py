@@ -51,7 +51,7 @@ def reference(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False
 
 def active(sa, mode=None, call=sdpa_kernel, device_type="cpu"):
     kernel = sa.KERNELS[mode or sa.AUTO]
-    return sa.Active(kernel, "stand-in", call, kernel.arguments((8, 6)), "CPU", (8, 6), "2.2.0", device_type=device_type)
+    return sa.Active(kernel, "stand-in", call, kernel.arguments("per_thread"), "CPU", (8, 6), "2.2.0", device_type=device_type)
 
 
 def qkv(skip_reshape, heads=4, d=64, n=96, kv_n=96, b=2, dtype=torch.bfloat16):
@@ -230,13 +230,90 @@ def test_modes_are_the_static_combo(sa):
 
 def test_kernel_arguments_follow_the_official_code(sa):
     k = sa.KERNELS
-    assert k["sageattn_qk_int8_pv_fp16_cuda"].arguments((8, 9)) == {"pv_accum_dtype": "fp32", "smooth_k": True, "qk_quant_gran": "per_thread"}
-    assert k["sageattn_qk_int8_pv_fp16_cuda"].arguments((12, 0))["qk_quant_gran"] == "per_warp"
-    assert k["sageattn_qk_int8_pv_fp8_cuda"].arguments((8, 9))["pv_accum_dtype"] == "fp32+fp32"
-    assert k["sageattn_qk_int8_pv_fp8_cuda++"].arguments((12, 0)) == {"pv_accum_dtype": "fp32+fp16", "smooth_k": True, "qk_quant_gran": "per_warp"}
-    assert k["sageattn_qk_int8_pv_fp16_triton"].arguments((8, 6)) == {"smooth_k": True}
+    assert k["sageattn_qk_int8_pv_fp16_cuda"].arguments("per_thread") == {"pv_accum_dtype": "fp32", "smooth_k": True, "qk_quant_gran": "per_thread"}
+    assert k["sageattn_qk_int8_pv_fp16_cuda"].arguments("per_warp")["qk_quant_gran"] == "per_warp"
+    assert k["sageattn_qk_int8_pv_fp8_cuda"].arguments("per_thread")["pv_accum_dtype"] == "fp32+fp32"
+    assert k["sageattn_qk_int8_pv_fp8_cuda++"].arguments("per_warp") == {"pv_accum_dtype": "fp32+fp16", "smooth_k": True, "qk_quant_gran": "per_warp"}
+    assert k["sageattn_qk_int8_pv_fp16_triton"].arguments(None) == {"smooth_k": True}
+    assert k["sageattn3 (experimental)"].arguments(None) == {"per_block_mean": True}
     assert (12, 0) not in k["sageattn_qk_int8_pv_fp16_triton"].capabilities
     assert (8, 6) not in k["sageattn_qk_int8_pv_fp8_cuda"].capabilities
+    # the integer width each kernel indexes in: CUDA uint32, Triton int32, sageattn3 not read
+    assert {mode: kernel.index_bits for mode, kernel in k.items()} == {
+        "sageattn_qk_int8_pv_fp16_cuda": 32, "sageattn_qk_int8_pv_fp16_triton": 31, "sageattn_qk_int8_pv_fp8_cuda": 32,
+        "sageattn_qk_int8_pv_fp8_cuda++": 32, "sageattn3 (experimental)": None}
+    assert sa.QUANTS == ("auto", "per_thread", "per_warp")
+
+
+def test_max_offset_is_the_last_elements_offset(sa):
+    fused = torch.zeros(2, 10, 3 * 4 * 8)  # (B, N, 3 * H * D): q, k, v as views, as a fused QKV projection gives
+    q, k, v = fused.chunk(3, dim=-1)
+    assert sa.max_offset(q, k, v) == 1 * 10 * 96 + 9 * 96 + 31  # batch, token and channel strides of the buffer
+    contiguous = torch.zeros(2, 10, 32)
+    assert sa.max_offset(contiguous) == contiguous.numel() - 1
+    assert sa.max_offset(contiguous, q) == sa.max_offset(q)
+
+
+def recording(calls):
+    def kernel(*args, **kw):
+        calls.append(kw.get("qk_quant_gran"))
+        return sdpa_kernel(*args, **kw)
+    return kernel
+
+
+@pytest.mark.parametrize("offset, ran, summary", [
+    (2**31 - 1, "per_thread", "1 ran stand-in, 0 ran"),
+    (2**31, "per_warp", "1 ran stand-in (1 of them per_warp: offsets past 2**31), 0 ran"),
+    (2**32 - 1, "per_warp", "1 ran stand-in (1 of them per_warp: offsets past 2**31), 0 ran"),
+])
+def test_per_thread_past_int32_offsets_runs_per_warp(sa, monkeypatch, caplog, offset, ran, summary):
+    """thu-ml/SageAttention#386: per_thread's Triton quantization indexes in int32 and corrupts the
+    output silently from 2**31 on; such a call runs per_warp (CUDA, uint32), counted and logged."""
+    monkeypatch.setattr(sa, "max_offset", lambda *tensors: offset)
+    calls = []
+    q, k, v = qkv(False)
+    override = sa.SageOverride(active(sa, call=recording(calls)), None, True, False)
+    with caplog.at_level(logging.INFO):
+        out = override(reference, q, k, v, 4)
+        assert summary in override.stats.summary("stand-in")
+        override(reference, q, k, v, 4)  # the second call is counted, not logged again
+    torch.testing.assert_close(out, reference(q, k, v, 4), atol=2e-2, rtol=2e-2)
+    assert calls == [ran, ran] and override.active.kwargs["qk_quant_gran"] == "per_thread"
+    lines = [r.getMessage() for r in caplog.records if "per_warp for q" in r.getMessage()]
+    assert lines == ([] if ran == "per_thread" else [
+        "[BCNodes] Patch Sage Attention: per_warp for q (2, 96, 256) bfloat16: offsets past 2**31, where per_thread's "
+        "Triton quantization wraps (thu-ml/SageAttention#386); logged once per run, counted in the run summary"])
+
+
+@pytest.mark.parametrize("mode, quant, offset, reason", [
+    (None, "per_thread", 2**32, "offsets past 2**32"),  # CUDA kernels index in uint32
+    (None, "per_warp", 2**32, "offsets past 2**32"),
+    ("sageattn_qk_int8_pv_fp16_triton", None, 2**31, "offsets past 2**31"),  # Triton in int32
+])
+def test_offsets_past_the_kernels_indexing_run_the_original(sa, monkeypatch, mode, quant, offset, reason):
+    monkeypatch.setattr(sa, "max_offset", lambda *tensors: offset)
+    calls = []
+    kernel = sa.KERNELS[mode or sa.AUTO]
+    a = sa.Active(kernel, "stand-in", recording(calls), kernel.arguments(quant), "CPU", (8, 6), "2.2.0", device_type="cpu")
+    q, k, v = qkv(False)
+    override = sa.SageOverride(a, None, True, False)
+    assert override(lambda *args, **kw: "original", q, k, v, 4) == "original"
+    assert calls == [] and override.stats.fallbacks == {reason: 1}
+
+
+def test_per_warp_and_sageattn3_are_not_switched(sa, monkeypatch):
+    monkeypatch.setattr(sa, "max_offset", lambda *tensors: 2**31)
+    calls = []
+    kernel = sa.KERNELS[sa.AUTO]
+    per_warp = sa.Active(kernel, "stand-in", recording(calls), kernel.arguments("per_warp"), "CPU", (8, 6), "2.2.0", device_type="cpu")
+    q, k, v = qkv(False)
+    override = sa.SageOverride(per_warp, None, True, False)
+    override(reference, q, k, v, 4)
+    assert calls == ["per_warp"] and override.stats.per_warp == 0 and override.per_warp is None
+    monkeypatch.setattr(sa, "max_offset", lambda *tensors: 2**40)  # sageattn3's indexing is not claimed
+    hnd = sa.SageOverride(active(sa, "sageattn3 (experimental)", hnd_kernel), None, True, False)
+    hnd(reference, *qkv(True), 4, skip_reshape=True)
+    assert hnd.stats.sage == 1 and hnd.stats.fallbacks == {}
 
 
 @pytest.fixture
@@ -255,38 +332,71 @@ def fake_gpu(sa, monkeypatch):
     return gpu
 
 
-def test_resolve_auto_is_the_fp16_cuda_kernel(sa, fake_gpu):
-    got = sa.resolve("auto", torch.device("cuda", 0))
+def test_resolve_auto_is_the_fp16_cuda_kernel_with_per_thread(sa, fake_gpu):
+    got = sa.resolve("auto", "auto", torch.device("cuda", 0))
     assert got.kernel.mode == "sageattn_qk_int8_pv_fp16_cuda" and got.label == "auto (sageattn_qk_int8_pv_fp16_cuda)"
-    assert got.kwargs == {"pv_accum_dtype": "fp32", "smooth_k": True, "qk_quant_gran": "per_warp"}
-    assert got.describe() == ("auto (sageattn_qk_int8_pv_fp16_cuda) [pv_accum_dtype=fp32, smooth_k=True, qk_quant_gran=per_warp] "
+    assert got.kwargs == {"pv_accum_dtype": "fp32", "smooth_k": True, "qk_quant_gran": "per_thread"}
+    assert got.describe() == ("auto (sageattn_qk_int8_pv_fp16_cuda) [pv_accum_dtype=fp32, smooth_k=True, qk_quant_gran=per_thread] "
                               "on NVIDIA RTX PRO 4500 Blackwell (sm_120), sageattention 2.2.0")
+
+
+def test_resolve_quant_order(sa, fake_gpu, monkeypatch):
+    """auto: per_thread, then per_warp when per_thread's test call fails (the reason in the kernel
+    line); a quantization named in qk_quant is the only one tried; a kernel without qk_quant_gran
+    is probed once, without it."""
+    probed = []
+
+    def probe(active, device):
+        gran = active.kwargs.get("qk_quant_gran")
+        probed.append(gran)
+        return "its test call on GPU failed (RuntimeError: boom)" if gran == "per_thread" else None
+
+    monkeypatch.setattr(sa, "probe", probe)
+    cuda = torch.device("cuda", 0)
+    got = sa.resolve("auto", "auto", cuda)
+    assert probed == ["per_thread", "per_warp"] and got.kwargs["qk_quant_gran"] == "per_warp"
+    assert got.describe().endswith("sageattention 2.2.0 (per_thread refused: its test call on GPU failed (RuntimeError: boom))")
+    probed.clear()
+    assert sa.resolve("sageattn_qk_int8_pv_fp8_cuda", "per_warp", cuda).note == "" and probed == ["per_warp"]
+    probed.clear()
+    assert sa.resolve("auto", "per_thread", cuda) == (
+        "auto (sageattn_qk_int8_pv_fp16_cuda): per_thread refused: its test call on GPU failed (RuntimeError: boom)")
+    assert probed == ["per_thread"]
+    fake_gpu.update(capability=(8, 6), name="NVIDIA GeForce RTX 3090")
+    probed.clear()
+    got = sa.resolve("sageattn_qk_int8_pv_fp16_triton", "per_thread", cuda)
+    assert probed == [None] and got.kwargs == {"smooth_k": True}
 
 
 def test_resolve_refuses_what_cannot_run(sa, fake_gpu, monkeypatch):
     cuda = torch.device("cuda", 0)
-    assert sa.resolve("sageattn_qk_int8_pv_fp16_triton", cuda) == (
+    assert sa.resolve("sageattn_qk_int8_pv_fp16_triton", "auto", cuda) == (
         "sageattn_qk_int8_pv_fp16_triton: does not run on NVIDIA RTX PRO 4500 Blackwell (sm_120); "
         "it runs on sm_80, sm_86, sm_89, sm_90, sm_100")
     fake_gpu.update(capability=(7, 5), name="Tesla T4")
-    assert sa.resolve("auto", cuda).startswith("auto (sageattn_qk_int8_pv_fp16_cuda): does not run on Tesla T4 (sm_75)")
-    assert sa.resolve("auto", torch.device("cpu")) == "auto (sageattn_qk_int8_pv_fp16_cuda): the model runs on cpu, not on a CUDA GPU"
-    assert sa.resolve("sageattn3 (experimental)", cuda) == "sageattn3 (experimental): sageattn3 is not installed"
+    assert sa.resolve("auto", "auto", cuda).startswith("auto (sageattn_qk_int8_pv_fp16_cuda): does not run on Tesla T4 (sm_75)")
+    assert sa.resolve("auto", "auto", torch.device("cpu")) == "auto (sageattn_qk_int8_pv_fp16_cuda): the model runs on cpu, not on a CUDA GPU"
+    assert sa.resolve("sageattn3 (experimental)", "auto", cuda) == "sageattn3 (experimental): sageattn3 is not installed"
     monkeypatch.setattr(sa, "_installed", lambda package: "1.0.6")
-    assert "1.x release" in sa.resolve("auto", cuda)
+    assert "1.x release" in sa.resolve("auto", "auto", cuda)
     monkeypatch.setattr(sa, "_installed", lambda package: None)
-    assert sa.resolve("auto", cuda) == "auto (sageattn_qk_int8_pv_fp16_cuda): sageattention is not installed"
+    assert sa.resolve("auto", "auto", cuda) == "auto (sageattn_qk_int8_pv_fp16_cuda): sageattention is not installed"
 
 
 def test_resolve_names_a_kernel_the_package_lacks(sa, fake_gpu, monkeypatch):
     monkeypatch.delattr(sys.modules["sageattention"], "sageattn_qk_int8_pv_fp8_cuda")
-    got = sa.resolve("sageattn_qk_int8_pv_fp8_cuda", torch.device("cuda", 0))
+    got = sa.resolve("sageattn_qk_int8_pv_fp8_cuda", "auto", torch.device("cuda", 0))
     assert got.startswith("sageattn_qk_int8_pv_fp8_cuda: sageattention 2.2.0 has no usable sageattn_qk_int8_pv_fp8_cuda (AttributeError")
 
 
 def test_resolve_refuses_a_failed_test_call(sa, fake_gpu, monkeypatch):
     monkeypatch.setattr(sa, "probe", lambda active, device: "its test call on GPU failed (RuntimeError: boom)")
-    assert sa.resolve("auto", torch.device("cuda", 0)) == "auto (sageattn_qk_int8_pv_fp16_cuda): its test call on GPU failed (RuntimeError: boom)"
+    assert sa.resolve("auto", "auto", torch.device("cuda", 0)) == (
+        "auto (sageattn_qk_int8_pv_fp16_cuda): per_thread refused: its test call on GPU failed (RuntimeError: boom); "
+        "per_warp refused: its test call on GPU failed (RuntimeError: boom)")
+    fake_gpu.update(capability=(8, 6), name="NVIDIA GeForce RTX 3090")
+    assert sa.resolve("sageattn_qk_int8_pv_fp16_triton", "auto", torch.device("cuda", 0)) == (
+        "sageattn_qk_int8_pv_fp16_triton: its test call on GPU failed (RuntimeError: boom)")
 
 
 def test_probe_runs_one_call_and_checks_it(sa):
@@ -302,6 +412,11 @@ def test_probe_runs_one_call_and_checks_it(sa):
     def wrong_shape(*args, **kw):
         return args[0][:, :1]
 
+    def garbage(q, k, v, **kw):  # runs, finite, right shape, wrong values
+        return v
+
     assert sa.probe(active(sa, call=raises), cpu) == "its test call on CPU failed (RuntimeError: boom)"
     assert sa.probe(active(sa, call=nan), cpu) == "its test call on CPU returned non-finite values"
     assert sa.probe(active(sa, call=wrong_shape), cpu) == "its test call on CPU returned shape (1, 1, 256, 128) for (1, 2, 256, 128)"
+    got = sa.probe(active(sa, call=garbage), cpu)
+    assert got.startswith("its test call on CPU is off from torch SDPA (cosine 0.") and got.endswith(", under 0.98)")

@@ -34,7 +34,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_ImageComparer` | [Image Comparer](docs/workflow.md#bc_imagecomparer--image-comparer) | Two images on the node, compared with a sliding divider |
 | `BC_PowerLoraLoader` | [Power Lora Loader](docs/loaders.md#bc_powerloraloader--power-lora-loader) | `MODEL` + any number of LoRA rows → `MODEL`, no CLIP; each LoRA with the key fix of Lora Loader (Key Fix) |
 | `BC_LoraLoaderKeyFix` | [Lora Loader (Key Fix)](docs/loaders.md#bc_loraloaderkeyfix--lora-loader-key-fix) | `MODEL` + one LoRA → `MODEL`, with the keys ComfyUI's own loader leaves out renamed first (lightx2v `.diff_m`, PEFT keys without the `diffusion_model.` prefix); the console says how many were renamed and how many match no module |
-| `BC_PatchSageAttention` | [Patch Sage Attention](docs/model.md#bc_patchsageattention--patch-sage-attention) | `MODEL` → a clone whose attention runs one SageAttention kernel, for that model only (no global `--use-sage-attention`); `auto` takes the most accurate kernel, and a call the kernel cannot take, a kernel error or a NaN output runs the original attention; the console counts both per run |
+| `BC_PatchSageAttention` | [Patch Sage Attention](docs/model.md#bc_patchsageattention--patch-sage-attention) | `MODEL` → a clone whose attention runs one SageAttention kernel, for that model only (no global `--use-sage-attention`); `auto` takes the most accurate kernel, `qk_quant` its Q·K quantization (per_thread / per_warp), and a call the kernel cannot take, a kernel error or a NaN output runs the original attention; the console counts both per run |
 | `BC_AnythingEverywhere` | [Anything Everywhere](docs/workflow.md#bc_anythingeverywhere--anything-everywhere) | Feeds unconnected inputs of a type at prompt time |
 | `BC_FastGroupsBypasser` | [Fast Groups Bypasser](docs/workflow.md#bc_fastgroupsbypasser--fast-groups-bypasser) | One bypass toggle per group |
 | `BC_BiRefNetRemoveBackground` | [BiRefNet Remove Background](docs/mask.md#bc_birefnetremovebackground--birefnet-remove-background) | Background removal with BiRefNet, plain torch |
@@ -106,7 +106,7 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [LM](docs/lm.md) — chat models through ComfyUI core: Qwen LM, LM Config, LM Loader, Captioner, Prompter, the models and their files, sampling, LoRAs, `models.yaml`
 - [PreFlight](docs/preflight.md) — how Instagram, TikTok and X would likely treat an image or video before it is published: the observation sensor, the rules engine, reading a verdict, the feedback loop and calibration
 - [Loaders](docs/loaders.md) — LoRA loading (with the key fix for LoRAs core loads only in part) and the model downloader
-- [Model](docs/model.md) — SageAttention for one model in one workflow: the modes, the calls that run the original attention, `nan_guard`, the console, install, an A/B test
+- [Model](docs/model.md) — SageAttention for one model in one workflow: the modes, `qk_quant`, long sequences, the calls that run the original attention, `nan_guard`, the console, install, an A/B test
 - [SeedVR2](docs/seedvr2.md) — the downscale factor from the framing, the SeedVR2 input stage, streaming VAE encode / decode, the chunk size and the VAE tile for the card, post-processing
 - [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, Auto Bypass, the Align buttons
 - [Unused outputs](docs/unused-outputs.md) — unconnected whole-batch outputs come out empty

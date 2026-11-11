@@ -1083,7 +1083,7 @@ async def sage_attention():
     def prompt(mode):
         return {
             "1": N("UNETLoader", unet_name="tiny_sage_wan.safetensors", weight_dtype="default"),
-            "2": N("BC_PatchSageAttention", model=["1", 0], mode=mode, nan_guard=True, log_level="once"),
+            "2": N("BC_PatchSageAttention", model=["1", 0], mode=mode, qk_quant="auto", nan_guard=True, log_level="once"),
             "3": N("BCTest_WanCond"),
             "4": N("EmptyHunyuanLatentVideo", width=32, height=32, length=1, batch_size=1),
             "5": N("KSampler", model=["2", 0], seed=0, steps=2, cfg=1.0, sampler_name="euler", scheduler="simple",
@@ -1107,7 +1107,7 @@ async def sage_attention():
         root_logger.setLevel(logging.INFO)
         real_resolve = lib.resolve
         if active is not None:
-            lib.resolve = lambda mode, device: active
+            lib.resolve = lambda mode, quant, device: active
         kept.clear()
         try:
             out, _ = await run(prompt(mode), f"sage-{mode}")

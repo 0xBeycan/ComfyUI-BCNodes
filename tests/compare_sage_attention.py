@@ -6,8 +6,9 @@
 Needs torch with CUDA and SageAttention 2.x (sageattn3 too, for its mode); ComfyUI is not needed.
 Without a CUDA GPU it prints SKIP and exits 0. Not part of the test suite.
 
-1. Which modes the node accepts on this GPU: each mode through the node's own `resolve` (the
-   package, its version, the compute capability, the test call), with the arguments it would use.
+1. Which modes the node accepts on this GPU: each mode through the node's own `resolve` with
+   qk_quant auto (the package, its version, the compute capability, the test calls), with the
+   arguments it would use.
 2. Accuracy and speed. Random q / k / v at Qwen-Image shapes (24 heads x 128, 4k / 8k / 16k tokens,
    bf16, (B, H, N, D) as Qwen-Image calls attention) and Wan 2.x 14B video shapes (40 heads x 128,
    81 frames at 480p / 720p: 32760 / 75600 tokens, (B, N, H*D) as Wan calls it). Two input sets:
@@ -19,6 +20,12 @@ Without a CUDA GPU it prints SKIP and exits 0. Not part of the test suite.
    Random inputs give flatter attention than a real model; an image A/B is the final check.
 3. The override's fallbacks on the auto kernel: a masked call and a kernel output with an injected
    NaN both run the original attention (exit 1 if not); the cost of nan_guard per call.
+4. Fused QKV views on the auto kernel: q / k / v as non-contiguous views into one fused buffer
+   (sequence stride 3 x 56 x 128), under and over the length where the Triton per_thread quant's
+   int32 offsets pass 2**31 (thu-ml/SageAttention#386); per_thread and per_warp, each also on
+   contiguous copies of the same values, and the node's own path (SageOverride, whose guard runs
+   per_warp past 2**31). Reported only, never the exit code. Runs last: an illegal memory access
+   ends the CUDA context.
 """
 
 import dataclasses
@@ -36,6 +43,8 @@ WAN = [("Wan 14B 480p 81f", 1, 40, 32760), ("Wan 14B 720p 81f", 1, 40, 75600)]
 HEAD_DIM = 128
 K_OFFSET = 4.0  # std of the per-channel offset added to K in the second input set
 ITERS = 3       # timed calls per row, after one warm-up call
+FUSED_HEADS = 56                   # the fused-QKV case: #386's geometry, 56 heads x 128
+FUSED_LENGTHS = (90_000, 110_000)  # under / over 2**31 // (3 x 56 x 128) = 99864 tokens
 
 
 def comfy_sdpa(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
@@ -122,7 +131,7 @@ def variants(actives):
         options = [(active.kwargs, True)]
         if "smooth_k" in active.kwargs:
             options.append(({**active.kwargs, "smooth_k": not active.kwargs["smooth_k"]}, False))
-        if active.kernel.per_arch_quant:
+        if active.kernel.takes_quant:
             other = "per_thread" if active.kwargs["qk_quant_gran"] == "per_warp" else "per_warp"
             options.append(({**active.kwargs, "qk_quant_gran": other}, False))
         for kwargs, node in options:
@@ -148,7 +157,7 @@ def main():
           f"sageattn3 {sa._installed('sageattn3')}")
 
     print("\n== 1. Modes on this GPU (the node's resolve: package, version, compute capability, test call)\n")
-    resolved = {mode: sa.resolve(mode, device) for mode in ("auto",) + tuple(sa.KERNELS)}
+    resolved = {mode: sa.resolve(mode, "auto", device) for mode in ("auto",) + tuple(sa.KERNELS)}
     print(table(["mode", "", "what the node runs, or why it refuses"],
                 [[mode, "OK" if not isinstance(r, str) else "--", r.describe() if not isinstance(r, str) else r]
                  for mode, r in resolved.items()]))
@@ -204,6 +213,7 @@ def main():
 
     failures = fallback_checks(sa, auto, device)
     print(f"\n{'FAILED: ' + ', '.join(failures) if failures else 'All fallback checks passed.'}")
+    fused_qkv_check(sa, auto, device)
     return 1 if failures else 0
 
 
@@ -265,6 +275,46 @@ def fallback_checks(sa, auto, device):
         torch.cuda.empty_cache()
     print(table(["shape", "ms nan_guard off", "ms nan_guard on", "difference"], rows))
     return failures
+
+
+def fused_qkv_check(sa, auto, device):
+    """q / k / v as views into one fused QKV buffer, as a model with a fused QKV projection hands
+    them over: the Triton per_thread quant computes offsets in int32 (thu-ml/SageAttention#386)."""
+    stride = 3 * FUSED_HEADS * HEAD_DIM
+    print(f"\n== 4. Fused QKV views, auto kernel (sequence stride {stride}; int32 offsets pass 2**31 "
+          f"from {2**31 // stride + 1} tokens)")
+    if isinstance(auto, str) or not auto.kernel.takes_quant:
+        print(f"\nSKIP: auto takes no qk_quant_gran here: {auto if isinstance(auto, str) else auto.label}")
+        return
+    for n in FUSED_LENGTHS:
+        gen = torch.Generator(device=device).manual_seed(0)
+        fused = torch.randn(1, n, stride, device=device, generator=gen, dtype=torch.bfloat16)
+        views = fused.chunk(3, dim=-1)
+        ref = reference(*views, FUSED_HEADS, False)
+        copies = tuple(t.contiguous() for t in views)
+        rows = []
+        for gran in ("per_thread", "per_warp"):
+            active = dataclasses.replace(auto, kwargs={**auto.kwargs, "qk_quant_gran": gran})
+            for name, qkv in (("views", views), ("contiguous", copies)):
+                try:
+                    out = sa.attend(active, *qkv, FUSED_HEADS, False, False, None)
+                    rows.append([gran, name, *fmt(metrics(out, ref)), ""])
+                    del out
+                except Exception as e:  # an illegal access is a row; the CUDA context is gone after it
+                    rows.append([gran, name, "-", "-", "-", "-", f"error: {type(e).__name__}: {str(e)[:100]}"])
+        node = sa.SageOverride(auto, None, True, False)
+        try:
+            out = node(comfy_sdpa, *views, FUSED_HEADS)
+            ran = (f"per_warp ({node.stats.per_warp} switched)" if node.stats.per_warp
+                   else auto.kwargs["qk_quant_gran"] if node.stats.sage else f"original attention {node.stats.fallbacks}")
+            rows.append(["node", "views", *fmt(metrics(out, ref)), f"ran {ran}"])
+            del out
+        except Exception as e:
+            rows.append(["node", "views", "-", "-", "-", "-", f"error: {type(e).__name__}: {str(e)[:100]}"])
+        print(f"\n-- {FUSED_HEADS} heads x {HEAD_DIM}, {n} tokens, bf16 (B, N, H*D), randn\n")
+        print(table(["qk_quant_gran", "q / k / v", "cosine", "max abs", "mean abs", "non-finite", "note"], rows), flush=True)
+        del fused, views, copies, ref
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

@@ -271,10 +271,10 @@ def main():
 
     warnings = Warnings()
     logging.getLogger().addHandler(warnings)
-    check("PatchSageAttention no model -> None", lambda: psa.patch(None, "auto", True, "once") == (None,) or _fail())
-    check("PatchSageAttention disabled -> an unpatched clone", lambda: unpatched_clone(psa.patch(model, "disabled", True, "once")[0]) or _fail())
+    check("PatchSageAttention no model -> None", lambda: psa.patch(None, "auto", "auto", True, "once") == (None,) or _fail())
+    check("PatchSageAttention disabled -> an unpatched clone", lambda: unpatched_clone(psa.patch(model, "disabled", "auto", True, "once")[0]) or _fail())
     check("PatchSageAttention without sageattention -> an unpatched clone and a warning, no error",
-          lambda: (unpatched_clone(psa.patch(model, "auto", True, "once")[0])
+          lambda: (unpatched_clone(psa.patch(model, "auto", "auto", True, "once")[0])
                    and warnings.lines[-1].endswith("sageattention is not installed; the model keeps ComfyUI's attention.")) or _fail())
     logging.getLogger().removeHandler(warnings)
 

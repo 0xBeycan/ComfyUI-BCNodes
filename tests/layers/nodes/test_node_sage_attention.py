@@ -60,13 +60,15 @@ def sa(bcnodes):
 
 def stand_in(sa):
     kernel = sa.KERNELS[sa.AUTO]
-    return sa.Active(kernel, "auto (sageattn_qk_int8_pv_fp16_cuda)", lambda *a, **kw: None, kernel.arguments((12, 0)),
+    return sa.Active(kernel, "auto (sageattn_qk_int8_pv_fp16_cuda)", lambda *a, **kw: None, kernel.arguments("per_warp"),
                      "GPU", (12, 0), "2.2.0")
 
 
 def test_mode_combo_and_defaults(node, sa):
     required = node.INPUT_TYPES()["required"]
+    assert list(required) == ["model", "mode", "qk_quant", "nan_guard", "log_level"]
     assert required["mode"][0] == list(sa.MODES) and required["mode"][1]["default"] == "auto"
+    assert required["qk_quant"][0] == ["auto", "per_thread", "per_warp"] and required["qk_quant"][1]["default"] == "auto"
     assert required["nan_guard"][1]["default"] is True
     assert required["log_level"][0] == ["once", "verbose"] and required["log_level"][1]["default"] == "once"
     assert (node.RETURN_TYPES, node.CATEGORY) == (("MODEL",), "BCNodes/model")
@@ -74,20 +76,20 @@ def test_mode_combo_and_defaults(node, sa):
 
 def test_disabled_returns_an_unpatched_clone(node):
     model = Patcher()
-    (out,) = node.patch(model, "disabled", True, "once")
+    (out,) = node.patch(model, "disabled", "auto", True, "once")
     assert out is not model and "optimized_attention_override" not in out.model_options["transformer_options"]
     assert out.callbacks == {}
 
 
 def test_no_model_passes_through(node):
-    assert node.patch(None, "auto", True, "once") == (None,)
+    assert node.patch(None, "auto", "auto", True, "once") == (None,)
 
 
 def test_missing_sageattention_warns_and_leaves_the_clone_unpatched(node, sa, comfy_api, monkeypatch, caplog):
     monkeypatch.setattr(sa, "_installed", lambda package: None)
     model = Patcher()
     with caplog.at_level(logging.WARNING):
-        (out,) = node.patch(model, "auto", True, "once")
+        (out,) = node.patch(model, "auto", "auto", True, "once")
     assert out is not model and "optimized_attention_override" not in out.model_options["transformer_options"]
     assert caplog.records[-1].getMessage() == ("[BCNodes] Patch Sage Attention: auto (sageattn_qk_int8_pv_fp16_cuda): "
                                                "sageattention is not installed; the model keeps ComfyUI's attention.")
@@ -95,12 +97,12 @@ def test_missing_sageattention_warns_and_leaves_the_clone_unpatched(node, sa, co
 
 def test_a_resolved_kernel_patches_the_clone_only(node, sa, comfy_api, monkeypatch, caplog):
     seen = []
-    monkeypatch.setattr(sa, "resolve", lambda mode, device: seen.append((mode, device)) or stand_in(sa))
+    monkeypatch.setattr(sa, "resolve", lambda mode, quant, device: seen.append((mode, quant, device)) or stand_in(sa))
     earlier = object()
     model = Patcher({"optimized_attention_override": earlier})
-    (out,) = node.patch(model, "auto", False, "verbose")
+    (out,) = node.patch(model, "auto", "per_warp", False, "verbose")
     override = out.model_options["transformer_options"]["optimized_attention_override"]
-    assert isinstance(override, sa.SageOverride) and seen == [("auto", "cuda:0")]
+    assert isinstance(override, sa.SageOverride) and seen == [("auto", "per_warp", "cuda:0")]
     assert override.previous is earlier and override.nan_guard is False and override.stats.verbose is True
     assert model.model_options["transformer_options"] == {"optimized_attention_override": earlier} and model.callbacks == {}
     with caplog.at_level(logging.INFO):
@@ -118,4 +120,4 @@ def test_a_resolved_kernel_patches_the_clone_only(node, sa, comfy_api, monkeypat
 def test_a_comfyui_without_the_override_is_an_error(node, comfy_api, monkeypatch):
     monkeypatch.delattr(comfy_api, "wrap_attn")
     with pytest.raises(RuntimeError, match="ComfyUI 0.3.60 or newer"):
-        node.patch(Patcher(), "auto", True, "once")
+        node.patch(Patcher(), "auto", "auto", True, "once")
