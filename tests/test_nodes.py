@@ -207,7 +207,9 @@ def main():
 
     pfo = m["preflight"].PreFlightObserve()
     check("PreFlightObserve empty batch -> {\"error\": ...}, no model run",
-          lambda: json.loads(pfo.observe(torch.zeros((0, 8, 8, 3)), 6, True)[0])["error"].startswith("ValueError") or _fail())
+          lambda: json.loads(pfo.observe(torch.zeros((0, 8, 8, 3)), lml.load("Qwen LM", "Qwen3.5-9B", "INT8 ConvRot", "None",
+                                                                         1.0, True)[0], 6)[0])["error"].startswith("ValueError")
+          or _fail())
     pfr = m["preflight"].PreFlightReport()
     check("PreFlightReport empty observations -> UNKNOWN, nothing logged, image passed on",
           lambda: (lambda r: json.loads(r[0])["unknown"] is True and r[2] == "" and r[3] is None)(pfr.report("", "", False)) or _fail())

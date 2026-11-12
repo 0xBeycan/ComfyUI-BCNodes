@@ -273,15 +273,16 @@ class LMLoader:
 
     RETURN_TYPES = ("BC_LM",)
     RETURN_NAMES = ("lm",)
-    OUTPUT_TOOLTIPS = ("The model for a wrapper node's lm input (Captioner, Prompter): a description, nothing is "
-                       "loaded here.",)
+    OUTPUT_TOOLTIPS = ("The model for a wrapper node's lm input (Captioner, Prompter, PreFlight Observe): a "
+                       "description, nothing is loaded here.",)
     FUNCTION = "load"
     CATEGORY = "BCNodes/lm"
     SEARCH_ALIASES = ["BCNodes", "lm loader", "llm loader", "model loader", "chat model", "qwen", "lora"]
-    DESCRIPTION = ("Picks the chat model a wrapper node runs (Captioner, Prompter): the family, its model and "
-                   "precision, one LoRA and its strength, and whether the model stays loaded. It loads nothing: lm "
-                   "describes the model, and the node it feeds finds the file (or downloads it on first use), reads "
-                   "the LoRA and loads them when it runs. The lists follow the selected family and model.")
+    DESCRIPTION = ("Picks the chat model a wrapper node runs (Captioner, Prompter, PreFlight Observe): the family, "
+                   "its model and precision, one LoRA and its strength, and whether the model stays loaded. It "
+                   "loads nothing: lm describes the model, and the node it feeds finds the file (or downloads it on "
+                   "first use), reads the LoRA and loads them when it runs. The lists follow the selected family and "
+                   "model.")
 
     def load(self, family, model, precision, lora, lora_strength, keep_model_loaded):
         """`family` is the family's name (the widget); the LMSpec holds its registry key."""

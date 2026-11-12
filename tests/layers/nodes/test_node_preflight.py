@@ -1,17 +1,18 @@
 """The PreFlight nodes (nodes/preflight.py) through the node classes, on the stub folder_paths (the user
 directory and models_dir in tmp_path) and a recording stand-in for the "core" LM backend (no weights):
 
-  - the surface: the four nodes' widgets, defaults, ranges and tooltips, outputs, category, display names;
-    Observe's description names its fixed model and the download;
+  - the surface: the four nodes' inputs, defaults, ranges and tooltips, outputs, category, display names;
+    Observe's required lm input (BC_LM, from LM Loader), its description naming the LM Loader;
   - the feedback store lives in <user dir>/BCNodes/preflight/feedback.jsonl; the old place under the output
     folder is never read;
-  - Observe's generate callable: the LMRequest it hands pipelines/lm.run (the fixed model and precision, no
-    LoRA, thinking off, greedy config, seed 42, 300 tokens, no system turn, no prefill, the frames as the
-    image batch, the prompt as the user text, the retry's instruction appended), and through the real
-    pipelines/lm.run the backend's prompt (the images, then the prompt) and GenerateParams; the model kept
-    loaded across the retry and unloaded once afterwards when keep_model_loaded is off, after an error and an
-    interrupt too; an error comes back as {"error": ...}, which Report fails closed on; ComfyUI's interrupt
-    is raised;
+  - Observe's generator: the LMSpec prepared once (pipelines/lm.prepare: thinking off, greedy config, seed 42,
+    300 tokens, the family's folders), then one pipelines/lm.generate per call (no system turn, no prefill,
+    the frames as the image batch, the prompt as the user text, the retry's instruction appended); through
+    the real pipelines/lm the backend's prompt (the images, then the prompt), GenerateParams and the model
+    file of the LMSpec's model and precision, stamped in the meta; the model kept loaded across the retry,
+    never unloaded with the LMSpec's keep_model_loaded on, unloaded once afterwards with it off, after an
+    error and an interrupt too; an error comes back as {"error": ...}, which Report fails closed on;
+    ComfyUI's interrupt is raised;
   - Report: the prediction logged and its id injected into the JSON and the summary, the image passed
     through, nothing written with logging off, a store failure survived; the record list sent to the
     browsers (bcnodes.preflight.records) only when a prediction was logged;
@@ -105,6 +106,14 @@ def backend(bcnodes, monkeypatch, fp, tmp_path):
     return fake
 
 
+def spec(bcnodes, **changes):
+    """An LM Loader's LMSpec: LM Loader's defaults (Qwen3.5-9B INT8 ConvRot, no LoRA, kept loaded), `changes`
+    over them."""
+    return bcnodes["pipelines.lm"].LMSpec(**{**dict(family="qwen_lm", model="Qwen3.5-9B", precision="INT8 ConvRot",
+                                                    lora="None", lora_strength=1.0, keep_model_loaded=True),
+                                             **changes})
+
+
 def obs_json(**kw):
     base = dict(
         subject_appears_under_18=False, garment="regular", setting="studio",
@@ -122,11 +131,10 @@ def obs_json(**kw):
 def test_observe_inputs(pf):
     spec = pf.PreFlightObserve.INPUT_TYPES()
     req = spec["required"]
-    assert list(spec) == ["required"] and list(req) == ["image", "max_frames", "keep_model_loaded"]
-    assert req["image"][0] == "IMAGE"
+    assert list(spec) == ["required"] and list(req) == ["image", "lm", "max_frames"]
+    assert req["image"][0] == "IMAGE" and req["lm"][0] == "BC_LM"
     assert req["max_frames"][0] == "INT" and {k: req["max_frames"][1][k] for k in ("default", "min", "max")} == {
         "default": 6, "min": 1, "max": 16}
-    assert req["keep_model_loaded"][0] == "BOOLEAN" and req["keep_model_loaded"][1]["default"] is True
     assert all(v[1].get("tooltip") for v in req.values())
 
 
@@ -169,7 +177,7 @@ def test_outputs_and_names(pf):
     for cls in pf.NODE_CLASS_MAPPINGS.values():
         assert cls.CATEGORY == "BCNodes/preflight" and cls.DESCRIPTION and cls.SEARCH_ALIASES[0] == "BCNodes"
         assert getattr(cls, "OUTPUT_NODE", False) is (cls is outcome)
-    assert observe.DESCRIPTION.startswith("Runs Qwen3.5-9B INT8 ConvRot (downloaded on first use)")
+    assert observe.DESCRIPTION.startswith("Runs the chat model of the connected LM Loader as a pure observation sensor")
 
 
 # --- the store's place ---------------------------------------------------------------------------------------
@@ -193,33 +201,37 @@ def test_the_old_store_is_never_read(pf, store, tmp_path, bcnodes):
 # --- Observe -------------------------------------------------------------------------------------------------
 
 
-def test_generate_builds_the_request(pf, flow, fp, bcnodes, monkeypatch, tmp_path):
+def test_generator_prepares_once_and_generates_per_call(pf, flow, fp, bcnodes, monkeypatch, tmp_path):
     pipe = bcnodes["pipelines.lm"]
-    seen = []
-    monkeypatch.setattr(pipe, "run", lambda request: seen.append(request) or pipe.LMResult("answer", ""))
+    prepared, generated = [], []
+    monkeypatch.setattr(pipe, "prepare", lambda lm, **kw: prepared.append((lm, kw)) or "prepared")
+    monkeypatch.setattr(pipe, "generate", lambda p, system, user, assistant, image: generated.append(
+        (p, system, user, assistant, image)) or pipe.LMResult("answer", ""))
+    lm = spec(bcnodes)
     frames = torch.rand(3, 8, 8, 3)
-    generate = pf.observe_generator(frames)
+    generate = pf.observe_generator(lm)(frames)
     assert generate("") == "answer" and generate(flow.RETRY_INSTRUCTION) == "answer"
-    expected = dict(
-        family="qwen_lm", node="PreFlight Observe", model="Qwen3.5-9B", precision="INT8 ConvRot", lora="None",
-        lora_strength=0.0, thinking=False, max_new_tokens=300, seed=42, keep_model_loaded=True, system="",
-        user=flow.prompts.OBSERVATION_PROMPT, assistant="", image=frames,
+    [(seen, kw)] = prepared  # once for both calls
+    assert seen is lm and kw == dict(
+        node="PreFlight Observe", thinking=False, max_new_tokens=300, seed=42,
         config={"do_sample": False, "repetition_penalty": 1.0, "presence_penalty": 0.0},
         model_folders=(str(tmp_path / "models" / "Qwen-LM"),),
         text_encoder_folders=(str(tmp_path / "models" / "text_encoders"),))
-    assert seen[0] == pipe.LMRequest(**expected)
-    assert seen[1] == pipe.LMRequest(**{**expected, "user": flow.prompts.OBSERVATION_PROMPT + "\n\n" + flow.RETRY_INSTRUCTION})
-    assert seen[0].config is not flow.GREEDY  # a copy: the run never shares the module's dict
+    assert kw["config"] is not flow.GREEDY  # a copy: the run never shares the module's dict
+    users = [flow.prompts.OBSERVATION_PROMPT, flow.prompts.OBSERVATION_PROMPT + "\n\n" + flow.RETRY_INSTRUCTION]
+    assert [(p, system, user, assistant) for p, system, user, assistant, _ in generated] == [
+        ("prepared", "", user, "") for user in users]
+    assert all(image is frames for *_, image in generated)
     assert fp.folder_names_and_paths["Qwen-LM"] == ([str(tmp_path / "models" / "Qwen-LM")], {".safetensors"})
 
 
-def test_observe_through_the_lm_runtime(pf, flow, backend, tmp_path):
+def test_observe_through_the_lm_runtime(pf, flow, backend, bcnodes, tmp_path):
     image = torch.rand(10, 64, 96, 3)
-    obs_json_out, raw = pf.PreFlightObserve().observe(image, 6, True)
+    obs_json_out, raw = pf.PreFlightObserve().observe(image, spec(bcnodes), 6)
     obs = json.loads(obs_json_out)
     assert obs["garment"] == "bikini" and raw == VALID_JSON
     assert obs["meta"] == {"schema_version": "1", "prompt_version": "5", "model_name": "Qwen3.5-9B",
-                           "precision": "INT8 ConvRot", "frames_analyzed": 6}
+                           "precision": "INT8 ConvRot", "lora": "None", "lora_strength": 1.0, "frames_analyzed": 6}
     [(prompt, images, params)] = backend.generated
     # the images, then the prompt, in the user turn; no system turn, the thinking-off block, no prefill
     assert prompt == ("<|im_start|>user\n" + IMAGE_BLOCK * 6 + flow.prompts.OBSERVATION_PROMPT
@@ -231,30 +243,41 @@ def test_observe_through_the_lm_runtime(pf, flow, backend, tmp_path):
                               ("generate",)]  # kept loaded
 
 
-def test_retry_keeps_the_model_and_unloads_once(pf, flow, backend):
+def test_observe_runs_the_loaders_model(pf, backend, bcnodes, tmp_path):
+    (tmp_path / "models" / "Qwen-LM" / "Qwen3-VL-8B-Instruct_bf16.safetensors").write_bytes(b"")
+    lm = spec(bcnodes, model="Qwen3-VL-8B Instruct", precision="BF16")
+    obs = json.loads(pf.PreFlightObserve().observe(torch.rand(2, 64, 64, 3), lm, 6)[0])
+    assert (obs["meta"]["model_name"], obs["meta"]["precision"]) == ("Qwen3-VL-8B Instruct", "BF16")
+    assert backend.events[0] == ("load", str(tmp_path / "models" / "Qwen-LM" / "Qwen3-VL-8B-Instruct_bf16.safetensors"),
+                                 None)
+    [(_, images, params)] = backend.generated
+    assert images.shape[0] == 2 and (params.do_sample, params.seed, params.max_new_tokens) == (False, 42, 300)
+
+
+def test_retry_keeps_the_model_and_unloads_once(pf, flow, backend, bcnodes):
     backend.answers = ["Sorry, I cannot help with that.", VALID_JSON]
-    obs_json_out, raw = pf.PreFlightObserve().observe(torch.rand(1, 64, 64, 3), 6, False)
+    obs_json_out, raw = pf.PreFlightObserve().observe(torch.rand(1, 64, 64, 3), spec(bcnodes, keep_model_loaded=False), 6)
     assert json.loads(obs_json_out)["garment"] == "bikini" and "--- retry ---" in raw
     assert [e[0] for e in backend.events] == ["load", "generate", "load", "generate", "unload"]
     assert backend.generated[1][0].endswith(flow.RETRY_INSTRUCTION + "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
 
 
-def test_observe_error_fails_closed_and_report_gives_unknown(pf, backend, store):
+def test_observe_error_fails_closed_and_report_gives_unknown(pf, backend, bcnodes, store):
     backend.error = RuntimeError("CUDA out of memory")
-    obs_json_out, raw = pf.PreFlightObserve().observe(torch.rand(1, 64, 64, 3), 6, False)
+    obs_json_out, raw = pf.PreFlightObserve().observe(torch.rand(1, 64, 64, 3), spec(bcnodes, keep_model_loaded=False), 6)
     assert json.loads(obs_json_out) == {"error": "RuntimeError: CUDA out of memory"} and raw == ""
     assert backend.events[-1] == ("unload",)
     report_json, summary, rid, _ = pf.PreFlightReport().report(obs_json_out, "", False)
     assert json.loads(report_json)["unknown"] is True and rid == ""
 
 
-def test_observe_raises_the_interrupt(pf, backend):
+def test_observe_raises_the_interrupt(pf, backend, bcnodes):
     class InterruptProcessingException(BaseException):  # as comfy.model_management's
         pass
 
     backend.error = InterruptProcessingException()
     with pytest.raises(InterruptProcessingException):
-        pf.PreFlightObserve().observe(torch.rand(1, 64, 64, 3), 6, False)
+        pf.PreFlightObserve().observe(torch.rand(1, 64, 64, 3), spec(bcnodes, keep_model_loaded=False), 6)
     assert backend.events[-1] == ("unload",)  # unloaded on the way out
 
 

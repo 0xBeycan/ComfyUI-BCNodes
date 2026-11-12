@@ -1,16 +1,16 @@
 """PreFlight Observe's flow: the observation sensor run over an image batch, as one strict JSON observation.
 
-observe(image, max_frames, generator), in this order:
+observe(image, max_frames, lm, generator), in this order:
   1. up to `max_frames` frames sampled evenly from the batch (sample_frames: index selection on the
      tensor; the batch itself when every frame is kept);
   2. generator(frames) -> generate(extra_instruction) -> the model's raw text. The node builds it over the
-     LM runtime: MODEL at PRECISION, the frames then user_text(extra_instruction) as the user turn, no
-     system turn, thinking off, no prefill, greedy (GREEDY), SEED, MAX_NEW_TOKENS;
+     LM runtime: the model of `lm` (the LM Loader's LMSpec), the frames then user_text(extra_instruction) as
+     the user turn, no system turn, thinking off, no prefill, greedy (GREEDY), SEED, MAX_NEW_TOKENS;
   3. the first JSON object of the answer (extract_json); an answer without one, or an object with no
      observation key, gets exactly one retry with RETRY_INSTRUCTION appended to the user text after a
      blank line; a second failure is {"error": ...} with no meta, which rules.judge fails closed on;
   4. prompts.validate_observations coerces the object to the schema, and the meta stamp records the schema
-     and prompt versions, the model, its precision and the frames analysed.
+     and prompt versions, the model, its precision, the LoRA and its strength, and the frames analysed.
 Fail closed: an error comes back as {"error": "<type>: <message>"} with its traceback on the console, never
 raised into the graph. ComfyUI's interrupt is a BaseException (comfy.model_management.InterruptProcessingException)
 and passes, so cancelling the queue still stops the run.
@@ -24,8 +24,6 @@ import torch
 
 from . import prompts
 
-MODEL = "Qwen3.5-9B"          # the Qwen LM catalog's name (models/qwen_lm/models.yaml)
-PRECISION = "INT8 ConvRot"    # that model's precision
 SEED = 42
 MAX_NEW_TOKENS = 300
 # Pure greedy, the same tokens run to run: core takes the most likely token at each step with do_sample off and
@@ -94,18 +92,20 @@ def extract_json(raw):
     return None
 
 
-def meta(frames_analyzed):
-    """The meta block stamped into every valid observation."""
+def meta(frames_analyzed, lm):
+    """The meta block stamped into every valid observation; `lm` is the LMSpec the observation ran."""
     return {
         "schema_version": prompts.SCHEMA_VERSION,
         "prompt_version": prompts.PROMPT_VERSION,
-        "model_name": MODEL,
-        "precision": PRECISION,
+        "model_name": lm.model,
+        "precision": lm.precision,
+        "lora": lm.lora,
+        "lora_strength": lm.lora_strength,
         "frames_analyzed": int(frames_analyzed),
     }
 
 
-def observe_from_generate(generate, frames_analyzed):
+def observe_from_generate(generate, frames_analyzed, lm):
     """Drive generation -> parse -> validate, with exactly one retry.
 
     ``generate(extra_instruction)`` returns raw model text. On the first
@@ -126,17 +126,17 @@ def observe_from_generate(generate, frames_analyzed):
                              "one retry"}, raw
 
     observations = prompts.validate_observations(parsed)
-    observations["meta"] = meta(frames_analyzed)
+    observations["meta"] = meta(frames_analyzed, lm)
     return observations, raw
 
 
-def observe(image, max_frames, generator):
-    """(observations_json, raw_response) of one sensor run (module docstring); `generator(frames)` returns the
-    run's generate callable."""
+def observe(image, max_frames, lm, generator):
+    """(observations_json, raw_response) of one sensor run (module docstring) of the model `lm` (an LMSpec);
+    `generator(frames)` returns the run's generate callable."""
     raw = ""
     try:
         frames = sample_frames(image, max_frames)
-        observations, raw = observe_from_generate(generator(frames), len(frames))
+        observations, raw = observe_from_generate(generator(frames), len(frames), lm)
     except Exception as exc:  # noqa: BLE001  fail closed: Report gives UNKNOWN for this run
         logging.exception("[BCNodes] PreFlight Observe: the observation failed; Report gives UNKNOWN for this run")
         observations = {"error": "%s: %s" % (type(exc).__name__, exc)}

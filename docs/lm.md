@@ -1,6 +1,6 @@
 # LM
 
-Chat models run by ComfyUI core: one node per model family (Qwen LM today) and one config node, LM Config, for all of them; LM Loader, which picks a model of any family for a wrapper node; and two wrappers that run the LM Loader's model: Captioner, which writes one training caption per image, and Prompter, which writes one text-to-image prompt from a brief or a reference image. Text and images in, text out. The prompt is built as the model's official chat template renders it, sampling starts from the official defaults of each model and mode, and the model files come from a public repository on first use. Type `qwen`, `llm`, `vlm`, `caption` or `prompt enhancer` in the node search to find the node.
+Chat models run by ComfyUI core: one node per model family (Qwen LM today) and one config node, LM Config, for all of them; LM Loader, which picks a model of any family for a wrapper node; and two wrappers that run the LM Loader's model: Captioner, which writes one training caption per image, and Prompter, which writes one text-to-image prompt from a brief or a reference image ([PreFlight Observe](preflight.md#bc_preflightobserve--preflight-observe) runs it too). Text and images in, text out. The prompt is built as the model's official chat template renders it, sampling starts from the official defaults of each model and mode, and the model files come from a public repository on first use. Type `qwen`, `llm`, `vlm`, `caption` or `prompt enhancer` in the node search to find the node.
 
 ## `BC_QwenLM` — Qwen LM
 
@@ -224,9 +224,9 @@ Multi-token prediction: core's speculative decoding with the multi-token-predict
 
 ## `BC_LMLoader` — LM Loader
 
-`family`, `model`, `precision`, `lora`, `lora_strength`, `keep_model_loaded` → `lm` (`BC_LM`), for the `lm` input of a wrapper node (Captioner, Prompter).
+`family`, `model`, `precision`, `lora`, `lora_strength`, `keep_model_loaded` → `lm` (`BC_LM`), for the `lm` input of a wrapper node (Captioner, Prompter, [PreFlight Observe](preflight.md#bc_preflightobserve--preflight-observe)).
 
-The model a wrapper node runs. A wrapper (Captioner, Prompter) lists no model and names no family: it takes the model from an LM Loader, so a model family added later works in it with no change to its code. The loader loads nothing: `lm` is a description of the model (`pipelines/lm.py` `LMSpec`: family, model, precision, LoRA, strength, keep), and the wrapper finds the file (or downloads it on first use), reads the LoRA and loads them when it runs, as [Qwen LM](#bc_qwenlm--qwen-lm) does ([Models and files](#models-and-files), [LoRA](#lora)).
+The model a wrapper node runs. A wrapper (Captioner, Prompter, PreFlight Observe) lists no model and names no family: it takes the model from an LM Loader, so a model family added later works in it with no change to its code. The loader loads nothing: `lm` is a description of the model (`pipelines/lm.py` `LMSpec`: family, model, precision, LoRA, strength, keep), and the wrapper finds the file (or downloads it on first use), reads the LoRA and loads them when it runs, as [Qwen LM](#bc_qwenlm--qwen-lm) does ([Models and files](#models-and-files), [LoRA](#lora)).
 
 | Widget | Default | Range | Meaning |
 | --- | --- | --- | --- |

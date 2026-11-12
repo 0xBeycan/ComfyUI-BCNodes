@@ -1765,9 +1765,10 @@ async def prompter(registry, pkg):
 
 async def preflight_nodes():
     """The PreFlight nodes inside ComfyUI, the "core" LM backend replaced by a recording stand-in that answers
-    with an observation (no weights): EmptyImage -> PreFlight Observe -> PreFlight Report -> Show Text validates
-    and runs, the backend gets the frames then the prompt and greedy params (seed 42, 300 tokens) and unloads
-    once with keep_model_loaded off, the prediction lands in <user dir>/BCNodes/preflight/feedback.jsonl, the
+    with an observation (no weights): EmptyImage + LM Loader -> PreFlight Observe -> PreFlight Report -> Show Text
+    validates and runs, the backend gets the frames then the prompt and greedy params (seed 42, 300 tokens) and
+    unloads once with the loader's keep_model_loaded off, the prediction lands in
+    <user dir>/BCNodes/preflight/feedback.jsonl (its observation stamped with the loader's model), the
     record list goes to the browsers (bcnodes.preflight.records) and GET /bcnodes/preflight/records answers it,
     the image passes through; the same prompt queued again comes from the cache (no second model run, nothing
     logged again). PreFlight Outcome logs on every queue, by the list's label and by record_id_override with a
@@ -1845,7 +1846,9 @@ async def preflight_nodes():
     try:
         flow = {
             "1": N("EmptyImage", width=96, height=64, batch_size=3, color=0x808080),
-            "2": N("BC_PreFlightObserve", image=["1", 0], max_frames=6, keep_model_loaded=False),
+            "8": N("BC_LMLoader", family="Qwen LM", model="Qwen3.5-9B", precision="INT8 ConvRot", lora="None",
+                   lora_strength=1.0, keep_model_loaded=False),
+            "2": N("BC_PreFlightObserve", image=["1", 0], lm=["8", 0], max_frames=6),
             "3": N("BC_PreFlightReport", observations_json=["2", 0], caption="summer drop", log_prediction=True,
                    image=["1", 0]),
             "4": N("BC_ShowText", text=["3", 1]),
@@ -1863,7 +1866,7 @@ async def preflight_nodes():
         generated = [c for c in calls if c[0] == "generate"]
         params = generated[0][3] if generated else None
         check("PreFlight: the backend gets the 3 frames then the prompt (no system turn, thinking off), greedy, seed 42, "
-              "300 tokens, and unloads once (keep_model_loaded off)",
+              "300 tokens, and unloads once (the loader's keep_model_loaded off)",
               len(generated) == 1 and generated[0][2].shape[0] == 3
               and generated[0][1] == ("<|im_start|>user\n" + "<|vision_start|><|image_pad|><|vision_end|>" * 3
                                       + observe.prompts.OBSERVATION_PROMPT
@@ -1873,7 +1876,8 @@ async def preflight_nodes():
               f"{[c[0] for c in calls]} {params}")
         check("PreFlight: the prediction is in <user dir>/BCNodes/preflight/feedback.jsonl, its observation stamped",
               os.path.isfile(store) and [r["id"] for r in lines()] == [rid]
-              and lines()[0]["observations"]["meta"]["model_name"] == "Qwen3.5-9B", f"{store}")
+              and {k: lines()[0]["observations"]["meta"][k] for k in ("model_name", "precision", "lora")}
+              == {"model_name": "Qwen3.5-9B", "precision": "INT8 ConvRot", "lora": "None"}, f"{store}")
         check("PreFlight: the record list goes to the browsers once, the new prediction first",
               len(sent) == 1 and sent[0]["records"][0].startswith(rid + " "), f"{sent}")
         handler = next((r.handler for r in ps.routes if r.method == "GET" and r.path == "/bcnodes/preflight/records"), None)

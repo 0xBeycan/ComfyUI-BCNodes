@@ -75,9 +75,10 @@ pipelines/prompter/           write (the path from what is connected: brief or i
                               callable
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/preflight/          prompts (the observation prompt and schema), observe (frames sampled, generate -> parse
-                              -> one retry -> validate -> meta, fail closed; the fixed model and greedy decoding),
-                              rules (the rules engine), feedback (the append-only store), report, outcome (the record
-                              list), calibrate (the tables); the node hands in the generate callable and the store path
+                              -> one retry -> validate -> meta, fail closed; greedy decoding, the model from the
+                              node's required lm input, as a wrapper's), rules (the rules engine), feedback (the
+                              append-only store), report, outcome (the record list), calibrate (the tables); the node
+                              hands in the generate callable and the store path
 pipelines/seedvr2/            resize, encode, decode, postprocess, compact flows; framing (Resize's downscale factor
                               from the SAM 3 face size); chunk_size (SeedVR2 Chunk Size: frames per chunk for the
                               card); progress; shared constants
@@ -278,10 +279,10 @@ where it is.
 - Vendored code keeps its LICENSE in its own subdirectory (as `models/birefnet/arch/`).
 - An LM family is a `models/<name>/` package with its own `models.yaml` (its built-in catalog),
   registered as an `LMFamily` under `LM_FAMILY` (as `models/qwen_lm/`), served by one LM node (its
-  entry in `nodes/lm.py` `FAMILY_NODES`) and offered by LM Loader. A wrapper node (Captioner, Prompter) lists
-  no model and names no family: it takes a required `BC_LM` input (`pipelines/lm.LMSpec`, from LM
-  Loader) and reaches the family only through `pipelines/lm` (`prepare`, `generate`,
-  `unload_backends`). A backend registers under `LM_BACKEND` (as `models/common/lm/` registers
+  entry in `nodes/lm.py` `FAMILY_NODES`) and offered by LM Loader. A wrapper node (Captioner, Prompter,
+  PreFlight Observe) lists no model and names no family: it takes a required `BC_LM` input
+  (`pipelines/lm.LMSpec`, from LM Loader) and reaches the family only through `pipelines/lm` (`prepare`,
+  `generate`, `unload_backends`). A backend registers under `LM_BACKEND` (as `models/common/lm/` registers
   `core`); `release_pack_models` unloads every registered backend.
 
 ## Coding style

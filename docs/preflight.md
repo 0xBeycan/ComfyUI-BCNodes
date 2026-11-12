@@ -5,7 +5,7 @@ How Instagram, TikTok and X would likely treat a generated image or video, befor
 - **Hard limit**: removal (violates community standards).
 - **Soft limit**: reach suppression (Instagram's recommendation exclusion, TikTok's For-You-Feed ineligibility).
 
-A local chat model, Qwen3.5-9B, acts as a *pure observation sensor*: it describes what is visually present and does **not** judge. Its observations go into a **deterministic rules engine** that maps them to per-platform verdict ranges. A feedback loop records what the platform actually did, so the rules can be checked against reality over time.
+A local chat model, picked on an [LM Loader](lm.md#bc_lmloader--lm-loader) (its default: Qwen3.5-9B, INT8 ConvRot), acts as a *pure observation sensor*: it describes what is visually present and does **not** judge. Its observations go into a **deterministic rules engine** that maps them to per-platform verdict ranges. A feedback loop records what the platform actually did, so the rules can be checked against reality over time.
 
 > **An assistive signal, not an approval gate.** It never says "approved" or "rejected". Verdicts are ranges (best … worst); the report names the unknown behind each range, so you can collapse it yourself. The final judgment is yours.
 
@@ -20,28 +20,28 @@ A local chat model, Qwen3.5-9B, acts as a *pure observation sensor*: it describe
 
 Observation and judgment are split on purpose: when a verdict looks wrong you need to know whether **perception** failed (the model misread the garment) or the **rules** did. Keeping the observations as a separate record also lets old content be judged again by updated rules **without running the model again**: every observation carries the schema and prompt version that produced it.
 
-A typical graph: Load Image → **PreFlight Observe** → **PreFlight Report** (`image` passed through to a preview, `summary` into [Show Text](text.md#bc_showtext--show-text)). Days after posting: a **PreFlight Outcome** per platform. From time to time: **PreFlight Calibrate** → Show Text.
+A typical graph: Load Image and [LM Loader](lm.md#bc_lmloader--lm-loader) → **PreFlight Observe** → **PreFlight Report** (`image` passed through to a preview, `summary` into [Show Text](text.md#bc_showtext--show-text)). Days after posting: a **PreFlight Outcome** per platform. From time to time: **PreFlight Calibrate** → Show Text.
 
 ## `BC_PreFlightObserve` — PreFlight Observe
 
-`image`, `max_frames`, `keep_model_loaded` → `observations_json` (`STRING`), `raw_response` (`STRING`).
+`image`, `lm`, `max_frames` → `observations_json` (`STRING`), `raw_response` (`STRING`).
 
 | Input | Default | Range | Meaning |
 | --- | --- | --- | --- |
 | `image` | | `IMAGE` | A single image or a video's frame batch. |
+| `lm` | | `BC_LM`, required | The model, from an [LM Loader](lm.md#bc_lmloader--lm-loader): its model, precision, LoRA at its strength, and `keep_model_loaded` (on: the model stays loaded after the node, in the one LM model slot Qwen LM, Captioner and Prompter share; off: unloaded once after the observation, its retry included, after an error too). |
 | `max_frames` | `6` | `1`–`16` | For a video: how many frames are sampled evenly from the batch. All of them go to the model in **one** call, so it can tell motion from the sequence. |
-| `keep_model_loaded` | on | | On: the model stays loaded for the next run. Off: it is unloaded when the run ends, after an error too. |
 
 | Output | Meaning |
 | --- | --- |
 | `observations_json` | The observation, or `{"error": ...}` when the run failed. |
 | `raw_response` | The model's answer as it came, both answers when it was retried, for debugging. |
 
-**The model.** Observe has no model choice: it always runs **Qwen3.5-9B, INT8 ConvRot**, downloaded on first use. It goes through the same runtime as [Qwen LM](lm.md#bc_qwenlm--qwen-lm): the file `Qwen3.5-9B_int8_convrot.safetensors` is found in `models/Qwen-LM` or under `models/text_encoders`, or downloaded into `models/Qwen-LM` on the first run ([Models and files](lm.md#models-and-files)), and ComfyUI core runs it. One LM model is held at a time, shared with Qwen LM: a Qwen LM run with another model file replaces it, and the other way round. Its peak VRAM is about **10.5 GB** (measured on an RTX 3090: one image or a 4-frame batch).
+**The model.** Observe is a wrapper, as [Captioner](lm.md#bc_captioner--captioner) and [Prompter](lm.md#bc_prompter--prompter) are: it lists no model and runs the one its LM Loader picks, the LoRA included. LM Loader's default is **Qwen3.5-9B, INT8 ConvRot**. It goes through the same runtime as [Qwen LM](lm.md#bc_qwenlm--qwen-lm): the model file is found in `models/Qwen-LM` or under `models/text_encoders`, or downloaded into `models/Qwen-LM` on the first run ([Models and files](lm.md#models-and-files)), and ComfyUI core runs it. One LM model is held at a time, shared with the other LM nodes: a run with another model file replaces it. Qwen3.5-9B INT8 ConvRot peaks at about **10.5 GB** of VRAM here (measured on an RTX 3090: one image or a 4-frame batch).
 
-**The run.** The sampled frames go first, then the observation prompt as the user text, in the model's official chat template ([Prompt and thinking](lm.md#prompt-and-thinking)): no system turn, thinking off, no prefill. Decoding is pure greedy (the most likely token at each step, no penalties), seed 42, at most 300 new tokens, so the same image and settings give the same observation run to run, a requirement for calibration. The model is asked for a strict JSON object; the first `{…}` of its answer is read, whatever prose or code fence surrounds it. An answer with no usable object gets **exactly one** retry, with `Your previous response was not valid JSON. Return ONLY the JSON object, nothing else.` added to the prompt after a blank line; a second failure is `{"error": ...}`. Values outside the schema are replaced by cautious defaults (a missing `exposure` reads as `moderate`, a missing `pose` as `mildly_suggestive`, `confidence` as `low`), never by the permissive end; the high-stakes flags (minor, nudity, see-through) are only set by a positive observation.
+**The run.** Whatever the model, the run is the same. The sampled frames go first, then the observation prompt as the user text, in the model's official chat template ([Prompt and thinking](lm.md#prompt-and-thinking)): no system turn, thinking off, no prefill. Decoding is pure greedy (the most likely token at each step, no penalties), seed 42, at most 300 new tokens, so the same image and settings give the same observation run to run, a requirement for calibration. The model is asked for a strict JSON object; the first `{…}` of its answer is read, whatever prose or code fence surrounds it. An answer with no usable object gets **exactly one** retry, with `Your previous response was not valid JSON. Return ONLY the JSON object, nothing else.` added to the prompt after a blank line; a second failure is `{"error": ...}`. Values outside the schema are replaced by cautious defaults (a missing `exposure` reads as `moderate`, a missing `pose` as `mildly_suggestive`, `confidence` as `low`), never by the permissive end; the high-stakes flags (minor, nudity, see-through) are only set by a positive observation.
 
-Every valid observation carries a `meta` stamp: `schema_version`, `prompt_version`, `model_name` (`Qwen3.5-9B`), `precision` (`INT8 ConvRot`) and `frames_analyzed`.
+Every valid observation carries a `meta` stamp: `schema_version`, `prompt_version`, the LM Loader's `model_name` (e.g. `Qwen3.5-9B`), `precision` (e.g. `INT8 ConvRot`), `lora` (`None` without one) and `lora_strength`, and `frames_analyzed`. Another model or LoRA observes differently, so the stamp tells which one a logged prediction came from.
 
 **Errors never break the graph.** Anything that goes wrong (the model file, the download, the GPU, an empty batch) comes back as `{"error": "<type>: <message>"}` with the traceback in the console, and Report then gives `UNKNOWN` for that run. Cancelling the queue still stops the run.
 
@@ -139,6 +139,6 @@ Read this before trusting a verdict:
 - **Enforcement depends on signals this node cannot see**: account history, bio, follower and link patterns, posting cadence, cluster signals, region. Two identical images on two accounts can be treated differently.
 - **The rules need calibration against your own outcomes.** Out of the box they are a starting point; the feedback loop exists because they will be wrong until tuned.
 - **The sensor can misread.** A low-confidence observation widens the verdict ranges on purpose.
-- **Process Monitor.** Emulate lists Observe as not counted: no widget names its model file, so the weights, the KV cache and the frames resized for the model are not in the estimate. Report is counted (its image output is the input passed on); Outcome and Calibrate output text only.
+- **Process Monitor.** Emulate lists Observe as not counted: its LM Loader names the model by catalog name, not by file, so the weights, the LoRA, the KV cache and the frames resized for the model are not in the estimate. Report is counted (its image output is the input passed on); Outcome and Calibrate output text only.
 
 PreFlight reports. A person decides.

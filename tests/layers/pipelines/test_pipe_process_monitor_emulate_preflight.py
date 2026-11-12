@@ -1,7 +1,7 @@
 """Emulate's profiles of the PreFlight nodes (pipelines/process_monitor/profiles.py); the graph helpers are the
 emulate test's.
 
-  - PreFlight Observe: not counted. It runs a fixed catalog model (Qwen3.5-9B INT8 ConvRot) that no widget names
+  - PreFlight Observe: not counted. It runs its LM Loader's model, which the loader names by catalog name, not
     as a file, so Emulate reads no weights for it, and nothing in the prompt sizes the KV cache, the sampled
     frames or their resized copies; its two string outputs alone would read as "counted", 0 bytes. The image
     it reads keeps its own estimate;
@@ -17,7 +17,7 @@ from test_pipe_process_monitor_emulate import N, rows_of
 
 
 class Env(emulate.Env):
-    TYPES = {**emulate.Env.TYPES, "BC_PreFlightObserve": ["STRING", "STRING"],
+    TYPES = {**emulate.Env.TYPES, "BC_LMLoader": ["BC_LM"], "BC_PreFlightObserve": ["STRING", "STRING"],
              "BC_PreFlightReport": ["STRING", "STRING", "STRING", "IMAGE"], "BC_PreFlightOutcome": ["STRING"],
              "BC_PreFlightCalibrate": ["STRING"], "PreviewAny": []}
 
@@ -32,7 +32,9 @@ def graph(image=True):
     if image:
         report["image"] = ["9", 0]
     return {"9": N("LoadImage", image="ref.png"),
-            "2": N("BC_PreFlightObserve", image=["9", 0], max_frames=6, keep_model_loaded=True),
+            "8": N("BC_LMLoader", family="Qwen LM", model="Qwen3.5-9B", precision="INT8 ConvRot", lora="None",
+                   lora_strength=1.0, keep_model_loaded=True),
+            "2": N("BC_PreFlightObserve", image=["9", 0], lm=["8", 0], max_frames=6),
             "3": N("BC_PreFlightReport", **report),
             "4": N("PreviewImage", images=["3", 3]),
             "5": N("BC_PreFlightOutcome", record="no records yet", platform="instagram", result="clean",
@@ -46,9 +48,9 @@ def test_observe_is_not_counted_and_report_passes_the_image_on(em):
     rows = {row["id"]: row for row in r["rows"]}
     observe = rows["2"]
     assert observe["status"] == "not counted" and observe["outputs"] == [] and observe["weights"] == []
-    assert observe["note"].startswith("runs Qwen3.5-9B INT8 ConvRot, which no widget names as a file")
-    for part in ("model file's weights", "KV cache core reserves for prompt + 300 tokens", "sampled frames",
-                 "images resized"):
+    assert observe["note"].startswith("the LM Loader's model is a catalog entry, not a file")
+    for part in ("model file's weights", "the LoRA", "KV cache core reserves for prompt + 300 tokens",
+                 "sampled frames", "images resized"):
         assert part in observe["note"], part
     image = 480 * 640 * 3 * 4
     assert rows["9"]["output_bytes"] == image + 480 * 640 * 4

@@ -862,9 +862,10 @@ def _captioner(c):
 # -- PreFlight ------------------------------------------------------------------------------------
 
 def _preflight_observe(c):
-    # PreFlight Observe runs a fixed catalog model through the LM runtime (pipelines/preflight/observe.py): no
-    # widget names its file, so no weights are read for it; its outputs are two strings.
-    raise NotCounted("runs Qwen3.5-9B INT8 ConvRot, which no widget names as a file: the model file's weights, the "
+    # PreFlight Observe runs its LM Loader's model through the LM runtime (pipelines/preflight/observe.py): the
+    # loader's model widget holds a catalog name, not a file name, so no weights are read for it; its outputs
+    # are two strings.
+    raise NotCounted("the LM Loader's model is a catalog entry, not a file: the model file's weights, the LoRA, the "
                      "KV cache core reserves for prompt + 300 tokens, the sampled frames (a copy when fewer than "
                      "the batch) and the images resized for the model are not counted")
 

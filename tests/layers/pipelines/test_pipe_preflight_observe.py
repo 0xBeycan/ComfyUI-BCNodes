@@ -3,13 +3,13 @@
   - extract_json: the first balanced object, braces inside strings ignored, fences and prose skipped;
   - observe_from_generate: one call on a valid answer, exactly one retry (the corrective instruction) on an
     unusable one, {"error": ...} without meta after the second, enums coerced to the cautious defaults; the
-    meta stamp (schema and prompt versions, model, precision, frames analysed);
+    meta stamp (schema and prompt versions, the LMSpec's model, precision, LoRA and strength, frames analysed);
   - sample_frames: evenly spaced picks (rounded linspace, each frame once) by index selection on the tensor,
     the batch itself when every frame is kept, dtype and device kept, an empty batch refused;
   - user_text: the prompt verbatim, the retry's instruction after a blank line;
   - observe: the generator gets the sampled frames; any error comes back as {"error": "<type>: <message>"}
     with the traceback logged, never raised; ComfyUI's interrupt (a BaseException) passes;
-  - the decoding contract: Qwen3.5-9B INT8 ConvRot, seed 42, 300 tokens, greedy with the penalties off.
+  - the decoding contract: seed 42, 300 tokens, greedy with the penalties off, whatever the model.
 """
 
 import json
@@ -34,6 +34,13 @@ def ob(bcnodes):
 @pytest.fixture
 def prompts(bcnodes):
     return bcnodes["pipelines.preflight.prompts"]
+
+
+@pytest.fixture
+def spec(bcnodes):
+    """An LM Loader's LMSpec: the model the observation runs."""
+    return bcnodes["pipelines.lm"].LMSpec(family="qwen_lm", model="Qwen3-VL-8B Instruct", precision="BF16",
+                                          lora="my_lora.safetensors", lora_strength=0.6, keep_model_loaded=True)
 
 
 # --- extract_json -------------------------------------------------------------
@@ -62,22 +69,23 @@ def test_extract_json_brace_in_string_value(ob):
 # --- observe_from_generate: retry + meta ----------------------------------------
 
 
-def test_observe_valid_first_try_single_call(ob, prompts):
+def test_observe_valid_first_try_single_call(ob, prompts, spec):
     calls = []
 
     def gen(extra):
         calls.append(extra)
         return VALID_JSON
 
-    obs, raw = ob.observe_from_generate(gen, 6)
+    obs, raw = ob.observe_from_generate(gen, 6, spec)
     assert calls == [""]                                 # exactly one call, no retry
     assert "error" not in obs and raw == VALID_JSON
     assert obs["garment"] == "bikini"
     assert obs["meta"] == {"schema_version": prompts.SCHEMA_VERSION, "prompt_version": prompts.PROMPT_VERSION,
-                           "model_name": "Qwen3.5-9B", "precision": "INT8 ConvRot", "frames_analyzed": 6}
+                           "model_name": "Qwen3-VL-8B Instruct", "precision": "BF16", "lora": "my_lora.safetensors",
+                           "lora_strength": 0.6, "frames_analyzed": 6}
 
 
-def test_observe_retries_once_then_succeeds(ob):
+def test_observe_retries_once_then_succeeds(ob, spec):
     outs = iter(["not json at all", "```json\n" + VALID_JSON + "\n```"])
     calls = []
 
@@ -85,33 +93,33 @@ def test_observe_retries_once_then_succeeds(ob):
         calls.append(extra)
         return next(outs)
 
-    obs, raw = ob.observe_from_generate(gen, 1)
+    obs, raw = ob.observe_from_generate(gen, 1, spec)
     assert len(calls) == 2 and calls[1] == ob.RETRY_INSTRUCTION
     assert obs["garment"] == "bikini"
     assert raw == "not json at all\n\n--- retry ---\n\n```json\n" + VALID_JSON + "\n```"  # both kept for debugging
 
 
-def test_observe_retries_on_an_object_without_observation_keys(ob):
+def test_observe_retries_on_an_object_without_observation_keys(ob, spec):
     outs = iter(['{"foo": 1}', VALID_JSON])
-    obs, _ = ob.observe_from_generate(lambda extra: next(outs), 1)
+    obs, _ = ob.observe_from_generate(lambda extra: next(outs), 1, spec)
     assert obs["garment"] == "bikini"
 
 
-def test_observe_two_failures_returns_error_no_meta(ob):
+def test_observe_two_failures_returns_error_no_meta(ob, spec):
     calls = []
 
     def gen(extra):
         calls.append(extra)
         return "still not json"
 
-    obs, raw = ob.observe_from_generate(gen, 1)
+    obs, raw = ob.observe_from_generate(gen, 1, spec)
     assert len(calls) == 2                               # exactly one retry, then stop
     assert "error" in obs and "meta" not in obs          # error obs -> rules fail closed
 
 
-def test_observe_coerces_unknown_enum(ob):
+def test_observe_coerces_unknown_enum(ob, spec):
     bad = json.dumps({**json.loads(VALID_JSON), "exposure": "extreme"})
-    obs, _ = ob.observe_from_generate(lambda e: bad, 1)
+    obs, _ = ob.observe_from_generate(lambda e: bad, 1, spec)
     assert obs["exposure"] == "moderate"                 # coerced to cautious default
 
 
@@ -177,7 +185,7 @@ def test_user_text(ob, prompts):
 
 
 def test_decoding_contract(ob, bcnodes):
-    assert (ob.MODEL, ob.PRECISION, ob.SEED, ob.MAX_NEW_TOKENS) == ("Qwen3.5-9B", "INT8 ConvRot", 42, 300)
+    assert (ob.SEED, ob.MAX_NEW_TOKENS) == (42, 300)
     assert ob.GREEDY == {"do_sample": False, "repetition_penalty": 1.0, "presence_penalty": 0.0}
     # an LM Config value: its keys are LMConfigValues fields, in widget order, typed as the node casts them
     fields = bcnodes["pipelines.lm"].LMConfigValues.__annotations__
@@ -189,7 +197,7 @@ def test_decoding_contract(ob, bcnodes):
 # --- observe: frames, fail closed -----------------------------------------------------
 
 
-def test_observe_hands_the_sampled_frames_to_the_generator(ob):
+def test_observe_hands_the_sampled_frames_to_the_generator(ob, spec):
     seen = []
 
     def generator(frames):
@@ -197,34 +205,34 @@ def test_observe_hands_the_sampled_frames_to_the_generator(ob):
         return lambda extra: VALID_JSON
 
     image = torch.rand(10, 8, 8, 3)
-    obs_json, raw = ob.observe(image, 6, generator)
+    obs_json, raw = ob.observe(image, 6, spec, generator)
     obs = json.loads(obs_json)
     assert len(seen) == 1 and seen[0].shape == (6, 8, 8, 3)  # one generator, all frames in one call
     assert obs["garment"] == "bikini" and obs["meta"]["frames_analyzed"] == 6 and raw == VALID_JSON
 
 
-def test_observe_never_raises_on_model_error(ob, caplog):
+def test_observe_never_raises_on_model_error(ob, spec, caplog):
     def generator(frames):
         def boom(extra):
             raise RuntimeError("CUDA out of memory")
         return boom
 
     with caplog.at_level(logging.ERROR):
-        obs_json, raw = ob.observe(torch.rand(1, 8, 8, 3), 6, generator)
+        obs_json, raw = ob.observe(torch.rand(1, 8, 8, 3), 6, spec, generator)
     assert json.loads(obs_json) == {"error": "RuntimeError: CUDA out of memory"} and raw == ""
     assert "PreFlight Observe" in caplog.text and "Traceback" in caplog.text and "CUDA out of memory" in caplog.text
 
 
-def test_observe_errors_before_the_model_fail_closed_too(ob):
+def test_observe_errors_before_the_model_fail_closed_too(ob, spec):
     def generator(frames):
         raise FileNotFoundError("no model file")
 
-    assert json.loads(ob.observe(torch.rand(2, 8, 8, 3), 6, generator)[0]) == {"error": "FileNotFoundError: no model file"}
-    obs_json, raw = ob.observe(torch.zeros(0, 8, 8, 3), 6, generator)  # an empty batch
+    assert json.loads(ob.observe(torch.rand(2, 8, 8, 3), 6, spec, generator)[0]) == {"error": "FileNotFoundError: no model file"}
+    obs_json, raw = ob.observe(torch.zeros(0, 8, 8, 3), 6, spec, generator)  # an empty batch
     assert json.loads(obs_json)["error"].startswith("ValueError: image holds no frames") and raw == ""
 
 
-def test_observe_lets_the_interrupt_through(ob):
+def test_observe_lets_the_interrupt_through(ob, spec):
     class InterruptProcessingException(BaseException):  # as comfy.model_management's
         pass
 
@@ -234,4 +242,4 @@ def test_observe_lets_the_interrupt_through(ob):
         return stop
 
     with pytest.raises(InterruptProcessingException):
-        ob.observe(torch.rand(1, 8, 8, 3), 6, generator)
+        ob.observe(torch.rand(1, 8, 8, 3), 6, spec, generator)

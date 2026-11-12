@@ -1,18 +1,18 @@
 """PreFlight nodes: how Instagram, TikTok and X would likely treat an image or a video before it is published.
 
-    BC_PreFlightObserve    (PreFlight Observe)    Qwen3.5-9B INT8 ConvRot as a pure observation sensor -> JSON
+    BC_PreFlightObserve    (PreFlight Observe)    the LM Loader's model as a pure observation sensor -> JSON
     BC_PreFlightReport     (PreFlight Report)     the rules engine -> per-platform verdict ranges, summary, record id
     BC_PreFlightOutcome    (PreFlight Outcome)    what a platform actually did to a published post, into the store
     BC_PreFlightCalibrate  (PreFlight Calibrate)  the calibration tables over the feedback store
 
-The flows are pipelines/preflight. Observe runs its fixed model through the LM runtime (pipelines/lm.run on
-the Qwen LM family: the model file is found in models/Qwen-LM or models/text_encoders, or downloaded on first
-use). This module holds the surface: the widgets, the feedback store's path
-(<ComfyUI user dir>/BCNodes/preflight/feedback.jsonl), GET /bcnodes/preflight/records (registered by
-register_routes(), called from the root __init__, only inside a running ComfyUI server) and the
-bcnodes.preflight.records event Report sends after it logs a prediction: web/js/preflight.js reads both to
-keep every Outcome node's record list current. folder_paths, server and aiohttp are imported inside the
-functions.
+The flows are pipelines/preflight. Observe is a wrapper like Captioner: it runs the model of its required lm
+input (an LMSpec from LM Loader) through the LM runtime (pipelines/lm prepare + generate: the model file is
+found in the family's folders or models/text_encoders, or downloaded on first use). This module holds the
+surface: the widgets, the feedback store's path (<ComfyUI user dir>/BCNodes/preflight/feedback.jsonl),
+GET /bcnodes/preflight/records (registered by register_routes(), called from the root __init__, only inside a
+running ComfyUI server) and the bcnodes.preflight.records event Report sends after it logs a prediction:
+web/js/preflight.js reads both to keep every Outcome node's record list current. folder_paths, server and
+aiohttp are imported inside the functions.
 """
 
 import itertools
@@ -21,7 +21,6 @@ import os
 from .common import lm_folders
 
 CATEGORY = "BCNodes/preflight"
-FAMILY = "qwen_lm"  # the LM family (models/common/registry.py LM_FAMILY) of Observe's model
 RECORDS_ROUTE = "/bcnodes/preflight/records"
 RECORDS_EVENT = "bcnodes.preflight.records"
 
@@ -53,27 +52,24 @@ def send_records():
         server.send_sync(RECORDS_EVENT, records_payload())
 
 
-def observe_generator(frames):
-    """generate(extra_instruction) -> the raw answer: one LM run of Observe's model (pipelines/preflight/observe
-    MODEL at PRECISION) over `frames`, the images then user_text(extra_instruction) as the user turn, no
-    system turn, thinking off, no prefill, greedy (GREEDY), SEED, MAX_NEW_TOKENS. The model stays loaded
-    between the runs of one observation; Observe unloads it afterwards when keep_model_loaded is off."""
-    from ..models.common import registry
-    from ..models.common.registry import LM_FAMILY
-    from ..pipelines.lm import NO_LORA, LMRequest, run
+def observe_generator(lm):
+    """generator(frames) -> generate(extra_instruction) -> the raw answer, over the model of `lm` (an LMSpec):
+    prepared once per node call (pipelines/lm.prepare: the file found or downloaded, the LoRA read; thinking
+    off, greedy (pipelines/preflight/observe GREEDY), SEED, MAX_NEW_TOKENS), then one generate per call: the
+    frames then user_text(extra_instruction) as the user turn, no system turn, no prefill. The model stays
+    loaded between the calls of one observation; Observe unloads it afterwards when the spec's
+    keep_model_loaded is off."""
+    from ..pipelines.lm import generate, lm_family, prepare
     from ..pipelines.preflight import observe as flow
 
-    model_folders, text_encoder_folders = lm_folders(registry.get(LM_FAMILY, FAMILY).folder)
+    def generator(frames):
+        model_folders, text_encoder_folders = lm_folders(lm_family(lm.family).folder)
+        prepared = prepare(lm, node=NODE_DISPLAY_NAME_MAPPINGS["BC_PreFlightObserve"], thinking=False,
+                           max_new_tokens=flow.MAX_NEW_TOKENS, seed=flow.SEED, config=dict(flow.GREEDY),
+                           model_folders=model_folders, text_encoder_folders=text_encoder_folders)
+        return lambda extra_instruction: generate(prepared, "", flow.user_text(extra_instruction), "", frames).text
 
-    def generate(extra_instruction):
-        return run(LMRequest(
-            family=FAMILY, node=NODE_DISPLAY_NAME_MAPPINGS["BC_PreFlightObserve"], model=flow.MODEL,
-            precision=flow.PRECISION, lora=NO_LORA, lora_strength=0.0, thinking=False,
-            max_new_tokens=flow.MAX_NEW_TOKENS, seed=flow.SEED, keep_model_loaded=True, system="",
-            user=flow.user_text(extra_instruction), assistant="", image=frames, config=dict(flow.GREEDY),
-            model_folders=model_folders, text_encoder_folders=text_encoder_folders)).text
-
-    return generate
+    return generator
 
 
 class PreFlightObserve:
@@ -82,13 +78,14 @@ class PreFlightObserve:
         return {
             "required": {
                 "image": ("IMAGE", {"tooltip": "A single image or a video frame batch."}),
+                "lm": ("BC_LM", {"tooltip": "The chat model, from an LM Loader: its model, precision and LoRA (at "
+                                            "its strength), and whether it stays loaded after this node (off: "
+                                            "unloaded once after the observation, its retry included, after an "
+                                            "error too). Whatever the model, the observation is decoded greedy: "
+                                            "thinking off, seed 42, at most 300 tokens."}),
                 "max_frames": ("INT", {"default": 6, "min": 1, "max": 16,
                                        "tooltip": "For a video: how many frames to sample evenly from the batch. "
                                                   "All of them go to the model in one call."}),
-                "keep_model_loaded": ("BOOLEAN", {"default": True,
-                                                  "tooltip": "On: the model stays loaded for the next run (one LM "
-                                                             "model is held at a time, shared with Qwen LM). Off: it "
-                                                             "is unloaded when the run ends."}),
             }
         }
 
@@ -98,20 +95,22 @@ class PreFlightObserve:
     CATEGORY = CATEGORY
     SEARCH_ALIASES = ["BCNodes", "preflight", "observe", "content check", "moderation", "instagram", "tiktok"]
     DESCRIPTION = (
-        "Runs Qwen3.5-9B INT8 ConvRot (downloaded on first use) as a pure observation sensor. It describes what "
-        "is visually present (garment, exposure, framing, pose, in-image text, ...) as a strict JSON object; it "
+        "Runs the chat model of the connected LM Loader as a pure observation sensor. It describes what is "
+        "visually present (garment, exposure, framing, pose, in-image text, ...) as a strict JSON object; it "
         "does NOT judge acceptability. Feed the result into PreFlight Report.\n\n"
-        "Deterministic: greedy decoding, so the same image and settings give the same output run to run. Errors "
-        "never break the graph: a problem comes back as {\"error\": ...} so Report can fail closed.")
+        "Deterministic: greedy decoding (thinking off, seed 42, at most 300 tokens) whatever the model, so the "
+        "same image and settings give the same output run to run. The observation's meta records the model, its "
+        "precision and the LoRA. Errors never break the graph: a problem comes back as {\"error\": ...} so "
+        "Report can fail closed.")
 
-    def observe(self, image, max_frames, keep_model_loaded):
+    def observe(self, image, lm, max_frames):
         from ..pipelines.lm import unload_backends
         from ..pipelines.preflight.observe import observe
 
         try:
-            return observe(image, max_frames, observe_generator)
+            return observe(image, max_frames, lm, observe_generator(lm))
         finally:
-            if not keep_model_loaded:
+            if not lm.keep_model_loaded:
                 unload_backends()
 
 
