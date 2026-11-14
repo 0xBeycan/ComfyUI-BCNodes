@@ -3,6 +3,11 @@
 Two images, compared on the node with a draggable divider (web/js/comparer.js).
 The images are written to ComfyUI's temp folder the way Preview Image does it
 and handed to the frontend as a_images / b_images.
+
+The first input is shown as B (it fills the node), the second as A (drawn
+from the left edge up to the pointer). The input keys keep their old names
+(image_a first) so saved workflows keep their links; only the labels follow
+the sides.
 """
 
 
@@ -12,8 +17,8 @@ class ImageComparer:
         return {
             "required": {},
             "optional": {
-                "image_a": ("IMAGE",),
-                "image_b": ("IMAGE",),
+                "image_a": ("IMAGE", {"display_name": "image_b"}),
+                "image_b": ("IMAGE", {"display_name": "image_a"}),
             },
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
         }
@@ -27,7 +32,7 @@ class ImageComparer:
     def compare(self, image_a=None, image_b=None, prompt=None, extra_pnginfo=None):
         result = {"ui": {"a_images": [], "b_images": []}}
         previewer = None
-        for key, images in (("a_images", image_a), ("b_images", image_b)):
+        for key, images in (("b_images", image_a), ("a_images", image_b)):
             if images is None or len(images) == 0:
                 continue
             if previewer is None:

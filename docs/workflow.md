@@ -2,7 +2,7 @@
 
 ## `BC_ImageComparer` — Image Comparer
 
-`image_a`, `image_b` (both optional) → shown on the node, drawn on the canvas itself so it moves with the node. A fills the node; while the pointer is over it, B is painted from the left edge up to the pointer with a divider line and A / B tags; leave the node and A shows alone. With more than one image per side a row of `A1 A2 B1 …` labels above the image picks the pair. The node keeps the size you give it; the image is letterboxed inside. The images are written to ComfyUI's temp folder like Preview Image does; the comparison lives with the run (it survives a tab switch, not a restart) and nothing is saved into the workflow file. Output node, no outputs.
+Two optional inputs → shown on the node, drawn on the canvas itself so it moves with the node. The first input, labelled `image_b`, is B and fills the node; while the pointer is over it, the second input, labelled `image_a`, is A and is painted from the left edge up to the pointer with a divider line and the A tag on the left, B on the right; leave the node and B shows alone. The input keys stay `image_a` (first) and `image_b` (second) so saved workflows keep their links; only the labels follow the sides. With more than one image per side a row of `A1 A2 B1 …` labels above the image picks the pair. The node keeps the size you give it; the image is letterboxed inside. The images are written to ComfyUI's temp folder like Preview Image does; the comparison lives with the run (it survives a tab switch, not a restart) and nothing is saved into the workflow file. Output node, no outputs.
 
 ## `BC_AnythingEverywhere` — Anything Everywhere
 

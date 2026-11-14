@@ -9,10 +9,11 @@ import { api } from "../../../scripts/api.js";
 // only on triggerDraw, and the hover divider follows pointer events on that
 // canvas (the node's onMouse* callbacks are not called there).
 //
-// Slide mode: A fills the node; while the pointer is over the node, B is
-// painted from the left edge up to the pointer, with a divider line and A/B
-// tags. Leave the node and A is shown alone. The node keeps whatever size
-// the user gives it; the media is letterboxed inside.
+// Slide mode: B (the first input) fills the node; while the pointer is over
+// the node, A (the second input) is painted from the left edge up to the
+// pointer, with a divider line and A/B tags. Leave the node and B is shown
+// alone. The node keeps whatever size the user gives it; the media is
+// letterboxed inside.
 //
 // What is shown comes from app.nodeOutputs, the frontend's record of every
 // node's last output: filled by the "executed" event, restored with the
@@ -141,7 +142,7 @@ class ComparerWidget {
 	computeSize(width) {
 		if (!LiteGraph.vueNodesMode) return [width, 20];
 		const w = this.vueCanvas?.clientWidth || this.node.size[0];
-		const src = this.source(this.a) ?? this.source(this.b);
+		const src = this.source(this.b) ?? this.source(this.a);
 		const ratio = src ? src.h / src.w : 0.75;
 		return [width, this.selectorHeight() + Math.round((w - 8) * ratio) + 4];
 	}
@@ -206,19 +207,19 @@ class ComparerWidget {
 			this.paint(ctx, srcA ?? srcB, rectA ?? rectB);
 			this.tag(ctx, rectA ? "A" : "B", bx + bw - 8, by + 8, "right");
 		} else {
-			this.paint(ctx, srcA, rectA);
+			this.paint(ctx, srcB, rectB);
 			if (this.hover != null) {
 				const x = Math.min(Math.max(this.hover, bx), bx + bw);
 				ctx.save();
 				ctx.beginPath();
 				ctx.rect(bx, by, x - bx, bh);
 				ctx.clip();
-				this.paint(ctx, srcB, rectB);
+				this.paint(ctx, srcA, rectA);
 				ctx.restore();
 				ctx.fillStyle = "rgba(255,255,255,.9)";
 				ctx.fillRect(x - 1, by, 2, bh);
-				this.tag(ctx, "B", bx + 8, by + 8, "left");
-				this.tag(ctx, "A", bx + bw - 8, by + 8, "right");
+				this.tag(ctx, "A", bx + 8, by + 8, "left");
+				this.tag(ctx, "B", bx + bw - 8, by + 8, "right");
 			}
 		}
 		ctx.restore();
@@ -328,7 +329,7 @@ function install(nodeType) {
 	};
 
 	// The divider follows the pointer only while it is over the media box;
-	// over the title or the selector row the node shows A alone.
+	// over the title or the selector row the node shows B alone.
 	// A new run: the Vue renderer does not repaint the widget by itself.
 	const onExecuted = nodeType.prototype.onExecuted;
 	nodeType.prototype.onExecuted = function (...args) {

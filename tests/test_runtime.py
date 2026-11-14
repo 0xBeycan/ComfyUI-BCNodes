@@ -453,8 +453,9 @@ async def main():
         "3": N("BC_ImageComparer", image_a=["1", 0], image_b=["2", 0]),
         "4": N("BC_ImageComparer", image_a=["1", 0]),
     }, "comparer")
-    check("ImageComparer: a_images / b_images previews", out and len(out["3"]["a_images"]) == 2 and len(out["3"]["b_images"]) == 1 and out["3"]["a_images"][0]["type"] == "temp")
-    check("ImageComparer: one side only", out and len(out["4"]["a_images"]) == 2 and out["4"]["b_images"] == [])
+    # The first input (key image_a) is the B side, the second (image_b) the A side.
+    check("ImageComparer: a_images / b_images previews", out and len(out["3"]["b_images"]) == 2 and len(out["3"]["a_images"]) == 1 and out["3"]["b_images"][0]["type"] == "temp")
+    check("ImageComparer: one side only", out and len(out["4"]["b_images"]) == 2 and out["4"]["a_images"] == [])
 
     # Mask ports end to end: Draw Mask On Image paints through a full mask, Blockify keeps a full
     # mask full, Repeat Mask Batch triples the batch.
