@@ -35,7 +35,7 @@ PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts"
 MODES = {"include identity": "include", "exclude identity": "exclude"}
 # The long side the model is given at most, as Captioner gives it (PIL's thumbnail).
 MAX_SIDE = 1024
-# A prompt is one paragraph of 150 to 200 words (about 250 to 300 tokens); the budget only stops a runaway
+# A prompt is one paragraph of at most 300 words (about 400 tokens); the budget only stops a runaway
 # answer, and core reserves the KV cache for prompt + this many tokens.
 MAX_NEW_TOKENS = 600
 # The decoding the prompter LoRA was trained and is served with: Qwen3.5's thinking-off sampling (temperature 0.7,

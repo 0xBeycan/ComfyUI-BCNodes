@@ -11,10 +11,10 @@
     more or fewer than one frame (also when a brief means the image would not be used); start called once;
   - the image the model sees: within MAX_SIDE 1024 the input itself, above it libs/image.thumbnail_frame's;
   - the prompt: the model's answer, its surrounding whitespace stripped;
-  - the prompt files: the four exist; no GENDER header, HEADER_ERROR, quality tail or 4K quality is left; each
-    ends on its final line; every example opens with the shot type and camera height and ends on a content
-    sentence; the brief prompts hold an example about a man; the exclude prompts name the class word after the
-    framing ("of one woman" / "of one man").
+  - the prompt files: the four exist; no GENDER header, HEADER_ERROR, quality tail, role line, banner or example
+    is left; each opens on its path's task; each holds the reply's form, the opening sentence's template, the
+    five steps in order and the adult rule; the exclude prompts write the main person as `a woman` / `a man`,
+    their body by its parts' names; the include prompts give each person an age and an ethnicity.
 """
 
 import os
@@ -228,11 +228,10 @@ def test_the_decoding_and_budget(flow):
 # --- the prompt files ----------------------------------------------------------------------------------------
 
 FILES = ["brief-include.txt", "brief-exclude.txt", "image-include.txt", "image-exclude.txt"]
-SHOTS = ("extreme close-up", "close-up", "chest-up shot", "half-body shot", "three-quarter shot", "full-body shot")
-
-
-def examples(text):
-    return re.findall(r"^Output: (.*)$", text, re.M)
+FIRST = {"brief": "Write one English text-to-image prompt for the picture this brief asks for.",
+         "image": "Write one English text-to-image prompt that rebuilds the scene of this image:"}
+OPENING = ("`A` or `An` [camera angle] [genre] [framing] [`selfie`, `mirror selfie`, `POV shot` or `shot`] `of` "
+           "[what the scene is of]")
 
 
 def test_the_four_prompt_files_exist_and_nothing_else(flow):
@@ -240,53 +239,35 @@ def test_the_four_prompt_files_exist_and_nothing_else(flow):
 
 
 @pytest.mark.parametrize("name", FILES)
-def test_no_header_and_no_quality_tail_is_left(flow, name):
+def test_no_header_role_line_banner_or_example_is_left(flow, name):
     text = prompt_file(flow, name)
     for gone in ("GENDER", "HEADER_ERROR", "header", "4K quality", "QUALITY TAIL", "quality tail", "photorealistic",
-                 "ultra-detailed", "style label", "composition clause"):
+                 "ultra-detailed", "style label", "composition clause", "You are", "=====", "Output:", "EXAMPLE"):
         assert gone not in text, (name, gone)
-    assert not text.startswith("\n") and text.startswith("You are a prompt-writing tool")
-
-
-@pytest.mark.parametrize("name, last", [
-    ("brief-include.txt", "Write only the single-line prompt for the user's input."),
-    ("brief-exclude.txt", "Write only the single-line prompt for the user's input."),
-    ("image-include.txt", "Write only the single-line prompt for the reference photograph."),
-    ("image-exclude.txt", "Write only the single-line prompt for the reference photograph.")])
-def test_each_file_ends_on_its_final_line(flow, name, last):
-    assert prompt_file(flow, name).strip().splitlines()[-1] == last
+    assert text.startswith(FIRST[name.split("-")[0]])
 
 
 @pytest.mark.parametrize("name", FILES)
-def test_every_example_opens_with_the_framing_and_ends_on_content(flow, name):
-    outputs = examples(prompt_file(flow, name))
-    assert len(outputs) >= 3
-    for output in outputs:
-        opening = re.match(r"An? (.+?) (at eye level|from a [a-z ]+ angle) of ", output)
-        assert opening and opening.group(1) in SHOTS, output[:80]
-        rest = output[opening.end():]
-        assert not any(shot in rest for shot in SHOTS) and " eye level" not in rest, output  # the framing once
-        assert output.endswith(".") and 150 <= len(output.split()) <= 200, (name, len(output.split()))
-
-
-@pytest.mark.parametrize("name", ["brief-include.txt", "brief-exclude.txt"])
-def test_the_brief_prompts_have_an_example_about_a_man(flow, name):
+def test_each_file_holds_the_form_the_opening_and_the_five_steps_in_order(flow, name):
     text = prompt_file(flow, name)
-    pairs = re.findall(r'^User input: "(.*)"\nOutput: (.*)$', text, re.M)
-    assert any("adam" in brief and re.search(r"\bof (one|a) man\b", output) for brief, output in pairs), name
-
-
-@pytest.mark.parametrize("name", ["image-include.txt", "image-exclude.txt"])
-def test_the_image_prompts_have_an_example_of_a_man(flow, name):
-    text = prompt_file(flow, name)
-    pairs = re.findall(r"^Reference: (.*)\nOutput: (.*)$", text, re.M)
-    assert any(re.search(r"\bman\b", reference) and re.search(r"\bof (one|a [A-Z][a-z]+) man\b", output)
-               for reference, output in pairs), name
+    assert "Reply with the prompt alone, as one flowing paragraph of plain, everyday English, at most 300 words." in text
+    assert OPENING in text
+    steps = [re.search(rf"^{n}\. ", text, re.M) for n in range(1, 6)]
+    assert all(steps) and [s.start() for s in steps] == sorted(s.start() for s in steps), name
+    assert "Take every person as 18 or over and describe them so." in text
 
 
 @pytest.mark.parametrize("name", ["brief-exclude.txt", "image-exclude.txt"])
-def test_the_exclude_prompts_name_the_class_word_after_the_framing(flow, name):
+def test_the_exclude_prompts_write_the_main_person_by_the_names_of_their_parts(flow, name):
     text = prompt_file(flow, name)
-    assert all(re.search(r" of one (woman|man) [a-z]+ing ", output) for output in examples(text))
-    assert 'The class word is "woman" or "man"' in text
-    assert "the very first token" not in text and "no article" not in text
+    assert "The main person is the person the opening sentence names first. A character LoRA draws their body" in text
+    assert "The main person is `a woman` or `a man`" in text
+    assert "part of their body by its name alone: her hair, her lips, her skin, her nails, her legs" in text
+    assert "call the main person `the woman` or `the man`" in text
+
+
+@pytest.mark.parametrize("name", ["brief-include.txt", "image-include.txt"])
+def test_the_include_prompts_give_each_person_an_age_and_an_ethnicity(flow, name):
+    text = prompt_file(flow, name)
+    assert "Each person is `a` or `an` [age]`-year-old` [ethnicity] `woman` or `man`" in text
+    assert "main person" not in text
