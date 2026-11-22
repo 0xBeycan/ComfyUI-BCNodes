@@ -4,9 +4,8 @@ recording stand-in for the "core" LM backend (no weights) and a stand-in CLIP:
   - the surface: lm (BC_LM, required, no default), text (multiline, ""), instructions (none / include identity /
     exclude identity, include identity), seed (its `fixed` control); optional image, instruction (a socket),
     clip (CLIP), config (BC_LM_CONFIG), thinking (off); the hidden prompt graph and node id; a tooltip on every
-    input; outputs
-    text (STRING) and conditioning (CONDITIONING); category, display name, after Captioner in the menu; no
-    family, model or Qwen name in its code;
+    input; outputs text (STRING), conditioning (CONDITIONING) and thinking (STRING, appended last); category,
+    display name, after Captioner in the menu; no family, model or Qwen name in its code;
   - through pipelines/lm.prepare + generate: one prepare and one generate per node call; the backend's prompt
     for each row of the table (the official Qwen3.5 rendering: no system turn, no prefill, thinking off, the
     image block first when the image is used); GenerateParams: DECODING without an LM Config, the model's
@@ -14,8 +13,9 @@ recording stand-in for the "core" LM backend (no weights) and a stand-in CLIP:
     the seed; the image the model gets capped at 1024;
   - thinking: off by default (the model's thinking mode not even looked up); on, the prompt opens the think block,
     prepare gets thinking on, 32768 tokens and {} (the model's thinking-on defaults) or the LM Config as it is,
-    and the text is the answer after the reasoning; on a model without a thinking mode, the thinking-off run
-    with a console warning; no prompt after the reasoning is an error (and an unload with keep off);
+    the text is the answer after the reasoning and thinking the reasoning ("" with thinking off); on a model
+    without a thinking mode, the thinking-off run with a console warning; no prompt after the reasoning is an
+    error (and an unload with keep off);
   - conditioning: with a clip, core's CLIPTextEncode on the prompt (tokenize, then encode_from_tokens_scheduled,
     the result as it is), after the model is unloaded (keep_model_loaded off); without one, an error asking for a
     CLIP before the model is prepared when the prompt links conditioning (and an unload with keep off), else no
@@ -181,9 +181,9 @@ def test_the_inputs_and_their_defaults(lm, fp):
 
 def test_outputs_category_and_name(lm):
     cls = lm.Prompter
-    assert (cls.RETURN_TYPES, cls.RETURN_NAMES, cls.FUNCTION) == (("STRING", "CONDITIONING"), ("text", "conditioning"),
-                                                                 "write")
-    assert len(cls.OUTPUT_TOOLTIPS) == 2 and cls.CATEGORY == "BCNodes/lm"
+    assert (cls.RETURN_TYPES, cls.RETURN_NAMES, cls.FUNCTION) == (("STRING", "CONDITIONING", "STRING"),
+                                                                 ("text", "conditioning", "thinking"), "write")
+    assert len(cls.OUTPUT_TOOLTIPS) == 3 and cls.CATEGORY == "BCNodes/lm"
     assert not getattr(cls, "OUTPUT_IS_LIST", ()) and not getattr(cls, "OUTPUT_NODE", False)
     assert not getattr(cls, "HEAVY_OUTPUTS", ())
     assert lm.NODE_CLASS_MAPPINGS["BC_Prompter"] is cls and lm.NODE_DISPLAY_NAME_MAPPINGS["BC_Prompter"] == "Prompter"
@@ -219,10 +219,11 @@ def test_one_prepare_and_one_generate(lm, pipe, backend, monkeypatch):
 def test_a_brief_goes_after_the_brief_prompt_and_the_image_is_not_used(lm, pipe, flow, backend, instructions, name,
                                                                        with_image):
     image = torch.rand(1, 32, 32, 3) if with_image else None
-    text, _ = run(lm, pipe, instructions=instructions, image=image)
+    text, _, reasoning = run(lm, pipe, instructions=instructions, image=image)
     prompt, images, _ = backend.generated[0]
     assert prompt == USER + flow.instruction_text(instructions, None, "brief") + "\n\n" + BRIEF + THINK_OFF
     assert images is None and IMAGE_BLOCK not in prompt and text == "A half-body shot of one woman."
+    assert reasoning == ""
 
 
 @pytest.mark.parametrize("instructions", ["include identity", "exclude identity"])
@@ -324,8 +325,8 @@ def test_thinking_off_by_default_never_looks_the_mode_up(lm, pipe, backend, monk
 def test_thinking_on_reasons_first_with_the_models_thinking_on_sampling(lm, pipe, flow, backend, monkeypatch):
     seen = recorded_prepare(pipe, monkeypatch)
     backend.answer = REASONED
-    text, _ = run(lm, pipe, thinking=True)
-    assert text == "A half-body shot of one woman."
+    text, _, reasoning = run(lm, pipe, thinking=True)
+    assert (text, reasoning) == ("A half-body shot of one woman.", "The brief asks for a cafe.")
     assert backend.generated[0][0] == (USER + flow.instruction_text("include identity", None, "brief") + "\n\n" + BRIEF
                                        + THINK_ON)
     assert (seen[0]["thinking"], seen[0]["max_new_tokens"], seen[0]["config"]) == (True, 32768, {})
@@ -344,9 +345,9 @@ def test_thinking_on_with_a_config_takes_its_fields_over_the_thinking_on_default
 def test_thinking_on_a_model_without_it_runs_with_it_off(lm, pipe, flow, backend, monkeypatch, tmp_path, caplog):
     (tmp_path / "models" / "Qwen-LM" / "Qwen3-VL-8B-Instruct_int8_convrot.safetensors").write_bytes(b"")
     seen = recorded_prepare(pipe, monkeypatch)
-    text, _ = lm.Prompter().write(spec(pipe, model="Qwen3-VL-8B Instruct"), BRIEF, "include identity", 5,
-                                  thinking=True)
-    assert text == "A half-body shot of one woman."
+    text, _, reasoning = lm.Prompter().write(spec(pipe, model="Qwen3-VL-8B Instruct"), BRIEF, "include identity",
+                                             5, thinking=True)
+    assert (text, reasoning) == ("A half-body shot of one woman.", "")
     assert "Prompter: Qwen3-VL-8B Instruct has no thinking mode: it writes the prompt with thinking off" in caplog.text
     assert (seen[0]["thinking"], seen[0]["max_new_tokens"], seen[0]["config"]) == (False, 600, flow.DECODING)
     assert "<think>" not in backend.generated[0][0]
@@ -366,8 +367,8 @@ def test_no_prompt_after_the_reasoning_is_an_error(lm, pipe, backend):
 
 @pytest.mark.parametrize("keep", [True, False])
 def test_a_clip_encodes_the_prompt_as_clip_text_encode_after_the_unload(lm, pipe, backend, events, keep):
-    text, conditioning = run(lm, pipe, keep=keep, clip=Clip(events))
-    assert text == "A half-body shot of one woman."
+    text, conditioning, reasoning = run(lm, pipe, keep=keep, clip=Clip(events))
+    assert (text, reasoning) == ("A half-body shot of one woman.", "")
     assert conditioning == [["cond", {"pooled_output": None}]]
     unload = [("unload",)] if not keep else []
     assert events[1:] == [("generate",)] + unload + [("tokenize", text), ("encode", {"tokens": text})]
@@ -387,13 +388,13 @@ def test_linked_conditioning_without_a_clip_is_an_error_before_the_model(lm, pip
 
 @pytest.mark.parametrize("prompt_graph", [graph(text=["7", 0]), graph(positive=["8", 1]), graph(), None])
 def test_unlinked_conditioning_without_a_clip_is_no_error_and_carries_the_blocker(lm, prompt_graph, pipe, backend):
-    text, conditioning = run(lm, pipe, prompt_graph=prompt_graph, unique_id="7")
+    text, conditioning, _ = run(lm, pipe, prompt_graph=prompt_graph, unique_id="7")
     assert text == "A half-body shot of one woman."
     assert isinstance(conditioning, Blocker) and conditioning.message == lm.NO_CLIP
 
 
 def test_linked_conditioning_with_a_clip_runs(lm, pipe, backend, events):
-    text, conditioning = run(lm, pipe, clip=Clip(events), prompt_graph=graph(positive=["7", 1]), unique_id="7")
+    text, conditioning, _ = run(lm, pipe, clip=Clip(events), prompt_graph=graph(positive=["7", 1]), unique_id="7")
     assert conditioning == [["cond", {"pooled_output": None}]] and ("tokenize", text) in events
 
 

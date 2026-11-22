@@ -294,7 +294,7 @@ A LoRA trained to write a caption or a prompt from an image alone: put it in the
 
 ## `BC_Prompter` — Prompter
 
-`lm` (`BC_LM`), `text`, `instructions`, `seed`; optional `image` (`IMAGE`), `instruction` (`STRING`, a socket), `clip` (`CLIP`), `config` (`BC_LM_CONFIG`), `thinking` (`BOOLEAN`) → `text` (`STRING`), `conditioning` (`CONDITIONING`).
+`lm` (`BC_LM`), `text`, `instructions`, `seed`; optional `image` (`IMAGE`), `instruction` (`STRING`, a socket), `clip` (`CLIP`), `config` (`BC_LM_CONFIG`), `thinking` (`BOOLEAN`) → `text` (`STRING`), `conditioning` (`CONDITIONING`), `thinking` (`STRING`).
 
 One text-to-image prompt from a short brief, a reference image, or both, written by the model of an [LM Loader](#bc_lmloader--lm-loader) connected to `lm` (required, with no default, as on the Captioner; any family the loader offers works). One prepare and one generate per run. Type `prompter` or `prompt enhancer` in the node search to find it.
 
@@ -314,6 +314,7 @@ One text-to-image prompt from a short brief, a reference image, or both, written
 | --- | --- | --- |
 | `text` | `STRING` | The prompt: the model's answer, its surrounding whitespace stripped. The positive prompt only. |
 | `conditioning` | `CONDITIONING` | `text` encoded by `clip` exactly as core's CLIP Text Encode encodes it (`clip.tokenize`, then `clip.encode_from_tokens_scheduled`). The positive conditioning only. |
+| `thinking` | `STRING` | The model's reasoning before the prompt, its surrounding whitespace stripped, with `thinking` on ([below](#thinking)); empty with `thinking` off or on a model without a thinking mode. Appended after `conditioning`, so the links of a workflow saved before it keep their slots. |
 
 **What the model gets.** No system turn, no prefill, thinking off unless `thinking` is on ([below](#thinking)); the user turn is built from what is connected:
 
@@ -332,7 +333,7 @@ Without an LM Config: `do_sample` on, `temperature` 0.7, `top_p` 0.8, `top_k` 20
 
 #### Thinking
 
-`thinking` on, with a model whose catalog entry has a thinking mode (Qwen3.5-4B / 9B and the abliterated 9B, Qwen3.8-27B), runs the model as Qwen LM does with its `thinking` on: the assistant turn opens the think block, Qwen3.8-27B gets its official reasoning-effort line (xhigh) as the system turn, and the prompt is the answer after `</think>`, its surrounding whitespace stripped; the reasoning is not output. `max_new_tokens` is 32768 (the reasoning and the prompt together, Qwen LM's default, the official length for most queries), so core reserves the KV cache for prompt + 32768 tokens ([Memory](#memory)). Sampling is the model's thinking-on defaults ([Sampling](#sampling)) without an LM Config, and with one its edited or linked fields over them; Prompter's own decoding is the thinking-off one. A run that ends with no prompt after the reasoning (the reasoning used every token) is an error: `Prompter: <model> wrote no prompt with thinking on (its reasoning may have used all 32768 tokens): queue again with another seed, or turn thinking off`.
+`thinking` on, with a model whose catalog entry has a thinking mode (Qwen3.5-4B / 9B and the abliterated 9B, Qwen3.8-27B), runs the model as Qwen LM does with its `thinking` on: the assistant turn opens the think block, Qwen3.8-27B gets its official reasoning-effort line (xhigh) as the system turn, and the prompt is the answer after `</think>`, its surrounding whitespace stripped; the reasoning before it comes out on the `thinking` output. `max_new_tokens` is 32768 (the reasoning and the prompt together, Qwen LM's default, the official length for most queries), so core reserves the KV cache for prompt + 32768 tokens ([Memory](#memory)). Sampling is the model's thinking-on defaults ([Sampling](#sampling)) without an LM Config, and with one its edited or linked fields over them; Prompter's own decoding is the thinking-off one. A run that ends with no prompt after the reasoning (the reasoning used every token) is an error: `Prompter: <model> wrote no prompt with thinking on (its reasoning may have used all 32768 tokens): queue again with another seed, or turn thinking off`.
 
 On a model without a thinking mode (Qwen3-VL-8B and its abliterated build) the prompt is written with thinking off, exactly as with `thinking` off, and the console says so: `[BCNodes] Prompter: Qwen3-VL-8B Instruct has no thinking mode: it writes the prompt with thinking off`. The model is the LM Loader's, so `thinking` can stay on while the loader's model changes.
 

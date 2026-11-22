@@ -455,18 +455,23 @@ class Prompter:
                                                     "and the prompt together (core reserves the KV cache for them "
                                                     "before the first token), and sampling takes the model's "
                                                     "thinking-on defaults, a connected LM Config's fields over them. "
-                                                    "The reasoning is not output; a run that ends with no prompt "
+                                                    "The reasoning comes out on thinking; a run that ends with no "
+                                                    "prompt "
                                                     "after it is an error."}),
             },
             "hidden": dict(LINK_INPUTS),
         }
 
-    RETURN_TYPES = ("STRING", "CONDITIONING")
-    RETURN_NAMES = ("text", "conditioning")
+    # thinking is appended last (CLAUDE.md, Compatibility locks): the saved links of text and conditioning keep
+    # their slots.
+    RETURN_TYPES = ("STRING", "CONDITIONING", "STRING")
+    RETURN_NAMES = ("text", "conditioning", "thinking")
     OUTPUT_TOOLTIPS = ("The prompt the model wrote, its surrounding whitespace stripped: the positive prompt. Take "
                        "it to your own encode node when the workflow needs another one.",
                        "The prompt encoded by the connected CLIP, as CLIP Text Encode encodes it: the positive "
-                       "conditioning only (the negative comes from elsewhere). Needs the clip input.")
+                       "conditioning only (the negative comes from elsewhere). Needs the clip input.",
+                       "The model's reasoning before the prompt, its surrounding whitespace stripped, with thinking "
+                       "on; empty with thinking off or on a model without a thinking mode.")
     FUNCTION = "write"
     CATEGORY = "BCNodes/lm"
     SEARCH_ALIASES = ["BCNodes", "prompter", "prompt", "prompt enhancer", "prompt writer", "image to prompt",
@@ -481,7 +486,7 @@ class Prompter:
                    "0.8, top_k 20, no presence penalty, or a connected LM Config's (the model's own defaults with "
                    "the fields edited there). thinking on, with a model that has a thinking mode, lets the model "
                    "reason first: at most 32768 tokens with the reasoning, the model's thinking-on sampling, the "
-                   "reasoning not output. With a CLIP connected, conditioning is the prompt "
+                   "reasoning on the thinking output. With a CLIP connected, conditioning is the prompt "
                    "encoded as CLIP Text Encode encodes it, the positive only, after the model is unloaded when the "
                    "LM Loader does not keep it.")
 
@@ -491,14 +496,17 @@ class Prompter:
         generate: no system turn, no prefill, thinking off, MAX_NEW_TOKENS, `seed`, and DECODING, or `config` (an
         LM Config's value) as it is when one is connected. With `thinking` on and a model that has a thinking mode
         (has_thinking): thinking on, THINKING_MAX_NEW_TOKENS, and `config`, or {} (the model's thinking-on
-        defaults); an answer empty after the reasoning is an error. `thinking` on a model without a thinking mode
-        runs with it off, with a console warning. With the spec's keep_model_loaded off the model is
-        unloaded afterwards, after an error too, before `clip` encodes the prompt (core's CLIPTextEncode:
-        tokenize, then encode_from_tokens_scheduled). Without a clip: an error before the model runs when the
-        prompt (`prompt_graph`, this node `unique_id`) links conditioning, else conditioning is an
-        ExecutionBlocker with that error, which only a node linked to it after a cached run meets."""
+        defaults); an answer empty after the reasoning is an error; the reasoning is the thinking output ("" with
+        thinking off). `thinking` on a model without a thinking mode runs with it off, with a console warning.
+        With the spec's keep_model_loaded off the model is unloaded afterwards, after an error too, before `clip`
+        encodes the prompt (core's CLIPTextEncode: tokenize, then encode_from_tokens_scheduled). Without a clip: an
+        error before the model runs when the prompt (`prompt_graph`, this node `unique_id`) links conditioning,
+        else conditioning is an ExecutionBlocker with that error, which only a node linked to it after a cached run
+        meets."""
         from ..pipelines.lm import generate, has_thinking, prepare, unload_backends
         from ..pipelines.prompter import write as flow
+
+        reasoning = []  # the one generate's thinking text
 
         def start():
             model_folders, text_encoder_folders = family_folders(lm.family)
@@ -516,7 +524,9 @@ class Prompter:
                                text_encoder_folders=text_encoder_folders)
 
             def answer(frame, user):
-                text = generate(prepared, "", user, "", frame).text
+                result = generate(prepared, "", user, "", frame)
+                text = result.text
+                reasoning.append(result.thinking)
                 if think and not text.strip():
                     raise ValueError(f"Prompter: {lm.model} wrote no prompt with thinking on (its reasoning may have "
                                      f"used all {flow.THINKING_MAX_NEW_TOKENS} tokens): queue again with another "
@@ -536,8 +546,8 @@ class Prompter:
         if clip is None:
             from comfy_execution.graph import ExecutionBlocker
 
-            return (prompt, ExecutionBlocker(NO_CLIP))
-        return (prompt, clip.encode_from_tokens_scheduled(clip.tokenize(prompt)))
+            return (prompt, ExecutionBlocker(NO_CLIP), reasoning[0])
+        return (prompt, clip.encode_from_tokens_scheduled(clip.tokenize(prompt)), reasoning[0])
 
 
 def catalog_payload():

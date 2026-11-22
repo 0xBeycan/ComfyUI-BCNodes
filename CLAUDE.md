@@ -39,9 +39,9 @@ nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, prec
                               a start callable handed to pipelines/prompter; text, and conditioning from an optional
                               CLIP as core's CLIPTextEncode, a linked conditioning without a CLIP an error read from
                               the hidden prompt graph, else an ExecutionBlocker; an optional thinking, run with it off
-                              and a warning on a model without one); model_inputs and MODEL_DEFAULTS, the
-                              model / precision / lora / lora_strength widgets and initial values Qwen LM and LM
-                              Loader share; the catalog route
+                              and a warning on a model without one, its reasoning on the thinking output);
+                              model_inputs and MODEL_DEFAULTS, the model / precision / lora / lora_strength widgets
+                              and initial values Qwen LM and LM Loader share; the catalog route
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
@@ -379,8 +379,9 @@ python -m pytest tests -q                             # layer rule, unit tests
 ## Compatibility locks
 
 Saved workflows must load and run unchanged. Never change: node keys, display names, categories,
-`INPUT_TYPES` names, types, order, defaults and ranges, `RETURN_TYPES`/`RETURN_NAMES`,
-`OUTPUT_NODE`, `web/js` paths, the `/bcnodes/downloader/*` routes and the `bcnodes.downloader`
+`INPUT_TYPES` names, types, order, defaults and ranges, the existing outputs' `RETURN_TYPES`/`RETURN_NAMES`
+(their names, types and order; a new output is appended after the last one, which keeps every saved link's
+slot), `OUTPUT_NODE`, `web/js` paths, the `/bcnodes/downloader/*` routes and the `bcnodes.downloader`
 event name, the location of `nodes/social_specs.json` and of `luts/`. Also locked: the stamp key
 `bc_linked_heavy` (part of every heavy node's cache key) and the `bc_link_stamp` marker on the
 stamping handler, which ComfyUI-BCVideoNodes' handler reads to leave ours out of "another pack" and
