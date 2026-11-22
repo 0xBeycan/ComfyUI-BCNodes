@@ -157,8 +157,9 @@ function rows(node) {
 	return node.widgets.filter((w) => w.type === ROW_TYPE);
 }
 
+// Grows the node only when its rows no longer fit; a height the user gave it is kept.
 function relayout(node) {
-	node.setSize([node.size[0], node.computeSize()[1]]);
+	node.setSize([node.size[0], Math.max(node.size[1], node.computeSize()[1])]);
 	node.setDirtyCanvas(true, true);
 }
 
