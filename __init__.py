@@ -66,7 +66,8 @@ Nodes:
 
 Frontend-only pieces in web/js: BC_AutoBypass, Join Image Lists' growing
 slots, the downloader's node UI and first-open prompt, the Align buttons
-in the selection toolbox, and Claude's growing image slots and API key setting.
+in the selection toolbox, Claude's growing image slots and API key setting, and
+the Claude sidebar tab (Claude Chat).
 
 Not a node: the Process Monitor (nodes/process_monitor.py, web/js/process_monitor.js),
 on by default; its ComfyUI setting turns it off.
@@ -94,6 +95,8 @@ for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downl
 register_link_stamp(NODE_CLASS_MAPPINGS)
 # GET /bcnodes/lm/catalog, the LM catalog web/js/lm.js reads (inside a running server only)
 lm.register_routes()
+# /bcnodes/claude/chats*, Claude Chat's sessions and turns (web/js/claude_chat.js; inside a running server only)
+claude.register_routes()
 # GET /bcnodes/preflight/records, the Outcome record list web/js/preflight.js reads (inside a running server only)
 preflight.register_routes()
 

@@ -93,7 +93,7 @@ pip install -r ComfyUI-BCNodes/requirements.txt
 
 Restart ComfyUI. `requirements.txt` holds `opencv-python` (the morphology of MaskGrow and the hole filling of Mask Fill Holes), `anthropic` (Anthropic's official SDK, for the Claude node) and the two packages that back the PostFx and Caption Audit nodes, [`postfx`](https://github.com/0xBeycan/postfx) and [`caption-audit`](https://github.com/0xBeycan/caption-audit); everything else ships with ComfyUI. Without `postfx` and `caption-audit` the pack still loads and only those nodes are absent. Patch Sage Attention needs SageAttention 2.2.x, which is not in `requirements.txt` (see [Model](docs/model.md#install)); without it the node leaves the model on ComfyUI's attention. If this repository is still present under its old name `ComfyUI-AutoBypass`, delete that folder — its `AutoBypass` node is this pack's `BC_AutoBypass`.
 
-The Align buttons are not a node; they appear in the toolbox above a multi-selection.
+The Align buttons are not a node; they appear in the toolbox above a multi-selection. Claude Chat is not a node either: the Claude tab in the left sidebar chats with Claude through your Anthropic API key ([LM](docs/lm.md#claude-chat)).
 
 ## Documentation
 
@@ -103,7 +103,7 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [PostFx](docs/postfx.md) — film-emulation looks: themes, custom looks, LUTs, signature sheets
 - [Analysis](docs/analysis.md) — the caption set audit and the image quality gate
 - [Text](docs/text.md) — prompt lists and showing text
-- [LM](docs/lm.md) — chat models through ComfyUI core: Qwen LM, LM Config, LM Loader, the models and their files, sampling, LoRAs, `models.yaml`; Claude through Anthropic's API with your own key: the request, images, refusals, Claude Config
+- [LM](docs/lm.md) — chat models through ComfyUI core: Qwen LM, LM Config, LM Loader, the models and their files, sampling, LoRAs, `models.yaml`; Claude through Anthropic's API with your own key: the request, images, refusals, Claude Config, Claude Chat (the sidebar tab)
 - [PreFlight](docs/preflight.md) — how Instagram, TikTok and X would likely treat an image or video before it is published: the observation sensor, the rules engine, reading a verdict, the feedback loop and calibration
 - [Loaders](docs/loaders.md) — LoRA loading (with the key fix for LoRAs core loads only in part) and the model downloader
 - [Model](docs/model.md) — SageAttention for one model in one workflow: the modes, `qk_quant`, long sequences, the calls that run the original attention, `nan_guard`, the console, install, an A/B test

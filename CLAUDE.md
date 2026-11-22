@@ -56,10 +56,12 @@ pipelines/lm.py               the LM flow: one LM node run (family, catalog, mod
                               unload_backends (a node running the model several times unloads once after them:
                               PreFlight Observe); the catalog, LoRA list and catalog route data the LM
                               nodes show
-pipelines/claude.py           the Claude node's one Messages API request (Anthropic's SDK, the key from the token
-                              store): images downscaled to the API's own size (the official sizing code), the
-                              request (no tools, no sampling fields, adaptive thinking, the server-side fallback),
-                              streamed with ComfyUI's interrupt checked, the answer or an error that says what to do
+pipelines/claude/             messages (the Claude node's one Messages API request through Anthropic's SDK, the key
+                              from the token store: images downscaled to the API's own size with the official sizing
+                              code, no tools, no sampling fields, adaptive thinking, the server-side fallback,
+                              streamed with ComfyUI's interrupt checked; the models, client and error messages every
+                              request shares), chat (Claude Chat's sessions in user/BCNodes/claude_chat/, append-only
+                              history with the assistant blocks kept as returned, prompt caching, one turn's events)
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/preflight/          prompts (the observation prompt and schema), observe (frames sampled, generate -> parse
                               -> one retry -> validate -> meta, fail closed; greedy decoding, the model from the
@@ -126,6 +128,8 @@ web/js/grow_inputs.js         growing input slots (<prefix>1, <prefix>2, ...: on
                               Join Image Lists, Claude
 web/js/claude.js              Claude's image slots and its API key setting (a field of its own, posted to the
                               downloader's token route; never in the settings file, never shown back)
+web/js/claude_chat.js         Claude Chat, the Claude sidebar tab: sessions, settings, streamed turns (NDJSON from
+                              /bcnodes/claude/chats/{id}/send, routes in nodes/claude.py), the frontend's Markdown
 ```
 
 ## Process Monitor

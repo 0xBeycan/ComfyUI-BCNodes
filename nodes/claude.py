@@ -4,12 +4,16 @@ service in between).
     BC_Claude        (Claude)         prompt, model, max_tokens, effort, seed, system_prompt; image_1, image_2, ...;
                                       config -> text, thinking
     BC_ClaudeConfig  (Claude Config)  the request's other settings -> BC_CLAUDE_CONFIG (a
-                                      pipelines/claude.ClaudeConfigValues)
+                                      pipelines/claude/messages.ClaudeConfigValues)
 
-The flow is pipelines/claude.py. The API key is entered in ComfyUI's settings (web/js/claude.js), kept server side
-by libs/download's token store and never written into a workflow. web/js/claude.js also grows the image inputs:
-one empty image_N after the last connected one; they arrive here through **images (the optional mapping answers
-for any name, nodes/common.FlexibleOptionalInputType).
+The flow is pipelines/claude/messages.py. The API key is entered in ComfyUI's settings (web/js/claude.js), kept
+server side by libs/download's token store and never written into a workflow. web/js/claude.js also grows the image
+inputs: one empty image_N after the last connected one; they arrive here through **images (the optional mapping
+answers for any name, nodes/common.FlexibleOptionalInputType).
+
+Also here, not a node: the routes of Claude Chat, the Claude sidebar tab (web/js/claude_chat.js), registered by
+register_routes() (called from the root __init__) only inside a running ComfyUI server; their flow is
+pipelines/claude/chat.py. server and aiohttp are imported inside the function.
 """
 
 import re
@@ -22,7 +26,7 @@ _SLOT = re.compile(r"^image_(\d+)$")
 class Claude:
     @classmethod
     def INPUT_TYPES(cls):
-        from ..pipelines.claude import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, EFFORTS, MAX_TOKENS, MODELS
+        from ..pipelines.claude.messages import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, EFFORTS, MAX_TOKENS, MODELS
 
         return {
             "required": {
@@ -82,7 +86,7 @@ class Claude:
         """`seed` only decides whether ComfyUI runs the node again. Every frame of image_1, image_2, ... in slot order
         is one image, converted to 8-bit as the pipeline reads it."""
         from ..libs.image import tensor_to_pil_u8
-        from ..pipelines.claude import ClaudeConfigValues, ClaudeRequest, run
+        from ..pipelines.claude.messages import ClaudeConfigValues, ClaudeRequest, run
 
         tensors = [images[name] for name in sorted(images, key=lambda name: slot_index(_SLOT, name))]
         result = run(ClaudeRequest(model=model, max_tokens=max_tokens, effort=effort, prompt=prompt,
@@ -95,7 +99,7 @@ class Claude:
 class ClaudeConfig:
     @classmethod
     def INPUT_TYPES(cls):
-        from ..pipelines.claude import IMAGE_FORMATS, ON_REFUSAL, SPEEDS, ClaudeConfigValues
+        from ..pipelines.claude.messages import IMAGE_FORMATS, ON_REFUSAL, SPEEDS, ClaudeConfigValues
 
         defaults = ClaudeConfigValues()
         return {
@@ -141,12 +145,102 @@ class ClaudeConfig:
                    "refusal does, fast mode, the image upload format, the timeout and the retries.")
 
     def build(self, model_id, stop_sequences, on_refusal, speed, image_format, timeout, max_retries):
-        from ..pipelines.claude import ClaudeConfigValues
+        from ..pipelines.claude.messages import ClaudeConfigValues
 
         return (ClaudeConfigValues(model_id=model_id.strip(),
                                    stop_sequences=tuple(line for line in stop_sequences.splitlines() if line.strip()),
                                    on_refusal=on_refusal, speed=speed, image_format=image_format, timeout=timeout,
                                    max_retries=max_retries),)
+
+
+def register_routes():
+    """Claude Chat's routes, JSON in and out (an error is {"error"} with status 400):
+
+        GET  /bcnodes/claude/chats              the session list and the settings' choices (chat.options)
+        POST /bcnodes/claude/chats              a new session ({settings} -> the session)
+        GET  /bcnodes/claude/chats/{id}         one session
+        POST /bcnodes/claude/chats/{id}         change its settings ({settings} -> the session)
+        POST /bcnodes/claude/chats/{id}/delete  delete it
+        POST /bcnodes/claude/chats/{id}/send    one turn ({"text", "images"}): the turn's events as NDJSON, one per
+                                                line, as they come (pipelines/claude/chat.send)
+
+    A turn's request runs on a worker thread; when the browser goes away (Stop, a closed tab) the next write fails
+    and the turn is cancelled at its next event. Only inside a running ComfyUI server; returns at once without one."""
+    try:
+        from server import PromptServer
+    except ImportError:  # not under a ComfyUI server (tests, the import gate)
+        return
+    server = getattr(PromptServer, "instance", None)
+    if server is None:
+        return
+    import asyncio
+    import json
+    import threading
+
+    from aiohttp import web
+
+    routes = server.routes
+
+    async def answer(work, *args):
+        from ..pipelines.claude import chat
+
+        try:
+            return web.json_response(await asyncio.get_running_loop().run_in_executor(None, work, chat, *args))
+        except ValueError as error:
+            return web.json_response({"error": str(error)}, status=400)
+
+    @routes.get("/bcnodes/claude/chats")
+    async def _list(request):
+        return await answer(lambda chat: {"sessions": chat.list_sessions(), **chat.options()})
+
+    @routes.post("/bcnodes/claude/chats")
+    async def _create(request):
+        return await answer(lambda chat, changes: chat.create(changes), await request.json())
+
+    @routes.get("/bcnodes/claude/chats/{id}")
+    async def _get(request):
+        return await answer(lambda chat, sid: chat.load(sid), request.match_info["id"])
+
+    @routes.post("/bcnodes/claude/chats/{id}")
+    async def _update(request):
+        return await answer(lambda chat, sid, changes: chat.update(sid, changes), request.match_info["id"],
+                            await request.json())
+
+    @routes.post("/bcnodes/claude/chats/{id}/delete")
+    async def _delete(request):
+        return await answer(lambda chat, sid: chat.delete(sid) or {}, request.match_info["id"])
+
+    @routes.post("/bcnodes/claude/chats/{id}/send")
+    async def _send(request):
+        from ..pipelines.claude import chat
+
+        body = await request.json()
+        response = web.StreamResponse(headers={"Content-Type": "application/x-ndjson"})
+        await response.prepare(request)
+        loop = asyncio.get_running_loop()
+        events = asyncio.Queue()
+        cancelled = threading.Event()
+
+        def work():
+            try:
+                for event in chat.send(request.match_info["id"], body.get("text", ""), body.get("images", []),
+                                       cancelled.is_set):
+                    loop.call_soon_threadsafe(events.put_nowait, event)
+            except Exception as error:  # an error before the request (no key, an empty message): shown, not raised
+                loop.call_soon_threadsafe(events.put_nowait, {"type": "error", "error": str(error)})
+            finally:
+                loop.call_soon_threadsafe(events.put_nowait, None)
+
+        worker = loop.run_in_executor(None, work)
+        try:
+            while (event := await events.get()) is not None:
+                await response.write((json.dumps(event) + "\n").encode())
+        except (ConnectionResetError, asyncio.CancelledError):
+            cancelled.set()
+            raise
+        await worker
+        await response.write_eof()
+        return response
 
 
 NODE_CLASS_MAPPINGS = {

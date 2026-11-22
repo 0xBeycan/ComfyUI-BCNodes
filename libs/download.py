@@ -3,7 +3,7 @@
 Tokens are entered in the UI and kept server side
 (user/BCNodes/downloader_tokens.json), never in the workflow: the
 downloader's Hugging Face and Civitai tokens, and the Claude node's
-Anthropic API key (pipelines/claude.py), which no download ever sends.
+Anthropic API key (pipelines/claude/messages.py), which no download ever sends.
 """
 
 import json

@@ -166,7 +166,7 @@ def make_client(config):
     timeout and retries. The tests replace this function."""
     import anthropic
 
-    from ..libs.download import read_tokens
+    from ...libs.download import read_tokens
 
     key = read_tokens().get(TOKEN_SERVICE)
     if not key:

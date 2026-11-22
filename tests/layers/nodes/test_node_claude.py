@@ -1,10 +1,10 @@
-"""Claude and Claude Config (nodes/claude.py) through the node classes, the flow (pipelines/claude.run) replaced by a
+"""Claude and Claude Config (nodes/claude.py) through the node classes, the flow (pipelines/claude/messages.run) replaced by a
 recorder:
 
   - the surface: Claude's widgets in order with their defaults, ranges, multiline text and the seed's `fixed`
     control, a tooltip on every input, config and image_1 declared, any other input name answered as IMAGE (the
     slots web/js/claude.js adds), outputs, category, display names; Claude Config's widgets and defaults (those of
-    pipelines/claude.ClaudeConfigValues);
+    pipelines/claude/messages.ClaudeConfigValues);
   - Claude hands the widgets to the flow unchanged, every frame of image_1, image_2, ..., image_10 in slot order
     (not name order) as an 8-bit image, a half-precision frame read as its float32 source, and Claude Config's
     defaults when no config is connected;
@@ -27,7 +27,7 @@ def node(bcnodes):
 
 @pytest.fixture
 def pipe(bcnodes):
-    return bcnodes["pipelines.claude"]
+    return bcnodes["pipelines.claude.messages"]
 
 
 def test_claude_surface(node, pipe):
@@ -69,7 +69,7 @@ def test_config_surface(node, pipe):
 
 @pytest.fixture
 def recorded(pipe, monkeypatch):
-    """pipelines/claude.run replaced: the request it got, its images read into a list."""
+    """pipelines/claude/messages.run replaced: the request it got, its images read into a list."""
     seen = {}
 
     def run(request):

@@ -1,4 +1,4 @@
-"""The Claude flow (pipelines/claude.py) with a stand-in SDK client, no network:
+"""The Claude node's flow (pipelines/claude/messages.py) with a stand-in SDK client, no network:
 
   - resized_size: the official reference implementation's sizes (the Vision pages' examples on both tiers, one
     tie where the page's table and its code differ, a tall image as the wide one transposed, an image that fits
@@ -29,7 +29,7 @@ import httpx2  # noqa: E402  (the SDK's HTTP library, installed with it)
 
 @pytest.fixture
 def claude(bcnodes):
-    return bcnodes["pipelines.claude"]
+    return bcnodes["pipelines.claude.messages"]
 
 
 class InterruptProcessingException(BaseException):

@@ -768,6 +768,7 @@ async def main():
     lm_core()
     await lm_nodes()
     await claude_nodes()
+    await claude_chat_routes()
     await preflight_nodes()
     await unused_outputs()
     await process_monitor_hook()
@@ -1520,7 +1521,7 @@ async def claude_nodes():
           body.get("tokens", {}).get("anthropic") is True and "sk-ant-runtime" not in json.dumps(body), f"{body}")
 
     pkg = nodes.NODE_CLASS_MAPPINGS["BC_Claude"].__module__.rsplit(".", 2)[0]
-    claude = importlib.import_module(f"{pkg}.pipelines.claude")
+    claude = importlib.import_module(f"{pkg}.pipelines.claude.messages")
     calls = []
     final = types.SimpleNamespace(
         content=[types.SimpleNamespace(type="thinking", thinking="Two colours.", signature="s"),
@@ -1578,6 +1579,91 @@ async def claude_nodes():
               executed == [] and len(calls) == 1, f"{executed} {len(calls)}")
     finally:
         claude.make_client = real
+
+
+async def claude_chat_routes():
+    """Claude Chat's routes from the real PromptServer's route table, served by aiohttp's test server, the SDK client
+    replaced by a stand-in (no network): create, list (with the settings' choices), send (the NDJSON events as they
+    come: thinking, text, done; the turn saved with the thinking signature), get, update, a bad setting (400), a
+    second turn sending the history first, delete."""
+    import importlib
+
+    import anthropic.types.beta as bt
+    import server as comfy_server
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    pkg = nodes.NODE_CLASS_MAPPINGS["BC_Claude"].__module__.rsplit(".", 2)[0]
+    messages = importlib.import_module(f"{pkg}.pipelines.claude.messages")
+    calls = []
+
+    class StandIn:
+        def __init__(self):
+            self.beta = types.SimpleNamespace(messages=types.SimpleNamespace(stream=self.stream))
+
+        def stream(self, **params):
+            calls.append(params)
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def __iter__(self):
+            yield types.SimpleNamespace(type="content_block_delta",
+                                        delta=types.SimpleNamespace(type="thinking_delta", thinking="Hmm."))
+            yield types.SimpleNamespace(type="content_block_delta", delta=types.SimpleNamespace(type="text_delta", text="Hi."))
+
+        def get_final_message(self):
+            return types.SimpleNamespace(
+                content=[bt.BetaThinkingBlock(type="thinking", thinking="Hmm.", signature="sig"),
+                         bt.BetaTextBlock(type="text", text="Hi.")],
+                model="claude-opus-5-5", stop_reason="end_turn", stop_details=None,
+                usage=types.SimpleNamespace(input_tokens=10, output_tokens=5, cache_read_input_tokens=0,
+                                            cache_creation_input_tokens=10))
+
+    app = web.Application()
+    app.router.add_routes([r for r in comfy_server.PromptServer.instance.routes if r.path.startswith("/bcnodes/claude/")])
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    real = messages.make_client
+    messages.make_client = lambda config: StandIn()
+    try:
+        created = await (await client.post("/bcnodes/claude/chats", json={"system": "Be brief."})).json()
+        sid = created.get("id", "")
+        listed = await (await client.get("/bcnodes/claude/chats")).json()
+        check("Claude Chat: a session is created and listed with the settings' choices",
+              created.get("system") == "Be brief." and [s["id"] for s in listed.get("sessions", [])][:1] == [sid]
+              and listed.get("models", [None])[0] == "Opus 5.5" and listed.get("max_tokens") == 128000, f"{listed}")
+        res = await client.post(f"/bcnodes/claude/chats/{sid}/send", json={"text": "Hello", "images": []})
+        lines = [json.loads(line) for line in (await res.text()).splitlines() if line.strip()]
+        check("Claude Chat: a turn streams its events as NDJSON (thinking, text, done)",
+              res.headers.get("Content-Type", "").startswith("application/x-ndjson")
+              and [e["type"] for e in lines] == ["thinking", "text", "done"] and lines[1]["text"] == "Hi.", f"{lines}")
+        saved = await (await client.get(f"/bcnodes/claude/chats/{sid}")).json()
+        check("Claude Chat: the turn is saved, the assistant's thinking signature kept, the title from the message",
+              saved.get("title") == "Hello" and saved["messages"][1]["content"][0] == {
+                  "type": "thinking", "thinking": "Hmm.", "signature": "sig"}, f"{str(saved)[:300]}")
+        changed = await (await client.post(f"/bcnodes/claude/chats/{sid}", json={"effort": "low"})).json()
+        bad = await client.post(f"/bcnodes/claude/chats/{sid}", json={"effort": "huge"})
+        check("Claude Chat: a setting changes; an unknown value is a 400 that names the choices",
+              changed.get("effort") == "low" and bad.status == 400 and "no effort" in (await bad.json())["error"],
+              f"{changed.get('effort')} {bad.status}")
+        await client.post(f"/bcnodes/claude/chats/{sid}/send", json={"text": "Again", "images": []})
+        check("Claude Chat: the second turn sends the saved history first, then the new message",
+              len(calls) == 2 and calls[1]["messages"][:2] == saved["messages"]
+              and calls[1]["messages"][2]["content"] == [{"type": "text", "text": "Again"}]
+              and calls[1]["output_config"] == {"effort": "low"} and calls[1]["cache_control"] == {"type": "ephemeral"},
+              f"{str(calls[1:])[:300]}")
+        gone = await client.post(f"/bcnodes/claude/chats/{sid}/delete", json={})
+        missing = await client.get(f"/bcnodes/claude/chats/{sid}")
+        check("Claude Chat: a deleted session is gone (400)", gone.status == 200 and missing.status == 400,
+              f"{gone.status} {missing.status}")
+    finally:
+        messages.make_client = real
+        await client.close()
 
 
 async def preflight_nodes():
