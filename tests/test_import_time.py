@@ -38,13 +38,13 @@ BUDGET_S = 0.1
 LAYERS = ("nodes", "pipelines", "models", "libs")
 # Node modules the walk must find (the registered nodes live in them).
 NODE_MODULES = ["logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
-                "lm", "image_comparer", "power_lora_loader", "lora_key_fix", "sage_attention", "everywhere", "seedvr2",
+                "lm", "claude", "image_comparer", "power_lora_loader", "lora_key_fix", "sage_attention", "everywhere", "seedvr2",
                 "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption", "skin_texture",
                 "frequency_merge", "preflight"]
 HEAVY = [
     "transformers", "timm", "scipy", "cv2", "PIL", "huggingface_hub",
     "safetensors", "kornia", "einops", "torchvision", "folder_paths",
-    "yaml", "postfx", "caption_audit",
+    "yaml", "postfx", "caption_audit", "anthropic",
 ]
 # The pack modules outside nodes/ a node module may load at import, with the reason. The Process
 # Monitor registers its routes and the full-clear hook at import and starts there when it is on.
@@ -150,7 +150,7 @@ def main():
         "BC_RepeatMaskBatch", "BC_ImageScaleByAspectRatio", "BC_ImageResize",
         "BC_JoinImageLists", "BC_BiRefNetRemoveBackground", "BC_DepthAnythingV2", "BC_AutoModelDownloader",
         "BC_MathExpression", "BC_PromptList", "BC_AspectPromptList", "BC_AnySwitch", "BC_SelectSwitch", "BC_Seed", "BC_ShowText",
-        "BC_QwenLM", "BC_LMConfig", "BC_LMLoader",
+        "BC_QwenLM", "BC_LMConfig", "BC_LMLoader", "BC_Claude", "BC_ClaudeConfig",
         "BC_ImageComparer", "BC_PowerLoraLoader", "BC_LoraLoaderKeyFix", "BC_PatchSageAttention", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
         "BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode", "BC_SeedVR2PostProcess",
         "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact", "BC_SeedVR2FramingDownscale", "BC_SeedVR2ChunkSize",

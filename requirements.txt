@@ -1,5 +1,7 @@
 # postfx and caption-audit back the PostFx and Caption Audit nodes; opencv-python the mask
-# morphology and hole filling (MaskGrow, Mask Fill Holes). Everything else ships with ComfyUI.
+# morphology and hole filling (MaskGrow, Mask Fill Holes); anthropic (Anthropic's official SDK)
+# the Claude node. Everything else ships with ComfyUI.
 postfx>=1.1.0
 caption-audit>=1.3
 opencv-python
+anthropic>=2.12

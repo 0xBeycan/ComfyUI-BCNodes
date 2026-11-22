@@ -32,7 +32,7 @@ One line per model: a URL, a directory under `ComfyUI/models` and two switches, 
 | `model_N` | `https://huggingface.co/owner/repo/resolve/main/model.safetensors` | Direct download URL, from `huggingface.co` or `civitai.com` (or their subdomains) only — a shared workflow carries its URLs, so any other host is refused. Hugging Face `blob/` links are rewritten to `resolve/`. |
 | `dir_N` | `diffusion_models` or `sam3/nested` | Directory under `models/`; created if missing. Write `dir/name.safetensors` to save the file under another name. |
 | `hf_N`, `civitai_N` | `HF token needed?`, `Civitai token needed?` | Mark files that need a token: gated Hugging Face repos, Civitai downloads. |
-| `HF token`, `Civitai token` | — | Paste, press enter. Saved on the server (`user/BCNodes/downloader_tokens.json`, mode 600), never into the workflow, never shown again — the box reads `(saved)`. An empty value clears it. |
+| `HF token`, `Civitai token` | — | Paste, press enter. Saved on the server (`user/BCNodes/downloader_tokens.json`, mode 600), never into the workflow, never shown again — the box reads `(saved)`. An empty value clears it. The same file holds the [Claude](lm.md#api-key) node's Anthropic key, which no download gets. |
 
 The file name comes from the URL; when the URL has none (Civitai-style links) write it after the directory.
 

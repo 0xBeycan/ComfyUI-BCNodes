@@ -17,6 +17,7 @@ ComfyUI-BCNodes/
     show_text.py           BC_ShowText
     lm.py                  BC_QwenLM, BC_LMConfig, BC_LMLoader + GET /bcnodes/lm/catalog;
                            the Qwen-LM folder_paths key
+    claude.py              BC_Claude, BC_ClaudeConfig
     image_comparer.py      BC_ImageComparer
     power_lora_loader.py   BC_PowerLoraLoader
     lora_key_fix.py        BC_LoraLoaderKeyFix
@@ -56,6 +57,8 @@ ComfyUI-BCNodes/
                            LoRA, sampling; LMSpec (the BC_LM value), prepare (once per wrapper call) and generate
                            (once per model call), lm_spec (LM Loader's checks); unload_backends; the catalog
                            route's data and the LoRA list
+    claude.py              the Claude run (ClaudeRequest -> ClaudeResult): images sized as the API sizes them and
+                           encoded, the Messages API request, the stream with the interrupt checked, the answer
     caption_audit/
       audit.py             audit plumbing: package guard, allowed roots, run_audit, reports
       card.py              the fixed-size card
@@ -137,7 +140,7 @@ ComfyUI-BCNodes/
     texture.py             the skin-texture engine
     image_metrics.py       blur / sharpness / noise / clipping / entropy
     math_expression.py     the whitelisted expression evaluator
-    download.py            HTTP download with resume, allowed hosts, token store
+    download.py            HTTP download with resume, allowed hosts, token store (+ the Claude node's API key)
     files.py               the next image counter from the files in a folder; walk_once, a folder walk that follows
                            links and walks each real folder once
     image_write.py         Save Image formats, metadata, writer
@@ -154,7 +157,9 @@ ComfyUI-BCNodes/
   luts/                    drop .cube LUTs here for PostFx LUT (gitignored)
   web/js/
     auto_bypass.js         the BC_AutoBypass virtual node
-    join_image_lists.js    unlimited slots for Join Image Lists
+    join_image_lists.js    unlimited slots for Join Image Lists (grow_inputs.js)
+    grow_inputs.js         growing input slots, shared by Join Image Lists and Claude
+    claude.js              Claude's image slots and its API key setting
     any_switch.js          unlimited slots + type following for Any Switch
     select_switch.js       named option slots, rows and the selected combo for Select Switch
     wildcard_type.js       socket type following, shared by the two switches

@@ -30,7 +30,7 @@ nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, co
                               lm_folders (an LM family's model and text_encoders folders, its folder_paths key
                               registered; Qwen LM and PreFlight Observe), the unused-heavy-outputs helper (LinkStamp,
                               register_link_stamp, stamps_last, heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (29); social_specs.json is the user-editable platform table
+nodes/<domain>.py             one per domain (30); social_specs.json is the user-editable platform table
 nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, precision, LoRA, keep -> a BC_LM value, an
                               LMSpec; loads nothing);
                               model_inputs and MODEL_DEFAULTS, the model / precision / lora / lora_strength widgets
@@ -56,6 +56,10 @@ pipelines/lm.py               the LM flow: one LM node run (family, catalog, mod
                               unload_backends (a node running the model several times unloads once after them:
                               PreFlight Observe); the catalog, LoRA list and catalog route data the LM
                               nodes show
+pipelines/claude.py           the Claude node's one Messages API request (Anthropic's SDK, the key from the token
+                              store): images downscaled to the API's own size (the official sizing code), the
+                              request (no tools, no sampling fields, adaptive thinking, the server-side fallback),
+                              streamed with ComfyUI's interrupt checked, the answer or an error that says what to do
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/preflight/          prompts (the observation prompt and schema), observe (frames sampled, generate -> parse
                               -> one retry -> validate -> meta, fail closed; greedy decoding, the model from the
@@ -99,7 +103,8 @@ libs/color.py texture.py image_metrics.py
 libs/geometry.py              integer size arithmetic; short_side_size (a ControlNet preprocessor's output size)
 libs/resize.py                Image Resize: size plan, crop / resample / pad per frame
 libs/math_expression.py       whitelisted AST evaluator with injected resolvers
-libs/download.py              HTTP download with resume, host list, token store
+libs/download.py              HTTP download with resume, host list, token store (the downloader's tokens and the
+                              Claude node's Anthropic key, which no download gets)
 libs/files.py image_write.py  output counters, walk_once (os.walk with links followed, each folder once); image
                               formats, metadata, write_image
 libs/memory_sources.py        RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers; what the RAM is made
@@ -117,6 +122,10 @@ libs/sage_attention.py        Patch Sage Attention: SageAttention kernels as cor
                               model clone with ON_PRE_RUN / ON_CLEANUP callbacks
 web/js/preflight.js           PreFlight Outcome's record list: GET /bcnodes/preflight/records on creation / load, the
                               bcnodes.preflight.records event after Report logs; a saved value never rewritten
+web/js/grow_inputs.js         growing input slots (<prefix>1, <prefix>2, ...: one empty after the last linked one):
+                              Join Image Lists, Claude
+web/js/claude.js              Claude's image slots and its API key setting (a field of its own, posted to the
+                              downloader's token route; never in the settings file, never shown back)
 ```
 
 ## Process Monitor
@@ -197,7 +206,7 @@ this statically; its `TRANSITIONAL` list stays empty (fix a violation, never all
 
 At module level only the standard library, `torch`, `numpy` and relative pack modules. Everything
 else (`scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*`,
-`comfy_extras.*`, `av`, `postfx`, `caption_audit`, `yaml`) is imported inside the function that
+`comfy_extras.*`, `av`, `postfx`, `caption_audit`, `yaml`, `anthropic`) is imported inside the function that
 uses it. The only exception is the downloader's guarded `server`/`aiohttp`.
 
 A node module imports only `nodes.common` at module level: its pipeline, model and lib modules are

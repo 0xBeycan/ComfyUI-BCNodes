@@ -767,6 +767,7 @@ async def main():
     await sage_attention()
     lm_core()
     await lm_nodes()
+    await claude_nodes()
     await preflight_nodes()
     await unused_outputs()
     await process_monitor_hook()
@@ -1494,6 +1495,89 @@ async def lm_nodes():
     finally:
         registry._FAMILIES[registry.LM_BACKEND]["core"] = real
         folder_paths.folder_names_and_paths["Qwen-LM"][0].remove(qwen)
+
+
+async def claude_nodes():
+    """Claude and Claude Config inside ComfyUI, the SDK client replaced by a recording stand-in (no network, no
+    key): the Anthropic key goes through the downloader's token route and only its presence comes back; a prompt
+    Claude Config -> Claude with image_1 and image_2 (a slot the node does not declare, as web/js/claude.js adds it)
+    validates and runs; the stand-in gets every frame labelled in slot order before the prompt, the config's
+    fields, no system field for an empty system prompt and no fallback with on_refusal error; text and thinking
+    reach the outputs; queued again with the seed fixed, the answer comes from the cache."""
+    import importlib
+
+    import server as comfy_server
+
+    routes = {(r.method, r.path): r.handler for r in comfy_server.PromptServer.instance.routes}
+    post = routes.get(("POST", "/bcnodes/downloader/tokens"))
+
+    class KeyRequest:
+        async def json(self):
+            return {"anthropic": "sk-ant-runtime"}
+
+    body = json.loads((await post(KeyRequest())).body) if post else {}
+    check("Claude: the token route stores the Anthropic key and answers only that one is stored",
+          body.get("tokens", {}).get("anthropic") is True and "sk-ant-runtime" not in json.dumps(body), f"{body}")
+
+    pkg = nodes.NODE_CLASS_MAPPINGS["BC_Claude"].__module__.rsplit(".", 2)[0]
+    claude = importlib.import_module(f"{pkg}.pipelines.claude")
+    calls = []
+    final = types.SimpleNamespace(
+        content=[types.SimpleNamespace(type="thinking", thinking="Two colours.", signature="s"),
+                 types.SimpleNamespace(type="text", text="A red image and two green ones.")],
+        model="claude-haiku-5-5", stop_reason="end_turn", stop_details=None,
+        usage=types.SimpleNamespace(input_tokens=100, output_tokens=20))
+
+    class StandIn:
+        request_id = "req_runtime"
+
+        def __init__(self):
+            self.beta = types.SimpleNamespace(messages=types.SimpleNamespace(stream=self.stream))
+
+        def stream(self, **params):
+            calls.append(params)
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def __iter__(self):
+            yield types.SimpleNamespace(type="message_start")
+
+        def get_final_message(self):
+            return final
+
+    real = claude.make_client
+    claude.make_client = lambda config: StandIn()
+    try:
+        out, executed = await run_twice({
+            "1": N("EmptyImage", width=64, height=48, batch_size=1, color=0xFF0000),
+            "2": N("EmptyImage", width=32, height=32, batch_size=2, color=0x00FF00),
+            "3": N("BC_ClaudeConfig", model_id="", stop_sequences="END", on_refusal="error", speed="standard",
+                   image_format="png", timeout=600, max_retries=2),
+            "4": N("BC_Claude", prompt="Describe.", model="Haiku 5.5", max_tokens=1000, effort="low", seed=0,
+                   system_prompt="", config=["3", 0], image_1=["1", 0], image_2=["2", 0]),
+            "5": N("PreviewAny", source=["4", 0]),
+            "6": N("PreviewAny", source=["4", 1]),
+        }, "claude")
+        params = calls[0] if calls else {}
+        content = params.get("messages", [{}])[0].get("content", [])
+        check("Claude: Claude Config -> Claude with a grown image_2 validates and runs; text and thinking reach the "
+              "outputs", out is not None and out["5"]["text"] == ["A red image and two green ones."]
+              and out["6"]["text"] == ["Two colours."], f"{out}")
+        check("Claude: every frame labelled in slot order before the prompt; the config's fields; no system, no "
+              "fallback, no tools",
+              [b.get("text") for b in content if b["type"] == "text"] == ["Image 1:", "Image 2:", "Image 3:", "Describe."]
+              and [b["type"] for b in content].count("image") == 3 and params.get("model") == "claude-haiku-5-5"
+              and params.get("stop_sequences") == ["END"] and params.get("output_config") == {"effort": "low"}
+              and not {"system", "fallbacks", "tools", "temperature"} & set(params), f"{str(params)[:400]}")
+        check("Claude: the same prompt queued again comes from the cache (no second request)",
+              executed == [] and len(calls) == 1, f"{executed} {len(calls)}")
+    finally:
+        claude.make_client = real
 
 
 async def preflight_nodes():

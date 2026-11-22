@@ -1,7 +1,9 @@
 """HTTP download with resume, the allowed hosts and the token store.
 
 Tokens are entered in the UI and kept server side
-(user/BCNodes/downloader_tokens.json), never in the workflow.
+(user/BCNodes/downloader_tokens.json), never in the workflow: the
+downloader's Hugging Face and Civitai tokens, and the Claude node's
+Anthropic API key (pipelines/claude.py), which no download ever sends.
 """
 
 import json
@@ -28,7 +30,9 @@ def service_of(url):
     return None
 
 
-SERVICE_NAMES = {"huggingface": "Hugging Face", "civitai": "Civitai"}
+# The token store's services. "anthropic" is the Claude node's API key: it has no HOSTS entry, so a
+# download never gets it.
+SERVICE_NAMES = {"huggingface": "Hugging Face", "civitai": "Civitai", "anthropic": "Anthropic"}
 
 
 def user_file(name):

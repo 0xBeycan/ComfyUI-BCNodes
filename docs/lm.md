@@ -1,6 +1,6 @@
 # LM
 
-Chat models run by ComfyUI core: one node per model family (Qwen LM today) and one config node, LM Config, for all of them; and LM Loader, which picks a model of any family for a wrapper node ([PreFlight Observe](preflight.md#bc_preflightobserve--preflight-observe)). Text and images in, text out. The prompt is built as the model's official chat template renders it, sampling starts from the official defaults of each model and mode, and the model files come from a public repository on first use. Type `qwen`, `llm`, `vlm`, `caption` or `prompt enhancer` in the node search to find the node.
+Chat models run by ComfyUI core: one node per model family (Qwen LM today) and one config node, LM Config, for all of them; and LM Loader, which picks a model of any family for a wrapper node ([PreFlight Observe](preflight.md#bc_preflightobserve--preflight-observe)). Text and images in, text out. The prompt is built as the model's official chat template renders it, sampling starts from the official defaults of each model and mode, and the model files come from a public repository on first use. Type `qwen`, `llm`, `vlm`, `caption` or `prompt enhancer` in the node search to find the node. [Claude](#bc_claude--claude) is the exception: Anthropic's models through their API, with your own API key, and [Claude Config](#bc_claudeconfig--claude-config) for its other settings; type `claude` or `anthropic` to find it.
 
 ## `BC_QwenLM` — Qwen LM
 
@@ -332,6 +332,68 @@ my_models:
 
 ComfyUI reads `extra_model_paths.yaml` before the node adds `models/Qwen-LM`, so such a folder comes first: it is searched first, downloads go into it, its `models.yaml` is applied first and its `loras/` is listed. A `Qwen-LM` key the YAML created without file extensions gets `.safetensors`.
 
+## `BC_Claude` — Claude
+
+`prompt`, `model`, `max_tokens`, `effort`, `seed`, `system_prompt`; optional `config` (`BC_CLAUDE_CONFIG`), `image_1`, `image_2`, … (`IMAGE`) → `text` (`STRING`), `thinking` (`STRING`).
+
+Asks a Claude model through Anthropic's Messages API with your own API key. Unlike ComfyUI's partner node (Anthropic Claude), no Comfy.org account or credits are involved: the ComfyUI server sends the request to `api.anthropic.com` through Anthropic's official Python SDK (`anthropic`, in `requirements.txt`), and your Anthropic account is billed at the API's token prices.
+
+| Widget | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `prompt` | empty | multiline | The user message, sent as written after the images. May be empty only when an image is connected. |
+| `model` | `Opus 5.5` | `Opus 5.5` (`claude-opus-5-5`, $4 / $20 per million input / output tokens), `Sonnet 5.5` ($2 / $10), `Haiku 5.5` ($0.10 / $0.50), `Fable 5.2` ($8 / $40) | The model. Any other model runs through Claude Config's `model_id`. |
+| `max_tokens` | `32768` | `1`–`128000` | The most tokens the model writes, thinking and answer together. Only the tokens written are billed. |
+| `effort` | `high` | `low`, `medium`, `high`, `xhigh`, `max` | How much the model thinks and how many tokens it spends (`output_config.effort`). The API's own default is `medium` on Opus 5.5 and Haiku 5.5 and `high` on the others; the node always sends the widget's value. |
+| `seed` | `0` | `0`–`2^64 − 1` | Not sent: the API has no seed. It only decides whether ComfyUI runs the node again; its *control after generate* starts at `fixed`, so queueing the same workflow again returns the cached answer and costs nothing. `randomize` asks again on every queue. |
+| `system_prompt` | empty | multiline | The system prompt, sent as written. Empty: no system prompt at all. |
+
+| Input / output | Type | Meaning |
+| --- | --- | --- |
+| `config` | `BC_CLAUDE_CONFIG`, optional | A [Claude Config](#bc_claudeconfig--claude-config) node. Not connected: its defaults. |
+| `image_1`, `image_2`, … | `IMAGE`, optional | Images the model sees, before the prompt. Connecting the last image input adds the next one; disconnecting one in the middle closes the gap. See [Images](#images-1). |
+| `text` | `STRING` | The answer. |
+| `thinking` | `STRING` | A summary of the model's thinking (the API never returns the raw thinking); empty when the model answered without thinking. |
+
+### API key
+
+ComfyUI's **Settings → BCNodes → Claude → Anthropic API key**: paste a Claude Console API key and press Save. The key is kept on the ComfyUI server in `user/BCNodes/downloader_tokens.json` (the file the Auto Model Downloader keeps its tokens in, readable by the server's user only), never in a workflow and never in ComfyUI's settings file; the field only says whether a key is saved, and Clear removes it. No download ever sends it. A run without a key stops with an error that names this setting.
+
+### What a request holds
+
+Each run is one independent request: the API keeps no conversation, so a run never sees an earlier run or another Claude node.
+
+- **System prompt**: `system_prompt` as written, the whole of it. The Messages API has no default system prompt of its own (claude.ai's belongs to that app), and the node sends no tools: the API builds a tool-use system prompt around yours only for a request with tools.
+- **User turn**: the images, then `prompt`. With two or more images each one is introduced by a text label, `Image 1:`, `Image 2:`, … in input order, as Anthropic's vision guide advises, so the prompt can name them. That label is the only text the node adds.
+- **Thinking**: always on with these models; `effort` is its control (`thinking: {type: "adaptive", display: "summarized"}`; the summary costs nothing extra).
+- **Not sent**: `temperature`, `top_p`, `top_k` (the API rejects them on these models), the seed, tools.
+- The model's training and Anthropic's safety classifiers still apply: a system prompt cannot switch them off (see [Answers and errors](#answers-and-errors)).
+
+### Images
+
+Every frame of every image input is one image, in input order (`image_1`'s frames first), each converted to 8-bit the way the pack's other nodes read half-precision frames. The API downscales an image whose edges, padded to multiples of 28 px, exceed 2,576 px, or which costs more than 4,784 visual tokens (one token per 28 × 28 px patch, about 3.75 megapixels). The node downscales such an image to exactly that size first, with the official sizing code and a Lanczos filter (the API names none), so the upload carries no pixel the model never sees: 3840 × 2160 becomes 2576 × 1449, 2000 × 2000 becomes 1932 × 1932, and 1920 × 1080 or 1024 × 1024 go as they are. Then each image is encoded as PNG (lossless) or, with Claude Config's `image_format`, as JPEG at quality 95. The API takes at most 10 MB of base64 per image; a larger PNG stops the run with an error that names the image and suggests JPEG.
+
+### Answers and errors
+
+- **Cut at `max_tokens`**: an error, never a partial text (thinking counts toward the limit). Raise `max_tokens` or lower `effort`.
+- **Refusal**: the model's safety classifiers can decline a request. With Claude Config's `on_refusal` at `fallback` (the default) the API runs it again on the model Anthropic recommends for that refusal category, billed at that model's rates, and the console logs `[BCNodes] Claude: <model> declined the request and <model> answered it`; Haiku 5.5 has no fallback. A refusal that stands is an error naming its category.
+- **Errors** say what to do: no key or a key the API refuses (the setting), a timeout (Claude Config's `timeout`), no connection, and any other API error with its status, message and request id. The SDK retries connection errors, rate limits and server errors itself (`max_retries`).
+- **Cancel** (ComfyUI's Interrupt) closes the stream between its events; tokens written until then are billed.
+- **Console**: one line per run with the model, its input and output tokens and the request id.
+
+## `BC_ClaudeConfig` — Claude Config
+
+`model_id`, `stop_sequences`, `on_refusal`, `speed`, `image_format`, `timeout`, `max_retries` → `config` (`BC_CLAUDE_CONFIG`), for a Claude node's `config` input. A Claude node without one runs with these defaults.
+
+| Widget | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `model_id` | empty | text | A model ID (for example `claude-sonnet-5`) that replaces the Claude node's `model`: one the list does not have, or a newer one. Empty: the node's model. |
+| `stop_sequences` | empty | multiline, one per line | The answer ends where one appears (not included). Blank lines are ignored. |
+| `on_refusal` | `fallback` | `fallback`, `error` | What a refusal does ([Answers and errors](#answers-and-errors)). `fallback` sends the API's server-side fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`), except to Haiku 5.5. |
+| `speed` | `standard` | `standard`, `fast` | `fast`: the model's fast mode, up to 2.5× faster output at a higher price (Opus 5.5: $8 / $40 per million tokens; Fable 5.2: $16 / $80). Another model rejects it. |
+| `image_format` | `png` | `png`, `jpeg` | How images are uploaded: PNG lossless, or JPEG at quality 95 for an image whose PNG exceeds 10 MB. |
+| `timeout` | `600` | `1`–`3600` s | How long the request may wait for the API, per read of the stream. 600 is the SDK's default. |
+| `max_retries` | `2` | `0`–`10` | How often the SDK retries a connection error, a rate limit (429) or a server error, with backoff. 2 is the SDK's default. |
+
 ## Known limits
 
 - **top_p in core.** Core drops the token whose cumulative probability crosses `top_p`, a smaller nucleus than the official implementation (Hugging Face transformers) keeps: probabilities [0.5, 0.3, 0.2] with `top_p` 0.7 — core keeps {0.5}, transformers keeps {0.5, 0.3}. It is core's sampler and is not changed here.
@@ -346,4 +408,5 @@ ComfyUI reads `extra_model_paths.yaml` before the node adds `models/Qwen-LM`, so
 - **cuDNN attention.** Core runs attention on a large enough input (from 32 prompt tokens on Qwen3-VL-8B) with PyTorch's SDPA in the order flash, cuDNN, memory-efficient, math (`SDPA_BACKEND_PRIORITY` in `comfy/ops.py`); with an attention mask flash is out, so cuDNN runs, and on some GPU and cuDNN builds it builds no plan (seen with Qwen3-VL-8B on an RTX 3090, 4090 and 5090, torch 2.11 cu130, cuDNN 9.19: `cuDNN Frontend error: [cudnn_frontend] Error: No valid execution plans built.`). The first such error in an LM node's generation logs `[BCNodes] LM: cuDNN attention failed (<the error>); LM generation runs without cuDNN attention in this process from now on (core's other models keep it), and this one runs again`, and the run is repeated without cuDNN attention, from the same state (the failed attempt's prefetch state is dropped as ComfyUI does after a node; the KV cache and the seeded sampler are new in every run). Every later LM generation in that ComfyUI process runs without it from the start. It covers LM generation only: the list is changed for the length of an LM node's generate and put back after it, so core's other models keep cuDNN attention; no core file is changed and no launch flag is needed. Should it fail again, the run stops with `start ComfyUI with --use-split-cross-attention`, which takes core's attention off PyTorch's SDPA. Any other error passes through as it is.
 - **Slow on some cloud hosts.** Core runs the prompt prefill of Qwen3.5's linear-attention layers as a PyTorch loop of small kernels (`torch_chunk_gated_delta_rule` in `comfy/text_encoders/qwen35.py`): about 27,600 kernel launches for a 2,300-token prompt (a 1024² image and a caption prompt). Each launch costs CPU time on the host, so the speed depends on the host as much as on the GPU. One short caption of an image with Qwen3.5-9B INT8 ConvRot, measured: 1.15 s per caption on an RTX 4090 host (about 6 µs per CUDA launch), 0.71 s on an RTX 5090 host (about 4 µs), and 20.4 s on an RTX 3090 cloud host with about 115 µs per launch, 11.7 s of it in that prefill. Qwen3-VL-8B has no linear attention and suffers less there (9.9 s against 0.89 s and 0.61 s). A caption that takes far more than a second or two on a recent GPU points at the host: rent another one.
 - **Downloads** report in the console every 10%, not on the node's progress bar; core's generation does update the progress bar.
+- **Claude** is checked with a stand-in for the API (tests); no test sends a real request, which needs a key and is billed.
 - **Process Monitor.** The full clear's report counts the model file's weights, not the LoRA's patch tensors. Emulate lists Qwen LM as not counted: its `model` widget names a catalog entry, not a file, so the model file's weights, the LoRA, the KV cache for prompt + `max_new_tokens` and the resized images are not in the estimate. LM Config and LM Loader are counted, with no tensor (a dict of the edited sampling fields; a description of the model, nothing loaded).
