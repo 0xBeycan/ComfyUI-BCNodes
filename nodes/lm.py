@@ -389,7 +389,7 @@ NO_CLIP = ("Prompter: its conditioning output is linked, but no CLIP is connecte
 class Prompter:
     @classmethod
     def INPUT_TYPES(cls):
-        from ..pipelines.prompter.write import INSTRUCTIONS, MAX_NEW_TOKENS, MAX_SIDE
+        from ..pipelines.prompter.write import INSTRUCTIONS, MAX_NEW_TOKENS, MAX_SIDE, THINKING_MAX_NEW_TOKENS
 
         return {
             "required": {
@@ -435,16 +435,28 @@ class Prompter:
                                                       "instructions value: before the brief, a blank line between, "
                                                       "or after the image when the brief is empty. Not connected, "
                                                       "or only whitespace: instructions decides. The answer is cut "
-                                                      f"at {MAX_NEW_TOKENS} tokens."}),
+                                                      f"at {MAX_NEW_TOKENS} tokens ({THINKING_MAX_NEW_TOKENS}, the "
+                                                      "reasoning included, with thinking on)."}),
                 "clip": ("CLIP", {"tooltip": "A CLIP (text encoder) for the conditioning output: the prompt is "
                                              "encoded as the standard CLIP Text Encode encodes it. Not connected: "
                                              "leave conditioning unlinked (linked, it is an error asking for a "
                                              "CLIP); text works either way."}),
                 "config": ("BC_LM_CONFIG", {"tooltip": "Sampling from an LM Config node in place of Prompter's own "
                                                        "(temperature 0.7, top_p 0.8, top_k 20, no presence "
-                                                       "penalty): the model's thinking-off defaults with the fields "
-                                                       "edited there, or fed by a link, over them. Not connected: "
-                                                       "Prompter's own."}),
+                                                       "penalty): the model's defaults for the mode (thinking off / "
+                                                       "on) with the fields edited there, or fed by a link, over "
+                                                       "them. Not connected: Prompter's own with thinking off, the "
+                                                       "model's thinking-on defaults with thinking on."}),
+                "thinking": ("BOOLEAN", {"default": False,
+                                         "tooltip": "The model reasons before it writes the prompt, when the LM "
+                                                    "Loader's model has a thinking mode; on a model without one the "
+                                                    "prompt is written with thinking off and a console line says so. "
+                                                    f"On: at most {THINKING_MAX_NEW_TOKENS} tokens, the reasoning "
+                                                    "and the prompt together (core reserves the KV cache for them "
+                                                    "before the first token), and sampling takes the model's "
+                                                    "thinking-on defaults, a connected LM Config's fields over them. "
+                                                    "The reasoning is not output; a run that ends with no prompt "
+                                                    "after it is an error."}),
             },
             "hidden": dict(LINK_INPUTS),
         }
@@ -464,32 +476,54 @@ class Prompter:
                    "appearance written or left to a character LoRA) choose a built-in prompt: with a brief the brief "
                    "prompt, the brief after it and the image not used; with an image alone the image prompt, after "
                    "the image. none sends the brief and / or the image (the image first) with no prompt, for a "
-                   "prompter LoRA of your own. A connected instruction replaces the built-in prompt. Thinking off, "
-                   "no system turn, at most 600 tokens, the image's long side capped at 1024; sampling temperature "
-                   "0.7, top_p 0.8, top_k 20, no presence penalty, or a connected LM Config's (the model's own "
-                   "defaults with the fields edited there). With a CLIP connected, conditioning is the prompt "
+                   "prompter LoRA of your own. A connected instruction replaces the built-in prompt. No system "
+                   "turn, at most 600 tokens, the image's long side capped at 1024; sampling temperature 0.7, top_p "
+                   "0.8, top_k 20, no presence penalty, or a connected LM Config's (the model's own defaults with "
+                   "the fields edited there). thinking on, with a model that has a thinking mode, lets the model "
+                   "reason first: at most 32768 tokens with the reasoning, the model's thinking-on sampling, the "
+                   "reasoning not output. With a CLIP connected, conditioning is the prompt "
                    "encoded as CLIP Text Encode encodes it, the positive only, after the model is unloaded when the "
                    "LM Loader does not keep it.")
 
     def write(self, lm, text, instructions, seed, image=None, instruction=None, clip=None, config=None,
-              prompt_graph=None, unique_id=None):
+              thinking=False, prompt_graph=None, unique_id=None):
         """The flow (pipelines/prompter/write) with start: the model of `lm` (an LMSpec) prepared once, then one
         generate: no system turn, no prefill, thinking off, MAX_NEW_TOKENS, `seed`, and DECODING, or `config` (an
-        LM Config's value) as it is when one is connected. With the spec's keep_model_loaded off the model is
+        LM Config's value) as it is when one is connected. With `thinking` on and a model that has a thinking mode
+        (has_thinking): thinking on, THINKING_MAX_NEW_TOKENS, and `config`, or {} (the model's thinking-on
+        defaults); an answer empty after the reasoning is an error. `thinking` on a model without a thinking mode
+        runs with it off, with a console warning. With the spec's keep_model_loaded off the model is
         unloaded afterwards, after an error too, before `clip` encodes the prompt (core's CLIPTextEncode:
         tokenize, then encode_from_tokens_scheduled). Without a clip: an error before the model runs when the
         prompt (`prompt_graph`, this node `unique_id`) links conditioning, else conditioning is an
         ExecutionBlocker with that error, which only a node linked to it after a cached run meets."""
-        from ..pipelines.lm import generate, prepare, unload_backends
+        from ..pipelines.lm import generate, has_thinking, prepare, unload_backends
         from ..pipelines.prompter import write as flow
 
         def start():
             model_folders, text_encoder_folders = family_folders(lm.family)
-            prepared = prepare(lm, node=NODE_DISPLAY_NAME_MAPPINGS["BC_Prompter"], thinking=False,
-                               max_new_tokens=flow.MAX_NEW_TOKENS, seed=seed,
-                               config=dict(flow.DECODING) if config is None else config,
-                               model_folders=model_folders, text_encoder_folders=text_encoder_folders)
-            return lambda frame, user: generate(prepared, "", user, "", frame).text
+            think = thinking and has_thinking(lm, model_folders)
+            if thinking and not think:
+                logging.warning("[BCNodes] Prompter: %s has no thinking mode: it writes the prompt with thinking off",
+                                lm.model)
+            if config is not None:
+                sampling = config
+            else:
+                sampling = {} if think else dict(flow.DECODING)
+            prepared = prepare(lm, node=NODE_DISPLAY_NAME_MAPPINGS["BC_Prompter"], thinking=think,
+                               max_new_tokens=flow.THINKING_MAX_NEW_TOKENS if think else flow.MAX_NEW_TOKENS,
+                               seed=seed, config=sampling, model_folders=model_folders,
+                               text_encoder_folders=text_encoder_folders)
+
+            def answer(frame, user):
+                text = generate(prepared, "", user, "", frame).text
+                if think and not text.strip():
+                    raise ValueError(f"Prompter: {lm.model} wrote no prompt with thinking on (its reasoning may have "
+                                     f"used all {flow.THINKING_MAX_NEW_TOKENS} tokens): queue again with another "
+                                     "seed, or turn thinking off")
+                return text
+
+            return answer
 
         try:
             if clip is None and isinstance(prompt_graph, dict) and _links(

@@ -38,7 +38,8 @@ nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, prec
                               decoding), Prompter (a wrapper as Captioner: one prompt from a brief and / or one image,
                               a start callable handed to pipelines/prompter; text, and conditioning from an optional
                               CLIP as core's CLIPTextEncode, a linked conditioning without a CLIP an error read from
-                              the hidden prompt graph, else an ExecutionBlocker); model_inputs and MODEL_DEFAULTS, the
+                              the hidden prompt graph, else an ExecutionBlocker; an optional thinking, run with it off
+                              and a warning on a model without one); model_inputs and MODEL_DEFAULTS, the
                               model / precision / lora / lora_strength widgets and initial values Qwen LM and LM
                               Loader share; the catalog route
 pipelines/matting.py          finish() option chain; remove_background() -> models.birefnet.inference.matte
@@ -56,8 +57,9 @@ pipelines/lora.py             apply_lora: a LoRA file through core's conversion,
 pipelines/lm.py               the LM flow: one LM node run (family, catalog, model file found or downloaded, LoRA,
                               sampling, images, backend; keep_model_loaded off unloads in a finally); LMSpec (the
                               BC_LM value: family, model, precision, lora, lora_strength, keep_model_loaded; no
-                              weights), lm_spec (LM Loader's checks), prepare (once per wrapper call: catalog, file,
-                              LoRA, sampling -> Prepared) and generate (once per model call: prompt, images, load,
+                              weights), lm_spec (LM Loader's checks), has_thinking (a spec's model has a thinking
+                              mode), prepare (once per wrapper call: catalog, file, LoRA, sampling -> Prepared) and
+                              generate (once per model call: prompt, images, load,
                               generate, split), each step one function run, prepare and generate order;
                               unload_backends (a node running the model several times unloads once after them:
                               PreFlight Observe, Captioner); the catalog, LoRA list and catalog route data the LM
@@ -70,9 +72,9 @@ pipelines/captioner/          caption (the batch split into frames, the user tex
 pipelines/prompter/           write (the path from what is connected: brief or image; the user text: a built-in
                               prompt per path and identity mode, the instruction, or none; one image capped at 1024
                               (libs/image.thumbnail_frame), the model started once, one generate; the decoding without
-                              an LM Config, 600 tokens), prompts/ (brief-include.txt, brief-exclude.txt,
-                              image-include.txt, image-exclude.txt, read at call time); the node hands in the start
-                              callable
+                              an LM Config, 600 tokens; 32768 tokens with thinking on), prompts/ (brief-include.txt,
+                              brief-exclude.txt, image-include.txt, image-exclude.txt, read at call time); the node
+                              hands in the start callable
 pipelines/caption_audit/      audit.py (args, dataset roots, run, reports), card.py (the card)
 pipelines/preflight/          prompts (the observation prompt and schema), observe (frames sampled, generate -> parse
                               -> one retry -> validate -> meta, fail closed; greedy decoding, the model from the

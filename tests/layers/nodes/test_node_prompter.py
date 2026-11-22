@@ -3,7 +3,8 @@ recording stand-in for the "core" LM backend (no weights) and a stand-in CLIP:
 
   - the surface: lm (BC_LM, required, no default), text (multiline, ""), instructions (none / include identity /
     exclude identity, include identity), seed (its `fixed` control); optional image, instruction (a socket),
-    clip (CLIP), config (BC_LM_CONFIG); the hidden prompt graph and node id; a tooltip on every input; outputs
+    clip (CLIP), config (BC_LM_CONFIG), thinking (off); the hidden prompt graph and node id; a tooltip on every
+    input; outputs
     text (STRING) and conditioning (CONDITIONING); category, display name, after Captioner in the menu; no
     family, model or Qwen name in its code;
   - through pipelines/lm.prepare + generate: one prepare and one generate per node call; the backend's prompt
@@ -11,6 +12,10 @@ recording stand-in for the "core" LM backend (no weights) and a stand-in CLIP:
     image block first when the image is used); GenerateParams: DECODING without an LM Config, the model's
     thinking-off defaults with the config's fields over them with one (prepare gets it as it is), 600 tokens,
     the seed; the image the model gets capped at 1024;
+  - thinking: off by default (the model's thinking mode not even looked up); on, the prompt opens the think block,
+    prepare gets thinking on, 32768 tokens and {} (the model's thinking-on defaults) or the LM Config as it is,
+    and the text is the answer after the reasoning; on a model without a thinking mode, the thinking-off run
+    with a console warning; no prompt after the reasoning is an error (and an unload with keep off);
   - conditioning: with a clip, core's CLIPTextEncode on the prompt (tokenize, then encode_from_tokens_scheduled,
     the result as it is), after the model is unloaded (keep_model_loaded off); without one, an error asking for a
     CLIP before the model is prepared when the prompt links conditioning (and an unload with keep off), else no
@@ -159,7 +164,7 @@ def test_the_inputs_and_their_defaults(lm, fp):
     req, opt = spec["required"], spec["optional"]
     assert list(spec) == ["required", "optional", "hidden"]
     assert list(req) == ["lm", "text", "instructions", "seed"]
-    assert list(opt) == ["image", "instruction", "clip", "config"]
+    assert list(opt) == ["image", "instruction", "clip", "config", "thinking"]
     assert spec["hidden"] == {"prompt_graph": "PROMPT", "unique_id": "UNIQUE_ID"}
     assert req["lm"][0] == "BC_LM" and "default" not in req["lm"][1]
     assert req["text"][0] == "STRING" and req["text"][1]["default"] == "" and req["text"][1]["multiline"] is True
@@ -168,8 +173,9 @@ def test_the_inputs_and_their_defaults(lm, fp):
     seed = req["seed"][1]
     assert req["seed"][0] == "INT" and (seed["default"], seed["min"], seed["max"]) == (0, 0, 0xffffffffffffffff)
     assert seed["control_after_generate"] == "fixed"
-    assert [opt[name][0] for name in opt] == ["IMAGE", "STRING", "CLIP", "BC_LM_CONFIG"]
+    assert [opt[name][0] for name in opt] == ["IMAGE", "STRING", "CLIP", "BC_LM_CONFIG", "BOOLEAN"]
     assert opt["instruction"][1]["forceInput"] is True and "default" not in opt["instruction"][1]
+    assert opt["thinking"][1]["default"] is False and "forceInput" not in opt["thinking"][1]
     assert all(v[1].get("tooltip") for v in (*req.values(), *opt.values()))
 
 
@@ -295,6 +301,64 @@ def test_a_connected_config_reaches_prepare_as_it_is(lm, pipe, backend, monkeypa
     run(lm, pipe, config=config)
     assert seen == [config] and seen[0] is config
     assert params_of(backend) == expected
+
+
+# --- thinking ------------------------------------------------------------------------------------------------
+
+THINK_ON = "<|im_end|>\n<|im_start|>assistant\n<think>\n"
+REASONED = "The brief asks for a cafe.\n</think>\n\n  A half-body shot of one woman.\n"
+
+
+def recorded_prepare(pipe, monkeypatch):
+    seen = []
+    monkeypatch.setattr(pipe, "prepare", lambda *a, _fn=pipe.prepare, **k: seen.append(k) or _fn(*a, **k))
+    return seen
+
+
+def test_thinking_off_by_default_never_looks_the_mode_up(lm, pipe, backend, monkeypatch):
+    monkeypatch.setattr(pipe, "has_thinking", lambda *a: pytest.fail("thinking looked up with thinking off"))
+    run(lm, pipe)
+    assert backend.generated[0][0].endswith(THINK_OFF)
+
+
+def test_thinking_on_reasons_first_with_the_models_thinking_on_sampling(lm, pipe, flow, backend, monkeypatch):
+    seen = recorded_prepare(pipe, monkeypatch)
+    backend.answer = REASONED
+    text, _ = run(lm, pipe, thinking=True)
+    assert text == "A half-body shot of one woman."
+    assert backend.generated[0][0] == (USER + flow.instruction_text("include identity", None, "brief") + "\n\n" + BRIEF
+                                       + THINK_ON)
+    assert (seen[0]["thinking"], seen[0]["max_new_tokens"], seen[0]["config"]) == (True, 32768, {})
+    assert params_of(backend) == (True, 1.0, 0.95, 20, 0.0, 1.5, 1.0, "auto", 5, 32768)
+
+
+def test_thinking_on_with_a_config_takes_its_fields_over_the_thinking_on_defaults(lm, pipe, backend, monkeypatch):
+    seen = recorded_prepare(pipe, monkeypatch)
+    backend.answer = REASONED
+    config = {"temperature": 0.6, "presence_penalty": 0.0}
+    run(lm, pipe, thinking=True, config=config)
+    assert seen[0]["config"] is config
+    assert params_of(backend) == (True, 0.6, 0.95, 20, 0.0, 0.0, 1.0, "auto", 5, 32768)
+
+
+def test_thinking_on_a_model_without_it_runs_with_it_off(lm, pipe, flow, backend, monkeypatch, tmp_path, caplog):
+    (tmp_path / "models" / "Qwen-LM" / "Qwen3-VL-8B-Instruct_int8_convrot.safetensors").write_bytes(b"")
+    seen = recorded_prepare(pipe, monkeypatch)
+    text, _ = lm.Prompter().write(spec(pipe, model="Qwen3-VL-8B Instruct"), BRIEF, "include identity", 5,
+                                  thinking=True)
+    assert text == "A half-body shot of one woman."
+    assert "Prompter: Qwen3-VL-8B Instruct has no thinking mode: it writes the prompt with thinking off" in caplog.text
+    assert (seen[0]["thinking"], seen[0]["max_new_tokens"], seen[0]["config"]) == (False, 600, flow.DECODING)
+    assert "<think>" not in backend.generated[0][0]
+    assert params_of(backend) == (True, 0.7, 0.8, 20, 0.0, 0.0, 1.0, "off", 5, 600)
+
+
+def test_no_prompt_after_the_reasoning_is_an_error(lm, pipe, backend):
+    backend.answer = "Still weighing the light and the framing"
+    with pytest.raises(ValueError, match=r"Prompter: Qwen3\.5-9B wrote no prompt with thinking on .* 32768 tokens\): "
+                                         "queue again with another seed, or turn thinking off"):
+        run(lm, pipe, keep=False, thinking=True)
+    assert kinds(backend.events) == ["load", "generate", "unload"]
 
 
 # --- conditioning --------------------------------------------------------------------------------------------

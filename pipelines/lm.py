@@ -181,6 +181,13 @@ def prepare(spec: LMSpec, *, node, thinking, max_new_tokens, seed, config: LMCon
                     config, seed, max_new_tokens, node, model_folders, text_encoder_folders)
 
 
+def has_thinking(spec: LMSpec, model_folders) -> bool:
+    """Whether the catalog model of `spec` (the user models.yaml of `model_folders` included) has a thinking mode:
+    a wrapper node that offers thinking writes with it off on a model without one (Prompter). Raises as prepare
+    does for an unknown family or model."""
+    return _model(spec.family, spec.model, model_folders)[1].thinking
+
+
 def generate(prepared: Prepared, system, user, assistant, image) -> LMResult:
     """Steps 2, 6 and 7 with a model from prepare: the prompt of `system`, `user`, `assistant` (the prefill) and
     `image` (an IMAGE batch, one image per frame, or None) built and validated, the images sized, the backend's

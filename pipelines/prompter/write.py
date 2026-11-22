@@ -19,8 +19,10 @@ write(text, image, instructions, instruction, start), in this order:
      (with an instruction override and none, the override comes before the text as in the other columns);
   5. the image the model sees: its long side capped at MAX_SIDE (libs/image.thumbnail_frame);
   6. start() -> generate, once: the node prepares the model of its LM Loader (the model file found, the LoRA
-     read and checked, the sampling: thinking off, DECODING or the connected LM Config's value, MAX_NEW_TOKENS,
-     its seed) and returns generate(frame or None, user) -> the model's answer: no system turn, no prefill;
+     read and checked, the sampling: thinking off with DECODING or the connected LM Config's value and
+     MAX_NEW_TOKENS; with the node's thinking on and a model that has a thinking mode, the model's thinking-on
+     defaults, or the LM Config's value over them, and THINKING_MAX_NEW_TOKENS; its seed) and returns
+     generate(frame or None, user) -> the model's answer: no system turn, no prefill;
   7. the prompt: the answer, its surrounding whitespace stripped.
 """
 
@@ -38,6 +40,9 @@ MAX_SIDE = 1024
 # A prompt is one paragraph of at most 300 words (about 400 tokens); the budget only stops a runaway
 # answer, and core reserves the KV cache for prompt + this many tokens.
 MAX_NEW_TOKENS = 600
+# With thinking on, the reasoning and the prompt share one budget: the official output length for most queries
+# (Qwen LM's max_new_tokens default, docs/lm.md). Core reserves the KV cache for prompt + this many tokens.
+THINKING_MAX_NEW_TOKENS = 32768
 # The decoding the prompter LoRA was trained and is served with: Qwen3.5's thinking-off sampling (temperature 0.7,
 # top_p 0.8, top_k 20, min_p 0) with presence_penalty 0 instead of Qwen's 1.5. The fields of an LM Config's edited
 # set, given whatever the model's own defaults are; used when no LM Config is connected (a connected one replaces
