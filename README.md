@@ -24,9 +24,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_ShowText` | [Show Text](docs/text.md#bc_showtext--show-text) | Shows incoming text on the node, passes it on |
 | `BC_QwenLM` | [Qwen LM](docs/lm.md#bc_qwenlm--qwen-lm) | Runs a Qwen chat model (Qwen3.5-4B / 9B, Qwen3.8-27B, Qwen3-VL-8B, and abliterated builds of Qwen3.5-9B and Qwen3-VL-8B) through ComfyUI core: system / user / prefill and images in, `text` and `thinking` out, with the official chat templates and sampling defaults and one LoRA; the model file is found in `models/Qwen-LM` or `models/text_encoders`, or downloaded on first use |
 | `BC_LMConfig` | [LM Config](docs/lm.md#bc_lmconfig--lm-config) | Sampling settings for an LM node: only the fields you change or link replace the model's official defaults |
-| `BC_LMLoader` | [LM Loader](docs/lm.md#bc_lmloader--lm-loader) | Picks the chat model a wrapper node runs (Captioner, Prompter, PreFlight Observe): family, model, precision, one LoRA and its strength, keep loaded; loads nothing itself, and its lists follow the selected family and model |
-| `BC_Captioner` | [Captioner](docs/lm.md#bc_captioner--captioner) | One training caption per image frame with the model of a connected LM Loader: a built-in `tags` or `prose` prompt, or the image alone (`none`) for your own image-to-caption LoRA, optionally with an instruction or an LM Config; outputs the frames and their captions as lists, ready for Save Image With Caption |
-| `BC_Prompter` | [Prompter](docs/lm.md#bc_prompter--prompter) | One text-to-image prompt from a short brief and / or a reference image with the model of a connected LM Loader: a built-in prompt that writes the person's appearance (`include identity`) or leaves it to a character LoRA (`exclude identity`), or none for your own prompter LoRA; `text` out, and with a CLIP connected the positive `conditioning` as CLIP Text Encode encodes it |
+| `BC_LMLoader` | [LM Loader](docs/lm.md#bc_lmloader--lm-loader) | Picks the chat model a wrapper node runs (PreFlight Observe): family, model, precision, one LoRA and its strength, keep loaded; loads nothing itself, and its lists follow the selected family and model |
 | `BC_PreFlightObserve` | [PreFlight Observe](docs/preflight.md#bc_preflightobserve--preflight-observe) | Runs the LM Loader's chat model (default Qwen3.5-9B INT8 ConvRot) as a pure observation sensor: an image or frame batch → a strict observations JSON (garment, exposure, framing, pose, in-image text, …); greedy, so the same input gives the same output; an error comes back as `{"error": ...}` |
 | `BC_PreFlightReport` | [PreFlight Report](docs/preflight.md#bc_preflightreport--preflight-report) | The rules engine: observations + caption → per-platform verdict ranges (Instagram / TikTok / X: OK, RISK = reach demotion, BLOCK = removal), a summary and the prediction logged to the feedback store |
 | `BC_PreFlightOutcome` | [PreFlight Outcome](docs/preflight.md#bc_preflightoutcome--preflight-outcome) | Records what a platform actually did to a published post (clean / demoted / removed); its record list shows each new prediction at once |
@@ -73,7 +71,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | [`BCNodes/postfx`](docs/postfx.md) | PostFx Apply, Theme, Custom Look, LUT, Signature Sheet |
 | [`BCNodes/analysis`](docs/analysis.md) | Image Quality Gate, Caption Audit |
 | [`BCNodes/text`](docs/text.md) | Prompt List, Show Text |
-| [`BCNodes/lm`](docs/lm.md) | Qwen LM, LM Config, LM Loader, Captioner, Prompter |
+| [`BCNodes/lm`](docs/lm.md) | Qwen LM, LM Config, LM Loader |
 | [`BCNodes/preflight`](docs/preflight.md) | PreFlight Observe, Report, Outcome, Calibrate |
 | [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Lora Loader (Key Fix), Auto Model Downloader |
 | [`BCNodes/model`](docs/model.md) | Patch Sage Attention |
@@ -103,7 +101,7 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [PostFx](docs/postfx.md) — film-emulation looks: themes, custom looks, LUTs, signature sheets
 - [Analysis](docs/analysis.md) — the caption set audit and the image quality gate
 - [Text](docs/text.md) — prompt lists and showing text
-- [LM](docs/lm.md) — chat models through ComfyUI core: Qwen LM, LM Config, LM Loader, Captioner, Prompter, the models and their files, sampling, LoRAs, `models.yaml`
+- [LM](docs/lm.md) — chat models through ComfyUI core: Qwen LM, LM Config, LM Loader, the models and their files, sampling, LoRAs, `models.yaml`
 - [PreFlight](docs/preflight.md) — how Instagram, TikTok and X would likely treat an image or video before it is published: the observation sensor, the rules engine, reading a verdict, the feedback loop and calibration
 - [Loaders](docs/loaders.md) — LoRA loading (with the key fix for LoRAs core loads only in part) and the model downloader
 - [Model](docs/model.md) — SageAttention for one model in one workflow: the modes, `qk_quant`, long sequences, the calls that run the original attention, `nan_guard`, the console, install, an A/B test

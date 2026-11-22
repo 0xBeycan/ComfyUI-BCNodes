@@ -15,7 +15,7 @@ ComfyUI-BCNodes/
     select_switch.py       BC_SelectSwitch
     seed.py                BC_Seed
     show_text.py           BC_ShowText
-    lm.py                  BC_QwenLM, BC_LMConfig, BC_LMLoader, BC_Captioner, BC_Prompter + GET /bcnodes/lm/catalog;
+    lm.py                  BC_QwenLM, BC_LMConfig, BC_LMLoader + GET /bcnodes/lm/catalog;
                            the Qwen-LM folder_paths key
     image_comparer.py      BC_ImageComparer
     power_lora_loader.py   BC_PowerLoraLoader
@@ -56,16 +56,6 @@ ComfyUI-BCNodes/
                            LoRA, sampling; LMSpec (the BC_LM value), prepare (once per wrapper call) and generate
                            (once per model call), lm_spec (LM Loader's checks); unload_backends; the catalog
                            route's data and the LoRA list
-    captioner/
-      caption.py           Captioner: frames split, user text (style prompt or instruction), 1024 cap, the model
-                           started once, one generate per frame; the decoding without an LM Config
-      prompts/             tags.txt, prose.txt: the built-in style prompts, read at call time
-    prompter/
-      write.py             Prompter: the path (brief or image), user text (built-in prompt, instruction or none),
-                           one image capped at 1024, the model started once, one generate; the decoding without
-                           an LM Config
-      prompts/             brief-include.txt, brief-exclude.txt, image-include.txt, image-exclude.txt: the
-                           built-in prompts, read at call time
     caption_audit/
       audit.py             audit plumbing: package guard, allowed roots, run_audit, reports
       card.py              the fixed-size card

@@ -5,7 +5,7 @@
     BC_PreFlightOutcome    (PreFlight Outcome)    what a platform actually did to a published post, into the store
     BC_PreFlightCalibrate  (PreFlight Calibrate)  the calibration tables over the feedback store
 
-The flows are pipelines/preflight. Observe is a wrapper like Captioner: it runs the model of its required lm
+The flows are pipelines/preflight. Observe is a wrapper: it runs the model of its required lm
 input (an LMSpec from LM Loader) through the LM runtime (pipelines/lm prepare + generate: the model file is
 found in the family's folders or models/text_encoders, or downloaded on first use). This module holds the
 surface: the widgets, the feedback store's path (<ComfyUI user dir>/BCNodes/preflight/feedback.jsonl),

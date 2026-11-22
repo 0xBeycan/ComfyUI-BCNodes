@@ -161,7 +161,7 @@ def drop_generate_state():
     (pinned blocks, the malloc graph, and the CUDA graphs the decode captured on the layers) and the cast buffers
     are dropped. A captured graph replays the addresses of the KV cache it was captured with, and the next generate
     frees that cache and allocates its own, so every generate ends with this: several generates in one node run
-    (Captioner's frames, PreFlight Observe's retry) then start as separate node runs do, where the next prompt of
+    (PreFlight Observe's retry) then start as separate node runs do, where the next prompt of
     another length would replay the previous cache (CUDA "index_copy_(): index out of bounds")."""
     import comfy.memory_management
     import comfy.model_management

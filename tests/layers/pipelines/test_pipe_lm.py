@@ -19,8 +19,7 @@ stand-in for the "core" LM backend (no ComfyUI, no weights):
     split) on it: neither unloads; what the backend gets equals run's; one prepare and three generates look
     for the file and read the LoRA once, and every load gets the same path and the same LoraSpec (a backend
     holding its slot by them, as core's, loads and patches once); prepare's errors name what to change;
-    lm_spec checks a loader's values without a file read; has_thinking reads the model's thinking flag off the
-    catalog;
+    lm_spec checks a loader's values without a file read;
   - the catalog the widgets and the route show: the user models.yaml of every model folder, in folder
     order; the built-in one with the error when a user models.yaml is broken (a run raises it), precisions
     built-in first, the route's per-family JSON and its TypedDicts.
@@ -230,7 +229,7 @@ def test_unload_after_an_error(pipe, backend, events, folders):
 
 
 def test_unload_backends_unloads_every_backend(pipe, registry, monkeypatch):
-    """What PreFlight Observe and Captioner call once after their runs with keep_model_loaded off."""
+    """What PreFlight Observe calls once after its runs with keep_model_loaded off."""
     first, second = [], []
     monkeypatch.setitem(registry._FAMILIES, registry.LM_BACKEND, {"core": Backend(first), "other": Backend(second)})
     pipe.unload_backends()
@@ -273,7 +272,7 @@ def lm_spec(pipe, **changes):
 
 def prepared(pipe, folders, spec=None, **changes):
     a, b, te = folders
-    fields = dict(node="Captioner", thinking=False, max_new_tokens=64, seed=7, config={}, model_folders=(str(a), str(b)),
+    fields = dict(node="PreFlight Observe", thinking=False, max_new_tokens=64, seed=7, config={}, model_folders=(str(a), str(b)),
                   text_encoder_folders=(str(te),))
     return pipe.prepare(spec or lm_spec(pipe), **{**fields, **changes})
 
@@ -334,7 +333,7 @@ def test_one_prepare_many_generates(pipe, registry, monkeypatch, events, folders
     assert len({path for path, _ in fake.specs}) == 1 and all(lora is ready.lora for _, lora in fake.specs)
     assert ready.lora.strength == 0.8 and (fake.base_loads, fake.builds) == (1, 1)  # no reload, no new patch
     assert events == ["load", "generate"] * 3
-    assert len([r for r in caplog.records if "Captioner: LoRA x.safetensors" in r.getMessage()]) == 1
+    assert len([r for r in caplog.records if "PreFlight Observe: LoRA x.safetensors" in r.getMessage()]) == 1
 
 
 @pytest.mark.parametrize("changes, match", [
@@ -347,18 +346,6 @@ def test_prepare_errors(pipe, backend, events, folders, changes, match):
     with pytest.raises((ValueError, FileNotFoundError), match=match):
         prepared(pipe, folders, spec=lm_spec(pipe, **changes))
     assert events == []  # nothing loaded, nothing unloaded: the wrapper unloads after its node call
-
-
-@pytest.mark.parametrize("model, expected", [("Qwen3.5-9B", True), ("Qwen3.8-27B", True),
-                                             ("Qwen3-VL-8B Instruct", False)])
-def test_has_thinking_reads_the_catalog(pipe, folders, monkeypatch, model, expected):
-    monkeypatch.setattr(pipe, "model_path", lambda *a: pytest.fail("no file search"))
-    assert pipe.has_thinking(lm_spec(pipe, model=model), (str(folders[0]),)) is expected
-
-
-def test_has_thinking_names_the_models_for_an_unknown_one(pipe, folders):
-    with pytest.raises(ValueError, match="'Qwen9' is not in the Qwen-LM catalog"):
-        pipe.has_thinking(lm_spec(pipe, model="Qwen9"), (str(folders[0]),))
 
 
 def test_generate_validates_the_prompt(pipe, backend, events, folders):

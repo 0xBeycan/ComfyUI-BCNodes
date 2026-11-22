@@ -1,5 +1,5 @@
 """The LM flow: one chat-model run of an LM node (Qwen LM today); a model prepared once and run per call by a
-wrapper node (Captioner, Prompter, PreFlight Observe) from an LM Loader's LMSpec; and the catalog, LoRA list and
+wrapper node (PreFlight Observe) from an LM Loader's LMSpec; and the catalog, LoRA list and
 catalog route data the nodes show.
 
 The steps:
@@ -116,8 +116,7 @@ class LMRequest:
 
 @dataclass(frozen=True)
 class LMSpec:
-    """The value of the BC_LM type: LM Loader's output, a wrapper node's lm input (Captioner, Prompter, PreFlight
-    Observe). Which model a wrapper runs and whether it stays loaded; a description only, it never holds weights
+    """The value of the BC_LM type: LM Loader's output, a wrapper node's lm input (PreFlight Observe). Which model a wrapper runs and whether it stays loaded; a description only, it never holds weights
     (prepare finds the file and reads the LoRA)."""
     family: str               # the LM family's registry key, e.g. 'qwen_lm' (LM Loader maps its name to it)
     model: str                # a model name of that family's catalog
@@ -179,13 +178,6 @@ def prepare(spec: LMSpec, *, node, thinking, max_new_tokens, seed, config: LMCon
     family, model, backend = _model(spec.family, spec.model, model_folders)
     return _prepare(family, model, backend, _precision(model, spec.precision), spec.lora, spec.lora_strength, thinking,
                     config, seed, max_new_tokens, node, model_folders, text_encoder_folders)
-
-
-def has_thinking(spec: LMSpec, model_folders) -> bool:
-    """Whether the catalog model of `spec` (the user models.yaml of `model_folders` included) has a thinking mode:
-    a wrapper node that offers thinking writes with it off on a model without one (Prompter). Raises as prepare
-    does for an unknown family or model."""
-    return _model(spec.family, spec.model, model_folders)[1].thinking
 
 
 def generate(prepared: Prepared, system, user, assistant, image) -> LMResult:
@@ -288,7 +280,7 @@ def _answer(prepared, parts, prompt, image):
 def unload_backends():
     """Unloads every registered LM backend (models/common/registry.py LM_BACKEND): the one model slot the LM
     nodes share. A node that runs the model several times with the model kept calls it once afterwards when
-    its LMSpec's keep_model_loaded is off (PreFlight Observe, Captioner)."""
+    its LMSpec's keep_model_loaded is off (PreFlight Observe)."""
     for name in registry.names(LM_BACKEND):
         registry.get(LM_BACKEND, name).unload()
 

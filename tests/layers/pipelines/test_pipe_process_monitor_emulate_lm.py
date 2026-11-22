@@ -7,10 +7,7 @@ emulate test's.
     0 bytes. What links into it (an image, LM Config) keeps its own estimate;
   - LM Config: counted, no tensor: its output is a dict of the edited sampling fields;
   - LM Loader: counted, no tensor: its output is a description of the model (pipelines/lm.LMSpec), nothing
-    loaded;
-  - Captioner: not counted, as Qwen LM (its LM Loader's model is a catalog name), with its 600-token KV cache
-    and the 1024 cap named; its outputs are lists (views of the input frames, strings), which Emulate does not
-    follow. The image it reads keeps its own estimate.
+    loaded.
 """
 
 import pytest
@@ -21,7 +18,7 @@ from test_pipe_process_monitor_emulate import N, rows_of
 
 class Env(emulate.Env):
     TYPES = {**emulate.Env.TYPES, "BC_QwenLM": ["STRING", "STRING"], "BC_LMConfig": ["BC_LM_CONFIG"],
-             "BC_LMLoader": ["BC_LM"], "BC_Captioner": ["IMAGE", "STRING"], "PreviewAny": []}
+             "BC_LMLoader": ["BC_LM"], "PreviewAny": []}
 
 
 @pytest.fixture
@@ -68,24 +65,13 @@ def test_qwen_lm_is_not_counted_without_inputs_too(em):
     assert row["status"] == "not counted" and "catalog entry, not a file" in row["note"]
 
 
-def test_lm_loader_is_counted_and_captioner_is_not(em):
-    p = {"9": N("LoadImage", image="ref.png"),
-         "3": N("BC_LMLoader", family="Qwen LM", model="Qwen3.5-9B", precision="INT8 ConvRot",
+def test_lm_loader_is_counted(em):
+    p = {"3": N("BC_LMLoader", family="Qwen LM", model="Qwen3.5-9B", precision="INT8 ConvRot",
                 lora="my_lora.safetensors", lora_strength=1.0, keep_model_loaded=True),
-         "1": N("BC_Captioner", image=["9", 0], lm=["3", 0], style="tags", seed=0),
-         "2": N("PreviewAny", source=["1", 1])}
+         "2": N("PreviewAny", source=["3", 0])}
     r = em.estimate(p, Env())
-    rows = {row["id"]: row for row in r["rows"]}
-    loader = rows["3"]
+    loader = {row["id"]: row for row in r["rows"]}["3"]
     assert (loader["status"], loader["outputs"], loader["output_bytes"], loader["transient"]) == ("counted", [], 0, 0)
     assert loader["note"].startswith("a description of the model") and "nothing loaded" in loader["note"]
     assert loader["weights"] == [] and loader["vram_need"] == 0
-    row = rows["1"]
-    assert row["status"] == "not counted" and row["transient"] is None and row["outputs"] == [] and row["output_bytes"] == 0
-    assert row["note"].startswith("the LM Loader's model is a catalog entry, not a file")
-    for part in ("model file's weights", "the LoRA", "KV cache core reserves for prompt + 600 tokens",
-                 "over 1024 on a side", "lists of views of the input frames"):
-        assert part in row["note"], part
-    assert row["weights"] == [] and row["vram_need"] == 0
-    assert rows["9"]["output_bytes"] == 480 * 640 * 3 * 4 + 480 * 640 * 4
-    assert r["not_counted"] == ["1"]
+    assert r["not_counted"] == []
