@@ -5,7 +5,8 @@
     unchanged);
   - encode_image: an image within the limits sent at its own size, a larger one at resized_size (decoded back),
     PNG or JPEG, an encoding over the per-image limit an error naming the image and image_format;
-  - the request: the system prompt as written and none when empty, never tools or sampling fields, adaptive
+  - the request: the system prompt as written (with a cache breakpoint unless Claude Config turns it off) and none
+    when empty, never tools or sampling fields, adaptive
     thinking with the summary, the effort, the model's ID or Claude Config's model_id, one image without a label
     and two with "Image N:" labels, an empty prompt left out (an error with no image), stop sequences, fast
     mode, the server-side fallback (its beta) except on Haiku 5.5 and with on_refusal error;
@@ -61,7 +62,8 @@ def block(kind, value=""):
 
 def message(content, model="claude-opus-5-5", stop_reason="end_turn", stop_details=None, output_tokens=7):
     return types.SimpleNamespace(content=content, model=model, stop_reason=stop_reason, stop_details=stop_details,
-                                 usage=types.SimpleNamespace(input_tokens=11, output_tokens=output_tokens))
+                                 usage=types.SimpleNamespace(input_tokens=11, output_tokens=output_tokens,
+                                                       cache_read_input_tokens=0, cache_creation_input_tokens=None))
 
 
 class StandIn:
@@ -195,8 +197,12 @@ def test_request_holds_only_what_the_node_gives(claude, monkeypatch, interrupt):
     assert p["betas"] == [claude.FALLBACK_BETA] and p["fallbacks"] == "default"
 
 
-def test_system_prompt_as_written_whitespace_only_none(claude, monkeypatch, interrupt):
+def test_system_prompt_as_written_cached_whitespace_only_none(claude, monkeypatch, interrupt):
+    # cached by default: the breakpoint on the system prompt, the one part that repeats between runs
     _, client = run_with(claude, monkeypatch, request(claude, system_prompt="  Be brief.\n"))
+    assert client.params["system"] == [{"type": "text", "text": "  Be brief.\n", "cache_control": {"type": "ephemeral"}}]
+    assert "cache_control" not in client.params  # no top-level breakpoint: it would sit on the changing prompt
+    _, client = run_with(claude, monkeypatch, request(claude, system_prompt="  Be brief.\n", cache_system_prompt=False))
     assert client.params["system"] == "  Be brief.\n"
     _, client = run_with(claude, monkeypatch, request(claude, system_prompt=" \n "))
     assert "system" not in client.params

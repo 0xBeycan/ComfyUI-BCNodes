@@ -362,7 +362,7 @@ ComfyUI's **Settings → BCNodes → Claude → Anthropic API key**: paste a Cla
 
 Each run is one independent request: the API keeps no conversation, so a run never sees an earlier run or another Claude node.
 
-- **System prompt**: `system_prompt` as written, the whole of it. The Messages API has no default system prompt of its own (claude.ai's belongs to that app), and the node sends no tools: the API builds a tool-use system prompt around yours only for a request with tools.
+- **System prompt**: `system_prompt` as written, the whole of it, with a prompt-caching breakpoint on it unless Claude Config's `cache_system_prompt` is off. The Messages API has no default system prompt of its own (claude.ai's belongs to that app), and the node sends no tools: the API builds a tool-use system prompt around yours only for a request with tools.
 - **User turn**: the images, then `prompt`. With two or more images each one is introduced by a text label, `Image 1:`, `Image 2:`, … in input order, as Anthropic's vision guide advises, so the prompt can name them. That label is the only text the node adds.
 - **Thinking**: always on with these models; `effort` is its control (`thinking: {type: "adaptive", display: "summarized"}`; the summary costs nothing extra).
 - **Not sent**: `temperature`, `top_p`, `top_k` (the API rejects them on these models), the seed, tools.
@@ -378,11 +378,11 @@ Every frame of every image input is one image, in input order (`image_1`'s frame
 - **Refusal**: the model's safety classifiers can decline a request. With Claude Config's `on_refusal` at `fallback` (the default) the API runs it again on the model Anthropic recommends for that refusal category, billed at that model's rates, and the console logs `[BCNodes] Claude: <model> declined the request and <model> answered it`; Haiku 5.5 has no fallback. A refusal that stands is an error naming its category.
 - **Errors** say what to do: no key or a key the API refuses (the setting), a timeout (Claude Config's `timeout`), no connection, and any other API error with its status, message and request id. The SDK retries connection errors, rate limits and server errors itself (`max_retries`).
 - **Cancel** (ComfyUI's Interrupt) closes the stream between its events; tokens written until then are billed.
-- **Console**: one line per run with the model, its input and output tokens and the request id.
+- **Console**: one line per run with the model, its input tokens (with the cache reads and writes), its output tokens and the request id.
 
 ## `BC_ClaudeConfig` — Claude Config
 
-`model_id`, `stop_sequences`, `on_refusal`, `speed`, `image_format`, `timeout`, `max_retries` → `config` (`BC_CLAUDE_CONFIG`), for a Claude node's `config` input. A Claude node without one runs with these defaults.
+`model_id`, `stop_sequences`, `on_refusal`, `speed`, `image_format`, `timeout`, `max_retries`, `cache_system_prompt` → `config` (`BC_CLAUDE_CONFIG`), for a Claude node's `config` input. A Claude node without one runs with these defaults.
 
 | Widget | Default | Range | Meaning |
 | --- | --- | --- | --- |
@@ -393,6 +393,7 @@ Every frame of every image input is one image, in input order (`image_1`'s frame
 | `image_format` | `png` | `png`, `jpeg` | How images are uploaded: PNG lossless, or JPEG at quality 95 for an image whose PNG exceeds 10 MB. |
 | `timeout` | `600` | `1`–`3600` s | How long the request may wait for the API, per read of the stream. 600 is the SDK's default. |
 | `max_retries` | `2` | `0`–`10` | How often the SDK retries a connection error, a rate limit (429) or a server error, with backoff. 2 is the SDK's default. |
+| `cache_system_prompt` | on | | Prompt caching of the system prompt, the one part of the node's request that repeats between runs: a run within 5 minutes of the last reads it from Anthropic's cache at about a tenth of the input price (the first run writes it at 1.25×); the answer is the same. It pays off when many runs share one long system prompt, such as captioning a set. Below the model's minimum cacheable length (512 tokens on Opus 5.5) the API caches nothing and charges nothing extra. The console line of each run shows the cache reads and writes. Off: the system prompt is sent without a breakpoint. |
 
 ## Claude Chat
 

@@ -59,8 +59,8 @@ class Claude:
             },
             "optional": FlexibleOptionalInputType("IMAGE", known={
                 "config": ("BC_CLAUDE_CONFIG", {"tooltip": "A Claude Config node: model_id, stop sequences, refusal "
-                                                           "fallback, speed, image format, timeout and retries. Not "
-                                                           "connected: its defaults."}),
+                                                           "fallback, speed, image format, timeout, retries and "
+                                                           "system prompt caching. Not connected: its defaults."}),
                 "image_1": ("IMAGE", {"tooltip": "Images the model sees, before the prompt: every frame of the batch "
                                                  "is one image. Connecting the last image input adds the next one. "
                                                  "With two or more images each is labelled Image 1:, Image 2:, ... "
@@ -133,6 +133,17 @@ class ClaudeConfig:
                                         "tooltip": "How often the SDK retries a connection error, a rate limit (429) "
                                                    "or a server error, with backoff. 2 is the SDK's default."}),
             },
+            # Added after the node's release, optional so an API-format prompt saved without it still validates.
+            "optional": {
+                "cache_system_prompt": ("BOOLEAN", {"default": defaults.cache_system_prompt,
+                                                    "tooltip": "Prompt caching of the system prompt: a run within 5 "
+                                                               "minutes of the last reads it at about a tenth of the "
+                                                               "input price (the first writes it at 1.25x); the answer "
+                                                               "is the same. Pays off when many runs share one long "
+                                                               "system prompt (captioning a set); below the model's "
+                                                               "minimum (512 tokens on Opus 5.5) nothing is cached "
+                                                               "and nothing extra is charged."}),
+            },
         }
 
     RETURN_TYPES = ("BC_CLAUDE_CONFIG",)
@@ -142,15 +153,18 @@ class ClaudeConfig:
     CATEGORY = "BCNodes/lm"
     SEARCH_ALIASES = ["BCNodes", "claude config", "anthropic", "stop sequences", "fallback", "fast mode"]
     DESCRIPTION = ("The Claude node's other settings: a model ID that replaces its model, stop sequences, what a "
-                   "refusal does, fast mode, the image upload format, the timeout and the retries.")
+                   "refusal does, fast mode, the image upload format, the timeout, the retries and prompt caching of "
+                   "the system prompt.")
 
-    def build(self, model_id, stop_sequences, on_refusal, speed, image_format, timeout, max_retries):
+    def build(self, model_id, stop_sequences, on_refusal, speed, image_format, timeout, max_retries,
+              cache_system_prompt=True):
+        """cache_system_prompt was added after the node's release: a saved workflow without it gets the default."""
         from ..pipelines.claude.messages import ClaudeConfigValues
 
         return (ClaudeConfigValues(model_id=model_id.strip(),
                                    stop_sequences=tuple(line for line in stop_sequences.splitlines() if line.strip()),
                                    on_refusal=on_refusal, speed=speed, image_format=image_format, timeout=timeout,
-                                   max_retries=max_retries),)
+                                   max_retries=max_retries, cache_system_prompt=cache_system_prompt),)
 
 
 def register_routes():

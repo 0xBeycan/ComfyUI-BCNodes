@@ -1527,7 +1527,8 @@ async def claude_nodes():
         content=[types.SimpleNamespace(type="thinking", thinking="Two colours.", signature="s"),
                  types.SimpleNamespace(type="text", text="A red image and two green ones.")],
         model="claude-haiku-5-5", stop_reason="end_turn", stop_details=None,
-        usage=types.SimpleNamespace(input_tokens=100, output_tokens=20))
+        usage=types.SimpleNamespace(input_tokens=100, output_tokens=20, cache_read_input_tokens=0,
+                                    cache_creation_input_tokens=0))
 
     class StandIn:
         request_id = "req_runtime"
@@ -1651,7 +1652,8 @@ async def claude_chat_routes():
         check("Claude Chat: a setting changes; an unknown value is a 400 that names the choices",
               changed.get("effort") == "low" and bad.status == 400 and "no effort" in (await bad.json())["error"],
               f"{changed.get('effort')} {bad.status}")
-        await client.post(f"/bcnodes/claude/chats/{sid}/send", json={"text": "Again", "images": []})
+        # read the whole stream: the turn runs on a worker thread after the response has started
+        await (await client.post(f"/bcnodes/claude/chats/{sid}/send", json={"text": "Again", "images": []})).text()
         check("Claude Chat: the second turn sends the saved history first, then the new message",
               len(calls) == 2 and calls[1]["messages"][:2] == saved["messages"]
               and calls[1]["messages"][2]["content"] == [{"type": "text", "text": "Again"}]

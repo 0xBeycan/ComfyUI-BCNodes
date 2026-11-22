@@ -9,7 +9,7 @@ recorder:
     (not name order) as an 8-bit image, a half-precision frame read as its float32 source, and Claude Config's
     defaults when no config is connected;
   - Claude Config: model_id stripped, stop sequences one per line with blank lines dropped, the other fields as
-    given.
+    given; cache_system_prompt optional (added after the release), on when missing.
 """
 
 import numpy as np
@@ -64,6 +64,10 @@ def test_config_surface(node, pipe):
     assert required["on_refusal"][0] == ["fallback", "error"] and required["speed"][0] == ["standard", "fast"]
     assert required["image_format"][0] == ["png", "jpeg"]
     assert all(spec[1].get("tooltip") for spec in required.values())
+    # added after the release: optional and last, so saved workflows and API prompts keep working
+    optional = node.ClaudeConfig.INPUT_TYPES()["optional"]
+    assert list(optional) == ["cache_system_prompt"] and optional["cache_system_prompt"][0] == "BOOLEAN"
+    assert optional["cache_system_prompt"][1]["default"] is True and optional["cache_system_prompt"][1]["tooltip"]
     assert node.ClaudeConfig.RETURN_TYPES == ("BC_CLAUDE_CONFIG",)
 
 
@@ -113,4 +117,6 @@ def test_config_build(node, pipe):
     (values,) = node.ClaudeConfig().build("  claude-sonnet-5 \n", "</caption>\n\n  \nEND", "error", "fast", "jpeg", 90, 5)
     assert values == pipe.ClaudeConfigValues(model_id="claude-sonnet-5", stop_sequences=("</caption>", "END"),
                                              on_refusal="error", speed="fast", image_format="jpeg", timeout=90,
-                                             max_retries=5)
+                                             max_retries=5, cache_system_prompt=True)
+    (values,) = node.ClaudeConfig().build("", "", "fallback", "standard", "png", 600, 2, cache_system_prompt=False)
+    assert values.cache_system_prompt is False

@@ -53,6 +53,7 @@ class ClaudeConfigValues:
     image_format: str = "png"     # png or jpeg (quality JPEG_QUALITY)
     timeout: int = 600            # seconds; the SDK's default
     max_retries: int = 2          # the SDK's default
+    cache_system_prompt: bool = True  # a cache breakpoint on the system prompt (prompt caching)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -149,7 +150,13 @@ def request_params(request, sources):
               "messages": [{"role": "user", "content": user_content(request.prompt, sources)}],
               "thinking": {"type": "adaptive", "display": "summarized"},
               "output_config": {"effort": request.effort}}
-    if request.system_prompt.strip():
+    if request.system_prompt.strip() and config.cache_system_prompt:
+        # The system prompt is the request's only part that repeats between runs (images and prompt change), so
+        # the breakpoint goes on it: a later run within the cache's 5 minutes reads it at about a tenth of the
+        # input price (the first writes it at 1.25x). Below the model's minimum cacheable length (512 tokens on
+        # Opus 5.5) the API caches nothing and charges nothing extra.
+        params["system"] = [{"type": "text", "text": request.system_prompt, "cache_control": {"type": "ephemeral"}}]
+    elif request.system_prompt.strip():
         params["system"] = request.system_prompt
     if config.stop_sequences:
         params["stop_sequences"] = list(config.stop_sequences)
@@ -237,6 +244,8 @@ def run(request):
         message, request_id = stream_message(client, params)
     except anthropic.APIError as error:
         raise RuntimeError(api_error(error, request.config.timeout)) from error
-    logging.info("[BCNodes] Claude: %s, %d input + %d output tokens, request %s", message.model,
-                 message.usage.input_tokens, message.usage.output_tokens, request_id)
+    usage = message.usage
+    logging.info("[BCNodes] Claude: %s, %d input (cache read %d, written %d) + %d output tokens, request %s",
+                 message.model, usage.input_tokens, usage.cache_read_input_tokens or 0,
+                 usage.cache_creation_input_tokens or 0, usage.output_tokens, request_id)
     return read_answer(message, params["model"])
