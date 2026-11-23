@@ -39,12 +39,12 @@ pipelines/matting.py          finish() option chain; remove_background() -> mode
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
 pipelines/skin_texture.py     SAM 3 prompts, face gate, mask assembly, texture call
-pipelines/detailer/           region (the crop around a region: its box + padding, its longer side sampled at size; None when
-                              that side is size or more),
+pipelines/detailer/           region (the crop around a region: sampled at crop_size, the region's longer side at size inside
+                              it; None when that side is size or more),
                               conditioning (each ControlNet's hint cut to the crop: the conditioning's, and Z-Image Fun
                               ControlNet's model patch on a clone of the model; core's inpaint conditioning), core
-                              (Detailer's flow: crop -> Differential Diffusion structure + refine pass -> paste), face (Face
-                              Detailer: SAM 3 faces, the character, the size gate, mouth and eye passes)
+                              (Detailer's flow: crop -> Differential Diffusion sampling -> paste), face (Face
+                              Detailer: SAM 3 faces, the character, the size gate, the face and eye passes)
 pipelines/quality_gate.py     shot profiles, QualityCheck, verdict, report, badge
 pipelines/social_export.py    Social Media Export engine: plan, crop/pad, encode, report line
 pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop; Save Image With Caption's folder,

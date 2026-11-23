@@ -1,16 +1,18 @@
 """Face Detailer: SAM 3 finds every face of a frame; the character's face is detailed with the main
 model (the one with the character LoRA), every other face with `model_no_lora` when it is connected and
-not at all when it is not. Each face gets up to three passes of the detailer core (core.py), each a
-region of its own: the face, then the mouth, then each eye, the mouth and the eyes detected by SAM 3 on
-the face's box of the frame the face pass left, cut to the face's mask.
+not at all when it is not. Each face gets two passes of the detailer core (core.py): the face, then its
+eyes as one region (the union of SAM 3's eye detections on the face's box of the frame the face pass
+left, cut to the face's mask), so the model sees both eyes in one crop and their gazes match; one eye
+alone when only one is found.
 
 - The character: the face the external mask overlaps most (none when it overlaps none); without the
   mask, the face of the largest area. Chosen among every face found, before the size gate.
-- The size gate: a face shorter than `min_height` px is left as it is (its eyes are a few pixels). Every
-  pass samples its region (the face, the mouth, an eye) by one rule, core's: the region's longer side at
-  s.size px (face_size), its crop the region's box grown by s.padding on each side; a region whose longer
-  side is s.size px or more skips its pass (core.locate). So a face as large as face_size keeps its own
-  pixels while its mouth and eyes, a fraction of its width each, are still detailed.
+- The size gate: a face shorter than MIN_FACE_HEIGHT px is left as it is (its eyes are a few pixels); a
+  face taller than `max_height` px skips the face pass. Every pass samples its region by one rule, core's:
+  the region's longer side at s.size px inside a crop sampled at s.crop_size px; a region whose longer
+  side is s.size px or more skips its pass (core.locate). The face pass with the face's settings, the eye
+  pass with the eyes' (their own size, crop size and denoise). So a face too large for the face pass keeps
+  its own pixels while its eyes are still detailed.
 - Order: the character first, with its model, then the other faces with theirs, so the model changes
   once per frame.
 
@@ -27,9 +29,9 @@ from ...models.sam3.loader import load
 from .core import detail, differential, locate, mark, working_frame
 from .region import bounds
 
-FACE_PROMPT = "face:200"      # every face: ":N" keeps up to N detections; SAM 3's detector has 200 queries
-MOUTH_PROMPT = "teeth, lips"  # one detection of each, detailed as one region
-EYES_PROMPT = "eyes:2"        # each eye a detection, and a region, of its own
+FACE_PROMPT = "face:200"  # every face: ":N" keeps up to N detections; SAM 3's detector has 200 queries
+EYES_PROMPT = "eyes:2"    # each eye a detection; the two detailed as one region
+MIN_FACE_HEIGHT = 64      # px: a shorter face gets no pass (an eye about 13 px; the model would invent the face)
 
 
 def find_faces(sam, cond, frame, threshold):
@@ -51,22 +53,15 @@ def character(faces, select):
     return overlaps.index(max(overlaps)) if max(overlaps) > 0 else None
 
 
-def find_parts(sam, cond, frame, face, threshold, separate):
-    """The regions SAM 3 finds for `cond` on the box of `face` (H, W bool) of `frame`, each cut to the
-    face's mask (an empty one left out): one per detection when `separate`, otherwise their union as
-    one region (none when nothing is found)."""
+def find_part(sam, cond, frame, face, threshold):
+    """The region SAM 3 finds for `cond` on the box of `face` (H, W bool) of `frame`: the union of its
+    detections, cut to the face's mask; None when none of it is inside the face."""
     x0, y0, x1, y1 = bounds(face)
     masks, _ = detect(sam, cond, frame[None, y0:y1, x0:x1], threshold, individual_masks=True)
-    parts = []
-    for mask in masks:
-        part = torch.zeros_like(face)
-        part[y0:y1, x0:x1] = mask > 0.5
-        part &= face
-        if bool(part.any()):
-            parts.append(part)
-    if separate or not parts:
-        return parts
-    return [torch.stack(parts).any(dim=0)]
+    part = torch.zeros_like(face)
+    part[y0:y1, x0:x1] = (masks > 0.5).any(dim=0)
+    part &= face
+    return part if bool(part.any()) else None
 
 
 def _detail(frame, region, sampler, s, changed):
@@ -78,14 +73,14 @@ def _detail(frame, region, sampler, s, changed):
         mark(changed, located)
 
 
-def run(image, model, model_no_lora, s, sam3_model, threshold, select, min_height, face_pass, mouth_pass, eyes_pass):
+def run(image, model, model_no_lora, face_s, eye_s, sam3_model, threshold, select, max_height, face_pass, eyes_pass):
     """BC_FaceDetailer: (image with the faces detailed, the pixels changed), frame by frame into outputs of
     the image's dtype when that is half precision, float32 otherwise. `select`: the optional MASK that
-    picks the character; `s`: core.Settings."""
+    picks the character; `face_s`, `eye_s`: the core.Settings of the face pass and of the eye pass;
+    `max_height`: px, a taller face skips the face pass."""
     b, h, w, c = image.shape
     sam, clip = load(sam3_model)
     face_cond = text_condition(clip, FACE_PROMPT)
-    mouth_cond = text_condition(clip, MOUTH_PROMPT) if mouth_pass else None
     eyes_cond = text_condition(clip, EYES_PROMPT) if eyes_pass else None
     main, other = differential(model), None if model_no_lora is None else differential(model_no_lora)
     out = torch.empty((b, h, w, c), dtype=output_dtype(image))
@@ -99,15 +94,13 @@ def run(image, model, model_no_lora, s, sam3_model, threshold, select, min_heigh
             order += [(face, other) for n, face in enumerate(faces) if n != chosen]
         for face, sampler in order:
             _, top, _, bottom = bounds(face)
-            if bottom - top < min_height:
+            if bottom - top < MIN_FACE_HEIGHT:
                 continue
-            if face_pass:
-                _detail(frame, face, sampler, s, changed[i])
-            if mouth_pass:
-                for part in find_parts(sam, mouth_cond, frame, face, threshold, separate=False):
-                    _detail(frame, part, sampler, s, changed[i])
+            if face_pass and bottom - top <= max_height:
+                _detail(frame, face, sampler, face_s, changed[i])
             if eyes_pass:
-                for part in find_parts(sam, eyes_cond, frame, face, threshold, separate=True):
-                    _detail(frame, part, sampler, s, changed[i])
+                eyes = find_part(sam, eyes_cond, frame, face, threshold)
+                if eyes is not None:
+                    _detail(frame, eyes, sampler, eye_s, changed[i])
         out[i] = frame
     return out, changed

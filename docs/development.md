@@ -50,12 +50,12 @@ ComfyUI-BCNodes/
     postfx.py              the postfx adapter: dropdown catalogs, looks, apply, contact sheet
     skin_texture.py        SAM 3 prompts, face gate, mask assembly, texture call
     detailer/
-      region.py            the crop around a region (its box + padding) and its sampling size (its longer side at size);
-                           None when that side is size or more
+      region.py            the crop around a region and its sampling size (its longer side at crop_size, the region's at
+                           size); None when the region's longer side is size or more
       conditioning.py      ControlNet hints cut to the crop (the conditioning's, Z-Image Fun ControlNet's model
                            patch on a clone); core's inpaint conditioning of the crop
-      core.py              the detailer core (Detailer's flow): crop -> structure + refine pass -> paste
-      face.py              Face Detailer: SAM 3 faces, the character, the size gate, mouth and eye passes
+      core.py              the detailer core (Detailer's flow): crop -> sampling -> paste
+      face.py              Face Detailer: SAM 3 faces, the character, the size gate, the face and eye passes
     quality_gate.py        shot profiles, the three-tier checks, verdict, report, badge
     social_export.py       Social Media Export geometry / encoding engine, no ComfyUI or torch imports
     save_image.py          Save Image name grammar, job JSON, save loop; Save Image With Caption's folder,

@@ -34,20 +34,21 @@ def bounds(hard):
     return int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1
 
 
-def plan(box, image_width, image_height, padding, size):
-    """The Crop of the region whose bounds are `box`, sampled with the region's longer side at `size` px; None
-    when that side is `size` px or more (sampling it adds no detail).
+def plan(box, image_width, image_height, size, crop_size):
+    """The Crop of the region whose bounds are `box`: sampled at `crop_size` px on its longer side, with the
+    region's longer side at `size` px inside it; None when the region's longer side is `size` px or more
+    (sampling it adds no detail). A crop_size under size is size: the box itself, no surroundings.
 
-    The crop is the box grown by `padding` times its width on the left and on the right and its height above
-    and below, cut to the image. Its sampling size is that crop at the region's zoom (size / the longer
-    side), each side rounded up to a multiple of MULTIPLE; the crop is then taken at the sampling size's
-    aspect and that zoom (so the rounding only adds surroundings), around the box's centre and moved inside
-    the image. Only where that crop would be larger than the image does the zoom rise until it fits."""
+    The crop is the box at its own aspect, grown around it until, at the region's zoom (size / the longer
+    side), its longer side is crop_size px; cut to the image. Its sampling size is that crop at the zoom,
+    each side rounded up to a multiple of MULTIPLE; the crop is then taken at the sampling size's aspect and
+    that zoom (so the rounding only adds surroundings), around the box's centre and moved inside the image.
+    Only where that crop would be larger than the image does the zoom rise until it fits."""
     x0, y0, x1, y1 = box
     longer = max(x1 - x0, y1 - y0)
     if longer >= size:
         return None
-    grow = 1 + 2 * padding
+    grow = max(crop_size, size) / size
     want_w, want_h = min(image_width, (x1 - x0) * grow), min(image_height, (y1 - y0) * grow)
     zoom = size / longer
     # round(..., 6): a float error (1280.0000000002 for 1280) is not rounded up a whole MULTIPLE

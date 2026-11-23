@@ -1,14 +1,13 @@
 """The detailer core: a region of an image cut out with its surroundings, enlarged until the region's
-longer side is `size` px, sampled in two passes, shrunk back and pasted through the region's own shape.
+longer side is `size` px, sampled, shrunk back and pasted through the region's own shape.
 
-- The crop: region.plan (the region's box grown by `padding` times the box on each side, sampled with the
-  region's longer side at `size` px, both sampling sides multiples of 64); a region whose longer side is
-  `size` px or more is left as it is.
+- The crop: region.plan (sampled at `crop_size` px on its longer side with the region's longer side at
+  `size` px inside it, both sampling sides multiples of 64); a region whose longer side is `size` px or
+  more is left as it is.
 - Sampling: the model with core's Differential Diffusion (a clone), core's inpaint conditioning of the
   crop with the region's mask, softened at its edge, as the noise mask, every ControlNet's hint cut to the
   crop (conditioning.py: those in the conditioning, and Z-Image's Fun ControlNet on a clone of the model per
-  region). The structure pass samples at `denoise`, the refine pass samples its latent
-  again at `refine_denoise` (seed + 1); a pass at 0 does not run.
+  region). One sampling at `denoise`; at 0 it does not run.
 - The paste: the decoded crop shrunk back, its colour matched to the image's in the mask's edge band
   (libs/color.match_band), Laplacian-pyramid blended under the mask softened inward (libs/blend), and
   only the pixels inside the mask taken: every other pixel keeps its exact value.
@@ -33,7 +32,6 @@ from .region import bounds, plan
 
 FEATHER = 0.02    # sigma of the mask's soft edge, a fraction of the crop's shorter side (~20 px at 1024)
 EDGE_BAND = 0.98  # the colour is matched inside the mask where its blur is below this: within ~2 sigma of the edge
-SEED_MAX = 0xFFFFFFFFFFFFFFFF
 
 
 @dataclass
@@ -48,9 +46,8 @@ class Settings:
     sampler_name: str
     scheduler: str
     denoise: float
-    refine_denoise: float
-    size: int        # px the region's longer side is sampled at (face_size / region_size)
-    padding: float   # the surroundings on each side of the region's box, a fraction of the box
+    size: int        # px the region's longer side is sampled at (region_size, face_size or eye_size)
+    crop_size: int   # px the crop's longer side is sampled at, the region at `size` inside it (at least size)
 
 
 def differential(model):
@@ -72,7 +69,7 @@ def locate(hard, s):
     """(Crop, the region's pixels inside it (h, w bool)) of the region `hard` (H, W bool); None when it
     is empty or its longer side is s.size px or more."""
     box = bounds(hard)
-    crop = None if box is None else plan(box, hard.shape[1], hard.shape[0], s.padding, s.size)
+    crop = None if box is None else plan(box, hard.shape[1], hard.shape[0], s.size, s.crop_size)
     return None if crop is None else (crop, hard[crop.y0:crop.y1, crop.x0:crop.x1])
 
 
@@ -87,17 +84,18 @@ def _soft(hard):
     return gauss_reflect(hard[None, None].float(), FEATHER * min(hard.shape))[0, 0]
 
 
-def _ksampler(model, s, positive, negative, latent, noise_mask, denoise, seed):
-    """One run of core's common_ksampler (nodes.py, which this pack may not import) on the latent tensor."""
+def _ksampler(model, s, positive, negative, latent, noise_mask):
+    """One run of core's common_ksampler (nodes.py, which this pack may not import) on the latent tensor, at
+    s.denoise with s.seed."""
     import comfy.sample
     import comfy.utils
     import latent_preview
 
     latent = comfy.sample.fix_empty_latent_channels(model, latent)
-    noise = comfy.sample.prepare_noise(latent, seed)
+    noise = comfy.sample.prepare_noise(latent, s.seed)
     return comfy.sample.sample(model, noise, s.steps, s.cfg, s.sampler_name, s.scheduler, positive, negative, latent,
-                               denoise=denoise, noise_mask=noise_mask, callback=latent_preview.prepare_callback(model, s.steps),
-                               disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=seed)
+                               denoise=s.denoise, noise_mask=noise_mask, callback=latent_preview.prepare_callback(model, s.steps),
+                               disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=s.seed)
 
 
 def _sample(base, region, crop, model, s, image_width, image_height):
@@ -111,9 +109,8 @@ def _sample(base, region, crop, model, s, image_width, image_height):
     negative = crop_conditioning(s.negative, crop, image_width, image_height, done)
     positive, negative, latent = inpaint(positive, negative, s.vae, pixels, noise_mask)
     model = crop_model(model, crop, image_width, image_height)
-    for denoise, seed in ((s.denoise, s.seed), (s.refine_denoise, (s.seed + 1) & SEED_MAX)):
-        if denoise > 0:
-            latent = _ksampler(model, s, positive, negative, latent, noise_mask, denoise, seed)
+    if s.denoise > 0:
+        latent = _ksampler(model, s, positive, negative, latent, noise_mask)
     images = s.vae.decode(latent)
     image = images.reshape(-1, *images.shape[-3:])[:1]  # a video VAE decodes (B, T, H, W, C)
     return _resize(image[..., :3].movedim(-1, 1).float().cpu(), base.shape[-2], base.shape[-1])[0]
@@ -145,14 +142,21 @@ def mark(changed, located):
     changed[crop.y0:crop.y1, crop.x0:crop.x1][region] = 1
 
 
-def run(image, masks, model, s, want_image=True):
+def run(image, masks, model, s, max_size, want_image=True):
     """BC_Detailer: (image with every region detailed, the pixels changed). Each mask of `masks` is one
-    region, detailed in batch order on every frame of `image`, each on the frame the previous ones left.
+    region, detailed in batch order on every frame of `image`, each on the frame the previous ones left; a
+    region whose longer side is over `max_size` px is left as it is, as is one s.size px or more (locate).
     Frames one at a time into outputs of the image's dtype when that is half precision, float32 otherwise.
     `want_image` False: nothing is sampled, the image is [0, H, W, 3] (the mask does not read it)."""
     b, h, w, c = image.shape
     count = masks.reshape(-1, *masks.shape[-2:]).shape[0]
-    regions = [r for r in (locate(fit_mask_frame(masks, n, h, w, count) > 0.5, s) for n in range(count)) if r is not None]
+    regions = []
+    for n in range(count):
+        hard = fit_mask_frame(masks, n, h, w, count) > 0.5
+        box = bounds(hard)
+        located = None if box is None or max(box[2] - box[0], box[3] - box[1]) > max_size else locate(hard, s)
+        if located is not None:
+            regions.append(located)
     changed = torch.zeros((b, h, w), dtype=output_dtype(image))
     for located in regions:
         mark(changed[0], located)

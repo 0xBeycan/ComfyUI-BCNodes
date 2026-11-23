@@ -1,9 +1,10 @@
 """The detailer core (pipelines/detailer: region, conditioning, core), with stand-ins for core's sampler,
 VAE, Differential Diffusion and node_helpers:
 
-  - the crop: the region's box grown by `padding` times the box on each side, cut to the image and moved
-    inside it, sampled with the region's longer side at `size` px (each sampling side rounded up to a
-    multiple of 64, the crop taken at that aspect, the zoom raised only where the crop would not fit);
+  - the crop: sampled at `crop_size` px on its longer side with the region's longer side at `size` px inside
+    it (the box at its aspect, grown around its centre; a crop_size under size is size), cut to the image
+    and moved inside it at the same zoom (each sampling side rounded up to a multiple of 64, the crop taken
+    at that aspect, the zoom raised only where the crop would not fit);
     wide, tall and square boxes; None when the longer side is `size` or more;
   - ControlNet hints cut to the crop: same size, another size, another aspect (core's centre cut), a
     chain copied link by link and shared by the positive and the negative, a 1x1 extra concat kept, the
@@ -16,10 +17,10 @@ VAE, Differential Diffusion and node_helpers:
     as concat_mask, the latent of the pixels;
   - the paste: every pixel outside the mask keeps its exact value, a colour drift is matched away, the
     patch's own detail lands inside;
-  - the run: two passes (denoise then refine_denoise, seed then seed + 1, a pass at 0 skipped) on a
-    Differential Diffusion clone, the soft noise mask at the sampling size, the cut hint in the
-    conditioning, a video VAE's 5-D decode, only masked pixels changed, a region too large skipped, the
-    mask output, the image unlinked (nothing sampled), half precision.
+  - the run: one sampling call per region (denoise, seed; none at denoise 0) on a Differential Diffusion
+    clone, the soft noise mask at the sampling size, the cut hint in the conditioning, a video VAE's 5-D
+    decode, only masked pixels changed, a region of `size` px or more skipped, a region over max_size
+    skipped (at it detailed), the mask output, the image unlinked (nothing sampled), half precision.
 """
 
 import sys
@@ -146,8 +147,7 @@ def sampled(monkeypatch):
 
 def settings(det, vae=None, positive=None, **kw):
     values = dict(vae=vae or FakeVAE(), positive=positive or [[torch.zeros(1, 2, 4), {}]], negative=[[torch.zeros(1, 2, 4), {}]],
-                  seed=7, steps=3, cfg=2.5, sampler_name="euler", scheduler="simple", denoise=0.5, refine_denoise=0.2,
-                  size=64, padding=0.5)
+                  seed=7, steps=3, cfg=2.5, sampler_name="euler", scheduler="simple", denoise=0.5, size=64, crop_size=128)
     values.update(kw)
     return det.core.Settings(**values)
 
@@ -172,44 +172,49 @@ def test_bounds(det):
     assert det.region.bounds(hard) == (3, 2, 9, 5)
 
 
-def test_region_sampled_at_size_with_padding(det):
+def test_region_at_size_inside_a_crop_sampled_at_crop_size(det):
     Crop = det.region.Crop
-    # an 80 x 100 box (a face), padding 0.5: a 160 x 200 crop around its centre, its 100 px side sampled at 640
-    assert det.region.plan((450, 400, 530, 500), 1000, 1000, 0.5, 640) == Crop(410, 350, 570, 550, 1024, 1280)
-    # padding 0: the box itself; padding 1: a box's width and height on every side
-    assert det.region.plan((100, 100, 200, 180), 1000, 1000, 0.0, 640) == Crop(100, 100, 200, 180, 640, 512)
-    assert det.region.plan((450, 450, 550, 550), 1000, 1000, 1.0, 320) == Crop(350, 350, 650, 650, 960, 960)
+    # an 80 x 100 box (a face) at 640 in a 1280 crop: a 160 x 200 crop around its centre, sampled at 1024 x 1280
+    assert det.region.plan((450, 400, 530, 500), 1000, 1000, 640, 1280) == Crop(410, 350, 570, 550, 1024, 1280)
+    # crop_size at size: the box itself; three times size: a box's width and height on every side
+    assert det.region.plan((100, 100, 200, 180), 1000, 1000, 640, 640) == Crop(100, 100, 200, 180, 640, 512)
+    assert det.region.plan((450, 450, 550, 550), 1000, 1000, 320, 960) == Crop(350, 350, 650, 650, 960, 960)
+    # a crop_size under size is size: the box itself
+    assert det.region.plan((100, 100, 200, 180), 1000, 1000, 640, 256) == Crop(100, 100, 200, 180, 640, 512)
+    # size 512, crop_size 1280: the model samples at exactly 1280 with the face's 100 px side at 512 inside (zoom 5.12,
+    # a 200 x 250 crop)
+    assert det.region.plan((450, 400, 530, 500), 1000, 1000, 512, 1280) == Crop(390, 325, 590, 575, 1024, 1280)
 
 
 def test_no_crop_when_the_region_is_size_or_larger(det):
-    assert det.region.plan((300, 300, 380, 400), 2000, 2000, 0.5, 100) is None  # its longer side at size
-    assert det.region.plan((300, 300, 380, 401), 2000, 2000, 0.5, 100) is None  # above it
-    assert det.region.plan((300, 300, 401, 380), 2000, 2000, 0.5, 100) is None  # the longer side is the width
-    crop = det.region.plan((300, 300, 380, 399), 2000, 2000, 0.5, 100)  # one px under: sampled, enlarged
+    assert det.region.plan((300, 300, 380, 400), 2000, 2000, 100, 200) is None  # its longer side at size
+    assert det.region.plan((300, 300, 380, 401), 2000, 2000, 100, 200) is None  # above it
+    assert det.region.plan((300, 300, 401, 380), 2000, 2000, 100, 200) is None  # the longer side is the width
+    crop = det.region.plan((300, 300, 380, 399), 2000, 2000, 100, 200)  # one px under: sampled, enlarged
     assert crop is not None and crop.height > crop.y1 - crop.y0 and crop.width > crop.x1 - crop.x0
 
 
 def test_crop_moved_inside_and_cut_to_the_image(det):
     Crop = det.region.Crop
-    # padding past the top-left and the bottom-right corners: the crop moved inside, its size kept (100 x 160 at zoom
+    # a crop past the top-left and the bottom-right corners: moved inside, its size kept (100 x 160 at zoom
     # 8 is 800 x 1280; 800 rounded up to 832, so 104 columns)
-    assert det.region.plan((0, 0, 50, 80), 1000, 800, 0.5, 640) == Crop(0, 0, 104, 160, 832, 1280)
-    assert det.region.plan((950, 720, 1000, 800), 1000, 800, 0.5, 640) == Crop(896, 640, 1000, 800, 832, 1280)
-    # padding past the whole image: the crop is the image
-    assert det.region.plan((100, 50, 300, 150), 400, 200, 1.0, 640) == Crop(0, 0, 400, 200, 1280, 640)
+    assert det.region.plan((0, 0, 50, 80), 1000, 800, 640, 1280) == Crop(0, 0, 104, 160, 832, 1280)
+    assert det.region.plan((950, 720, 1000, 800), 1000, 800, 640, 1280) == Crop(896, 640, 1000, 800, 832, 1280)
+    # a crop larger than the whole image: the crop is the image, sampled smaller than crop_size at the same zoom
+    assert det.region.plan((100, 50, 300, 150), 400, 200, 640, 1920) == Crop(0, 0, 400, 200, 1280, 640)
     # ... and where the sampling sides, rounded up (1400 -> 1408, 700 -> 704), would need more than the image, the
     # zoom rises to fit: the region at 704 px instead of 700
-    assert det.region.plan((100, 50, 300, 150), 400, 200, 1.0, 700) == Crop(0, 0, 400, 200, 1408, 704)
+    assert det.region.plan((100, 50, 300, 150), 400, 200, 700, 2100) == Crop(0, 0, 400, 200, 1408, 704)
 
 
 def test_non_square_regions(det):
     Crop = det.region.Crop
     # a wide box and a tall one: the longer side sampled at size, the crop at the box's aspect
-    assert det.region.plan((400, 480, 600, 520), 1000, 1000, 0.5, 640) == Crop(300, 460, 700, 540, 1280, 256)
-    assert det.region.plan((480, 400, 520, 600), 1000, 1000, 0.5, 640) == Crop(460, 300, 540, 700, 256, 1280)
+    assert det.region.plan((400, 480, 600, 520), 1000, 1000, 640, 1280) == Crop(300, 460, 700, 540, 1280, 256)
+    assert det.region.plan((480, 400, 520, 600), 1000, 1000, 640, 1280) == Crop(460, 300, 540, 700, 256, 1280)
     # a 103 x 47 box: its 206 x 94 crop at 640 / 103 is 1280 x 584; 584 is rounded up to 640, and the crop taken at
     # that aspect and the same zoom (103 rows, not 94): the rounding only adds surroundings, the region stays at 640
-    crop = det.region.plan((450, 450, 553, 497), 1000, 1000, 0.5, 640)
+    crop = det.region.plan((450, 450, 553, 497), 1000, 1000, 640, 1280)
     assert (crop.width, crop.height, crop.x1 - crop.x0, crop.y1 - crop.y0) == (1280, 640, 206, 103)
     assert crop.x0 <= 450 and crop.x1 >= 553 and crop.y0 <= 450 and crop.y1 >= 497
 
@@ -305,36 +310,28 @@ def test_paste_changes_only_the_mask(det):
 
 # --- the run -----------------------------------------------------------------------------------------
 
-def test_two_passes_on_a_differential_diffusion_clone(det, sampled):
+def test_one_sampling_on_a_differential_diffusion_clone(det, sampled):
     image, mask = picture(2), square()
-    out, changed = det.core.run(image, mask, "model", settings(det))
-    assert [(c["denoise"], c["seed"]) for c in sampled] == [(0.5, 7), (0.2, 8)]
-    assert all(c["model"].tag == ("dd", "model", 1.0) for c in sampled)
+    out, changed = det.core.run(image, mask, "model", settings(det), 64)
+    assert [(c["denoise"], c["seed"]) for c in sampled] == [(0.5, 7)]  # one call: no second pass
+    assert sampled[0]["model"].tag == ("dd", "model", 1.0)
     assert (sampled[0]["steps"], sampled[0]["cfg"], sampled[0]["sampler_name"], sampled[0]["scheduler"]) == (3, 2.5, "euler", "simple")
-    # the refine pass samples the structure pass's latent
-    assert torch.equal(sampled[1]["latent"], 1.0 - sampled[0]["latent"])
     noise_mask = sampled[0]["noise_mask"]
-    assert noise_mask.shape == (1, 1, 128, 128) and noise_mask is sampled[1]["noise_mask"]
+    assert noise_mask.shape == (1, 1, 128, 128)
     assert float(noise_mask[0, 0, 64, 64]) > 0.99 and float(noise_mask[0, 0, 0, 0]) < 0.01
     assert bool(((noise_mask > 0.05) & (noise_mask < 0.95)).any())  # a soft edge for Differential Diffusion
     assert sampled[0]["positive"][0][1]["concat_mask"] is noise_mask
     assert out.dtype == torch.float32 and changed.dtype == torch.float32
 
 
-@pytest.mark.parametrize("denoise,refine,passes", [(0.5, 0.0, [(0.5, 7)]), (0.0, 0.3, [(0.3, 8)])])
-def test_a_pass_at_zero_does_not_run(det, sampled, denoise, refine, passes):
-    det.core.run(picture(2), square(), "model", settings(det, denoise=denoise, refine_denoise=refine))
-    assert [(c["denoise"], c["seed"]) for c in sampled] == passes
-
-
-def test_refine_seed_wraps(det, sampled):
-    det.core.run(picture(2), square(), "model", settings(det, seed=0xFFFFFFFFFFFFFFFF))
-    assert [c["seed"] for c in sampled] == [0xFFFFFFFFFFFFFFFF, 0]
+def test_denoise_zero_samples_nothing(det, sampled):
+    det.core.run(picture(2), square(), "model", settings(det, denoise=0.0), 64)
+    assert sampled == []
 
 
 def test_only_masked_pixels_change(det, sampled):
     image, mask = picture(3), square()
-    out, changed = det.core.run(image, mask, "model", settings(det))
+    out, changed = det.core.run(image, mask, "model", settings(det), 64)
     inside = mask[0] > 0.5
     assert torch.equal(out[0][~inside], image[0][~inside])
     assert not torch.allclose(out[0][inside], image[0][inside], atol=1e-3)
@@ -343,7 +340,7 @@ def test_only_masked_pixels_change(det, sampled):
 
 def test_controlnet_hint_reaches_the_sampler_cut(det, sampled):
     control = FakeControl(hint(64, 64))
-    det.core.run(picture(2), square(), "model", settings(det, positive=[[torch.zeros(1), {"control": control}]]))
+    det.core.run(picture(2), square(), "model", settings(det, positive=[[torch.zeros(1), {"control": control}]]), 64)
     # Crop(19, 15, 39, 35): box (24, 20, 34, 30) times 2 around its centre
     cut = sampled[0]["positive"][0][1]["control"]
     assert torch.equal(cut.cond_hint_original, hint(64, 64)[..., 15:35, 19:39])
@@ -360,9 +357,9 @@ def test_zimage_patch_cut_on_a_clone(det, sampled):
     patch, other = ZImageControlPatch(hwc(64, 64), inpaint_image=hwc(64, 64), mask=hint(64, 64)[:, :1, None]), types.SimpleNamespace()
     image, inpaint_image, mask, encoded = patch.image, patch.inpaint_image, patch.mask, patch.encoded_image
     model = zimage_model(patch, other)
-    det.core.run(picture(2), square(), model, settings(det))
+    det.core.run(picture(2), square(), model, settings(det), 64)
     m = sampled[0]["model"]
-    assert m is sampled[1]["model"] and m.parent.tag == ("dd", model, 1.0)  # both passes: one clone of the DD clone
+    assert len(sampled) == 1 and m.parent.tag == ("dd", model, 1.0)  # a clone of the DD clone
     patches = m.model_options["transformer_options"]["patches"]
     cut = patches["noise_refiner"][0]
     assert cut is not patch and patches["double_block"][0] is cut and patches["double_block"][1] is other
@@ -382,10 +379,10 @@ def test_zimage_patch_cut_once_per_region(det, sampled):
     patch = ZImageControlPatch(hwc(64, 64))
     masks = torch.cat([square(top=4, left=4, size=8), square(top=40, left=40, size=8)])
     s = settings(det)
-    det.core.run(picture(4), masks, zimage_model(patch), s)
+    det.core.run(picture(4), masks, zimage_model(patch), s, 64)
     cuts = [c["model"].model_options["transformer_options"]["patches"]["double_block"][0] for c in sampled]
-    assert len(cuts) == 4 and cuts[0] is cuts[1] and cuts[2] is cuts[3] and cuts[0] is not cuts[2]
-    for cut, mask in zip(cuts[::2], masks):
+    assert len(cuts) == 2 and cuts[0] is not cuts[1]
+    for cut, mask in zip(cuts, masks):
         crop, _ = det.core.locate(mask > 0.5, s)
         assert (crop.width, crop.height) == (128, 128) and torch.equal(cut.image, hwc(64, 64)[:, crop.y0:crop.y1, crop.x0:crop.x1])
 
@@ -393,7 +390,7 @@ def test_zimage_patch_cut_once_per_region(det, sampled):
 def test_a_model_without_the_zimage_patch_is_sampled_as_it_is(det, sampled):
     other = types.SimpleNamespace()
     model = FakeModel({"double_block": [other]})
-    det.core.run(picture(2), square(), model, settings(det))
+    det.core.run(picture(2), square(), model, settings(det), 64)
     assert all(c["model"].tag == ("dd", model, 1.0) for c in sampled)  # the DD clone itself, not a clone of it
     assert sampled[0]["model"].model_options["transformer_options"]["patches"]["double_block"][0] is other
 
@@ -401,24 +398,33 @@ def test_a_model_without_the_zimage_patch_is_sampled_as_it_is(det, sampled):
 def test_regions_in_batch_order_and_skipped_when_too_large(det, sampled):
     image = picture(4)
     masks = torch.cat([square(top=4, left=4, size=8), square(top=40, left=40, size=8), torch.ones(1, 64, 64)])
-    out, changed = det.core.run(image, masks, "model", settings(det))
-    assert len(sampled) == 4  # two regions, two passes each; the whole-image mask is 64 px, the size: left as it is
+    out, changed = det.core.run(image, masks, "model", settings(det), 64)
+    assert len(sampled) == 2  # one call per region; the whole-image mask is 64 px, the size: left as it is
     assert torch.equal(changed[0], (masks[0] + masks[1]).clamp(0, 1))
     assert torch.equal(out[0][changed[0] == 0], image[0][changed[0] == 0])
 
 
+def test_region_over_max_size_left_as_it_is(det, sampled):
+    masks = torch.cat([square(top=4, left=4, size=8), square(top=40, left=40, size=10)])
+    out, changed = det.core.run(picture(4), masks, "model", settings(det), 9)  # the 10 px region just over max_size: skipped
+    assert len(sampled) == 1 and torch.equal(changed[0], masks[0])
+    sampled.clear()
+    out, changed = det.core.run(picture(4), masks, "model", settings(det), 10)  # at exactly max_size: detailed
+    assert len(sampled) == 2 and torch.equal(changed[0], (masks[0] + masks[1]).clamp(0, 1))
+
+
 def test_image_unlinked_samples_nothing(det, sampled):
     image, mask = picture(5).repeat(2, 1, 1, 1), square()
-    full_out, full_changed = det.core.run(image, mask, "model", settings(det))
+    full_out, full_changed = det.core.run(image, mask, "model", settings(det), 64)
     sampled.clear()
-    out, changed = det.core.run(image, mask, "model", settings(det), want_image=False)
+    out, changed = det.core.run(image, mask, "model", settings(det), 64, want_image=False)
     assert sampled == [] and out.shape == (0, 64, 64, 3) and torch.equal(changed, full_changed)
     assert full_out.shape == (2, 64, 64, 3) and torch.equal(full_changed[1], mask[0])
 
 
 def test_half_precision_in_and_out(det, sampled):
     image = picture(6).half()
-    out, changed = det.core.run(image, square().half(), "model", settings(det))
+    out, changed = det.core.run(image, square().half(), "model", settings(det), 64)
     assert out.dtype == torch.float16 and changed.dtype == torch.float16
     inside = square()[0] > 0.5
     assert torch.equal(out[0][~inside], image[0][~inside])

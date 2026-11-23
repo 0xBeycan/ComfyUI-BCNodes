@@ -660,9 +660,10 @@ def main():
 
     # --- Detailer / Face Detailer -------------------------------------------
     dt = m["detailer"]
-    sampling = dict(seed=0, steps=1, cfg=1.0, sampler_name="euler", scheduler="simple", denoise=0.5, refine_denoise=0.2, padding=0.5)
-    face_kw = dict(sampling, face_size=640, sam3_model=default_sam3, threshold=0.5, min_face_height=64, face=True, mouth=False, eyes=True)
-    sampling["region_size"] = 640
+    sampling = dict(seed=0, steps=1, cfg=1.0, sampler_name="euler", scheduler="simple", denoise=0.5)
+    face_kw = dict(sampling, face_size=640, face_crop_size=1280, max_face_height=384, eye_size=320, eye_crop_size=640,
+                   eye_denoise=0.35, sam3_model=default_sam3, threshold=0.5, face=True, eyes=True)
+    sampling.update(region_size=640, region_crop_size=1280, max_region_size=384)
     check("FaceDetailer: the default checkpoint is offered even with no checkpoints on disk",
           lambda: default_sam3 in dt.FaceDetailer.INPUT_TYPES()["required"]["sam3_model"][0] or _fail())
     check("Detailer None -> empty", lambda: dt.Detailer().detail(None, None, None, None, [], [], **sampling)[0].shape == (0, 64, 64, 3) or _fail())

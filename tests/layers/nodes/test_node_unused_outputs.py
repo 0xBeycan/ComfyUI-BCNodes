@@ -410,7 +410,7 @@ def test_skin_texture_applies_the_texture_only_when_linked(bcnodes, common, monk
 
 
 DETAILER_WIDGETS = dict(model=None, vae=None, positive=[], negative=[], seed=0, steps=1, cfg=1.0, sampler_name="euler",
-                        scheduler="simple", denoise=0.5, refine_denoise=0.2, padding=0.5)
+                        scheduler="simple", denoise=0.5)
 
 
 @pytest.mark.parametrize("linked", [(), ("image",), ("mask",)])
@@ -426,9 +426,10 @@ def test_detailer_samples_only_when_the_image_is_linked(bcnodes, common, monkeyp
     image = torch.rand(2, 32, 32, 3)
     mask = torch.zeros(1, 32, 32)
     mask[0, 10:18, 10:18] = 1.0
-    full = cls().detail(image, mask, **DETAILER_WIDGETS, region_size=256)
+    full = cls().detail(image, mask, **DETAILER_WIDGETS, region_size=256, region_crop_size=512, max_region_size=384)
     sampled = spy(monkeypatch, core, "detail")
-    out = cls().detail(image, mask, **DETAILER_WIDGETS, region_size=256, **hidden(common, cls, linked))
+    out = cls().detail(image, mask, **DETAILER_WIDGETS, region_size=256, region_crop_size=512, max_region_size=384,
+                        **hidden(common, cls, linked))
     check_outputs(cls, out, full, set(cls.HEAVY_OUTPUTS) - set(linked))
     assert len(sampled) == 2 * ("image" in linked)  # one region on each of the two frames
 
@@ -438,8 +439,8 @@ def test_face_detailer_drops_the_unlinked_output_at_return(bcnodes, common, monk
     cls, flow = bcnodes["detailer"].FaceDetailer, bcnodes["pipelines.detailer.face"]
     runs = []
     monkeypatch.setattr(flow, "run", lambda *args: runs.append(args) or (torch.rand(1, 8, 8, 3), torch.ones(1, 8, 8)))
-    widgets = dict(DETAILER_WIDGETS, face_size=256, sam3_model="unused", threshold=0.5, min_face_height=64, face=True, mouth=False,
-                   eyes=True)
+    widgets = dict(DETAILER_WIDGETS, face_size=256, face_crop_size=512, max_face_height=384, eye_size=128, eye_crop_size=256,
+                   eye_denoise=0.35, sam3_model="unused", threshold=0.5, face=True, eyes=True)
     full = cls().detail(torch.rand(1, 8, 8, 3), **widgets)
     runs.clear()
     out = cls().detail(torch.rand(1, 8, 8, 3), **widgets, **hidden(common, cls, linked))

@@ -61,8 +61,8 @@ Nodes:
     BC_SaveImageWithCaption      save images as PNG, a caption file next to each (datasets)
     BC_SkinTexture               micro-texture on skin inside a SAM 3 mask, before upscale and grain
     BC_FrequencyMerge            low frequencies of one image + high frequencies of another
-    BC_Detailer                  each mask region cropped, sampled at the model's size in two passes, pasted back
-    BC_FaceDetailer              SAM 3 faces detailed: the character with the LoRA model, others with model_no_lora; mouth, eyes
+    BC_Detailer                  each mask region cropped, sampled at the model's size, pasted back
+    BC_FaceDetailer              SAM 3 faces detailed: the character with the LoRA model, others with model_no_lora; then eyes
     BC_PreFlightObserve          Qwen3.5-9B as an observation sensor: image / frames -> observations JSON
     BC_PreFlightReport           rules engine: observations + caption -> IG / TikTok / X verdict ranges, logged
     BC_PreFlightOutcome          what a platform did to a post, into the feedback store
