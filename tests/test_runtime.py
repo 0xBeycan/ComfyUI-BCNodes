@@ -764,6 +764,7 @@ async def main():
     await detail_boost()
     await qwen_image_shift()
     detailer_zimage_patch()
+    detailer_qwen_fun_controlnet()
     lm_core()
     await lm_nodes()
     await claude_nodes()
@@ -1473,6 +1474,80 @@ def detailer_zimage_patch():
           {name: list(entry) for name, entry in lists.items()} == entries and lists["double_block"][0] is patch
           and all(a is b for a, b in zip((patch.image, patch.inpaint_image, patch.mask, patch.encoded_image), held))
           and tuple(patch.encoded_image.shape) == (1, 33, 12, 16), f"{tuple(patch.encoded_image.shape)}")
+
+
+def detailer_qwen_fun_controlnet():
+    """The detailer's cut of a ControlNet in the conditioning (pipelines/detailer/conditioning.crop_conditioning)
+    on Qwen-Image's Fun ControlNet as core's Apply ControlNet (ControlNetApplyAdvanced) puts it there: a
+    QwenFunControlNet configured as core's loader configures it (load_controlnet_qwen_fun), no weights, and a
+    stand-in VAE that records what it is given and stops get_control before the control model would run.
+    Each link is copied through core's own copy(), so the copy keeps its class and settings and drops the
+    hint core cached for another latent size; the hint is cut to the crop, and core scales the cut to the
+    crop's sampling size before its VAE encode."""
+    import importlib
+
+    import comfy.controlnet
+    import comfy.latent_formats
+    import comfy.utils
+    import torch
+
+    pkg = nodes.NODE_CLASS_MAPPINGS["BC_Detailer"].__module__.rsplit(".", 2)[0]
+    cond = importlib.import_module(f"{pkg}.pipelines.detailer.conditioning")
+    crop = importlib.import_module(f"{pkg}.pipelines.detailer.region").Crop(32, 16, 96, 80, 512, 512)
+
+    class Stop(Exception):
+        pass
+
+    class VAE:
+        def __init__(self):
+            self.encoded = []
+
+        def encode(self, pixels):
+            self.encoded.append(pixels.clone())
+            raise Stop  # the control model (no weights) would run next
+
+        def spacial_compression_encode(self):
+            return 8
+
+    vae = VAE()
+    control = comfy.controlnet.QwenFunControlNet(None, compression_ratio=1, latent_format=comfy.latent_formats.Wan21(), concat_mask=False,
+                                                 load_device=torch.device("cpu"), extra_conds=[])
+    control.control_model_wrapped = None  # no weights: copy() only passes it on
+    image = torch.rand(1, 96, 128, 3)
+    positive, negative = nodes.ControlNetApplyAdvanced().apply_controlnet([[torch.zeros(1, 2, 4), {}]], [[torch.zeros(1, 2, 4), {}]],
+                                                                          control, image, 1.0, 0.0, 1.0, vae=vae)
+    applied = positive[0][1]["control"]
+    applied.cond_hint = torch.zeros(1, 16, 1, 12, 16)  # the hint core cached in a run at the image's own size
+    held = (applied.cond_hint_original, applied.cond_hint, dict(positive[0][1]), dict(negative[0][1]))
+
+    done = {}
+    cut_positive = cond.crop_conditioning(positive, crop, 128, 96, done)
+    cut_negative = cond.crop_conditioning(negative, crop, 128, 96, done)
+    cut = cut_positive[0][1]["control"]
+    check("Detailer Qwen Fun ControlNet: the copy keeps core's class", type(cut) is comfy.controlnet.QwenFunControlNet
+          and cut is not applied, f"{type(cut).__name__}")
+    check("Detailer Qwen Fun ControlNet: the positive and the negative share one copy, as Apply ControlNet shares one link",
+          cut_negative[0][1]["control"] is cut)
+    check("Detailer Qwen Fun ControlNet: the copy keeps the VAE, the latent format and the mask settings",
+          cut.vae is vae and cut.latent_format is applied.latent_format and cut.concat_mask is False and cut.extra_concat_orig == []
+          and cut.extra_conds == [] and cut.compression_ratio == 1 and cut.upscale_algorithm == applied.upscale_algorithm
+          and (cut.strength, cut.timestep_percent_range) == (1.0, (0.0, 1.0)), f"{cut.vae} {cut.concat_mask} {cut.extra_concat_orig}")
+    check("Detailer Qwen Fun ControlNet: the copy has no cached hint", cut.cond_hint is None)
+    check("Detailer Qwen Fun ControlNet: the hint cut to the crop", tuple(cut.cond_hint_original.shape) == (1, 3, 64, 64)
+          and torch.equal(cut.cond_hint_original, image.movedim(-1, 1)[..., 16:80, 32:96]), f"{tuple(cut.cond_hint_original.shape)}")
+
+    cut.control_model = types.SimpleNamespace(dtype=torch.float32)  # get_control reads its dtype before the hint
+    try:
+        cut.get_control(torch.zeros(1, 16, crop.height // 8, crop.width // 8), torch.tensor([0.5]), {"c_crossattn": torch.zeros(1, 2, 4)},
+                        [1], {})
+    except Stop:
+        pass
+    want = comfy.utils.common_upscale(cut.cond_hint_original, crop.width, crop.height, cut.upscale_algorithm, "center").movedim(1, -1)
+    check("Detailer Qwen Fun ControlNet: core's get_control hands the VAE the cut hint at the crop's sampling size",
+          len(vae.encoded) == 1 and torch.equal(vae.encoded[0], want), f"{[tuple(e.shape) for e in vae.encoded]}")
+    check("Detailer Qwen Fun ControlNet: the conditioning and the ControlNet connected are left as they are",
+          positive[0][1] == held[2] and negative[0][1] == held[3] and positive[0][1]["control"] is applied
+          and applied.cond_hint_original is held[0] and applied.cond_hint is held[1] and applied.previous_controlnet is None)
 
 
 def lm_core():
