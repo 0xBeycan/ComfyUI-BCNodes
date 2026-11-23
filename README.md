@@ -78,7 +78,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | [`BCNodes/lm`](docs/lm.md) | Qwen LM, LM Config, LM Loader, Claude, Claude Config |
 | [`BCNodes/preflight`](docs/preflight.md) | PreFlight Observe, Report, Outcome, Calibrate |
 | [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Lora Loader (Key Fix), Auto Model Downloader |
-| [`BCNodes/model`](docs/model.md) | Patch Sage Attention, Qwen Image Shift |
+| [`BCNodes/model`](docs/model.md) | Patch Sage Attention, Detail Boost, Qwen Image Shift |
 | [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, Chunk Size, VAE Decode, PostProcess; Compact: Preprocess (Compact), PostProcess (Compact) |
 | [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
 
