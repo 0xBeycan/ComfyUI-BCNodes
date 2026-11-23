@@ -150,3 +150,46 @@ The node puts a `PREDICT_NOISE` wrapper on the clone (ComfyUI's patcher wrappers
 ### A/B test
 
 `weight` 0 is the model without the node: queue the same seed, sampler and steps with `weight` 0 and with your value, and compare the two images side by side (Image Comparer).
+
+## `BC_QwenImageShift` — Qwen Image Shift
+
+`model` (`MODEL`) + `mode` + `shift` + `multiplier` + `shift_terminal` + `terminal` + `base_seq_len` + `max_seq_len` + `base_shift` + `max_shift` → `MODEL`: a clone with the flow shift of the official Qwen-Image-2512 scheduler, for the stock KSampler and schedulers. Use it in place of ModelSamplingAuraFlow. The input model is never changed.
+
+### What it does
+
+The official pipeline (diffusers' QwenImagePipeline with FlowMatchEulerDiscreteScheduler, the config in `Qwen/Qwen-Image-2512/scheduler`) shifts its schedule by the image size: it counts the latent's tokens (2×2 patches: (width / 16) × (height / 16)), puts mu on the line through (`base_seq_len`, `base_shift`) and (`max_seq_len`, `max_shift`), and shifts with e^mu, the same formula ModelSamplingAuraFlow uses with its `shift`. The line is not clamped: past 8192 tokens the shift keeps rising. Then it stretches the schedule so its last sigma before 0 is `terminal` (0.02).
+
+| Image | Tokens | Shift | 1.25x latent (w × h) | Tokens | Shift |
+| --- | --- | --- | --- | --- | --- |
+| 1024 × 1024 | 4096 | 2.001 | 160 × 160 | 6400 | 2.247 |
+| 1328 × 1328 | 6889 | 2.303 | 208 × 208 | 10816 | 2.807 |
+| 1664 × 928 | 6032 | 2.206 | 260 × 145 | 9490 | 2.626 |
+| 1472 × 1104 | 6348 | 2.241 | 230 × 172 | 9890 | 2.679 |
+
+### `mode`
+
+- `dynamic` (default): each sampler run takes its shift from the latent it gets, e^mu × `multiplier`. One patched model gives each pass its own shift: in a two-pass workflow the 1.25x upscaled second pass gets a larger one. The console prints each run's latent size, tokens, mu and shift.
+- `fixed`: `shift` for every run. With `shift_terminal` off the model is exactly ModelSamplingAuraFlow at that shift (every scheduler gives the same sigmas). Qwen-Image-Lightning was distilled with shift 3 and no terminal: `fixed`, 3, `shift_terminal` off.
+
+`multiplier`, `base_seq_len`, `max_seq_len`, `base_shift` and `max_shift` are used in `dynamic` mode only; their defaults are the official config (256, 8192, 0.5, 0.9).
+
+### Schedulers in `dynamic` mode
+
+A sampler builds its sigmas before any model patch sees the latent, so the node keeps the model's shift at 1 outside a run (the scheduler gives its plain timestep grid) and shifts that grid when the run starts (an `OUTER_SAMPLE` wrapper, ComfyUI's patcher wrappers). During the run the model's `model_sampling` has the run's shift (ControlNet and conditioning step ranges follow it), and 1 again after.
+
+| Scheduler | Result in `dynamic` mode |
+| --- | --- |
+| `simple`, `beta`, `ddim_uniform` | exactly the scheduler at the run's shift (ModelSamplingAuraFlow at that shift gives the same); `simple` is the official schedule when the step count divides 1000 (8, 20, 25, 40, 50) |
+| `normal`, `sgm_uniform` | the grid's end comes from shift 1 (0.001 instead of about 0.002): the last steps differ slightly from ModelSamplingAuraFlow at that shift |
+| `karras`, `exponential`, `kl_optimal` | the scheduler's shift-1 curve, shifted: not the curve ModelSamplingAuraFlow's shift would give these schedulers |
+| `linear_quadratic` | shifted here; with ModelSamplingAuraFlow it ignores the shift |
+
+In `fixed` mode every scheduler is exactly ModelSamplingAuraFlow's.
+
+### `shift_terminal`
+
+On (default, as the official config): each run's schedule is stretched so its last sigma before 0 is `terminal`. At denoise below 1 the run is the tail of a longer schedule with the same last sigma, so the stretch is the same. A run that does not end at sigma 0 (KSamplerAdvanced returning with leftover noise, the first part of split sigmas) or a one-step run from full noise has nothing to stretch to: the node stops with an error; turn `shift_terminal` off for it. Off for Lightning.
+
+### Other patches
+
+The node replaces the model's `model_sampling`, as ModelSamplingAuraFlow does, and puts an `OUTER_SAMPLE` wrapper on the clone in `dynamic` mode or with `shift_terminal` on (fixed mode without it needs none). ComfyUI chains wrappers, so the model's other wrappers stay; a second Qwen Image Shift replaces the first one's. A node after it that replaces `model_sampling` again (ModelSamplingAuraFlow, ModelSamplingSD3) would have the shift applied twice: the run stops with an error saying to keep one of the two.

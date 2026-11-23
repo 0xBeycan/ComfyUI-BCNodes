@@ -36,6 +36,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_LoraLoaderKeyFix` | [Lora Loader (Key Fix)](docs/loaders.md#bc_loraloaderkeyfix--lora-loader-key-fix) | `MODEL` + one LoRA → `MODEL`, with the keys ComfyUI's own loader leaves out renamed first (lightx2v `.diff_m`, PEFT keys without the `diffusion_model.` prefix); the console says how many were renamed and how many match no module |
 | `BC_PatchSageAttention` | [Patch Sage Attention](docs/model.md#bc_patchsageattention--patch-sage-attention) | `MODEL` → a clone whose attention runs one SageAttention kernel, for that model only (no global `--use-sage-attention`); `auto` takes the most accurate kernel, `qk_quant` its Q·K quantization (per_thread / per_warp), and a call the kernel cannot take, a kernel error or a NaN output runs the original attention; the console counts both per run |
 | `BC_DetailBoost` | [Detail Boost](docs/model.md#bc_detailboost--detail-boost) | `MODEL` → a clone told a lower noise level than the sampler's in a step range (`start_step` to `end_step` of each sampler run), so it removes less noise there and keeps more fine detail; the sampler's sigmas and noise are unchanged; 11 modes, `eta` their strength, `weight` 0 leaves the model unpatched; works with KSampler and KSamplerAdvanced |
+| `BC_QwenImageShift` | [Qwen Image Shift](docs/model.md#bc_qwenimageshift--qwen-image-shift) | `MODEL` → a clone with the official Qwen-Image-2512 flow shift, in place of ModelSamplingAuraFlow, for the stock KSampler and schedulers: `dynamic` takes the shift from each sampler run's latent size (so a 1.25x second pass gets its own), `fixed` is ModelSamplingAuraFlow at `shift` (3 for Lightning); `shift_terminal` ends each run's schedule at 0.02 before 0 |
 | `BC_AnythingEverywhere` | [Anything Everywhere](docs/workflow.md#bc_anythingeverywhere--anything-everywhere) | Feeds unconnected inputs of a type at prompt time |
 | `BC_FastGroupsBypasser` | [Fast Groups Bypasser](docs/workflow.md#bc_fastgroupsbypasser--fast-groups-bypasser) | One bypass toggle per group |
 | `BC_BiRefNetRemoveBackground` | [BiRefNet Remove Background](docs/mask.md#bc_birefnetremovebackground--birefnet-remove-background) | Background removal with BiRefNet, plain torch |
@@ -77,7 +78,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | [`BCNodes/lm`](docs/lm.md) | Qwen LM, LM Config, LM Loader, Claude, Claude Config |
 | [`BCNodes/preflight`](docs/preflight.md) | PreFlight Observe, Report, Outcome, Calibrate |
 | [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Lora Loader (Key Fix), Auto Model Downloader |
-| [`BCNodes/model`](docs/model.md) | Patch Sage Attention |
+| [`BCNodes/model`](docs/model.md) | Patch Sage Attention, Qwen Image Shift |
 | [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, Chunk Size, VAE Decode, PostProcess; Compact: Preprocess (Compact), PostProcess (Compact) |
 | [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
 

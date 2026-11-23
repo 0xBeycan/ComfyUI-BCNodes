@@ -766,6 +766,7 @@ async def main():
     await lora_key_fix()
     await sage_attention()
     await detail_boost()
+    await qwen_image_shift()
     lm_core()
     await lm_nodes()
     await claude_nodes()
@@ -1243,6 +1244,173 @@ async def detail_boost():
           and all(math.isclose(g, e, rel_tol=1e-5) for g, e in zip(got, expected))
           and all(g < s for g, s in zip(got[3:10], schedule[3:10])), f"{got} {expected}")
     check("DetailBoost: weight 1: the latent differs", on is not None and base is not None and not torch.equal(on, base))
+
+
+async def qwen_image_shift():
+    """Qwen Image Shift inside ComfyUI, a tiny Wan 2.1 (a flow model) standing in for Qwen-Image.
+    fixed, shift_terminal off, against core's own ModelSamplingAuraFlow at the same shift: every scheduler
+    at 1 to 50 steps and KSampler's sigmas (denoise below 1, a sampler that drops the penultimate sigma)
+    are equal tensors, percent_to_sigma agrees, no wrapper; one KSampler run each through validate_prompt +
+    PromptExecutor gets the same schedule and a bit-identical latent, and at shift 3 that schedule is
+    Qwen-Image-Lightning's diffusers schedule. dynamic (the defaults: the official config) on one patched
+    model in two KSamplers (512x384 at 8 steps, then LatentUpscaleBy 1.25 at 4 steps, denoise 0.5):
+    each run's schedule is diffusers' for its size (pass 2: the tail of its 8-step schedule), the model is
+    called at it, model_sampling has the run's shift during the run and 1 after, one console line per run.
+    The references are diffusers' own (tests/_diffusers_sigmas.py)."""
+    import comfy.samplers
+    import torch
+    from comfy.patcher_extension import WrappersMP
+
+    from _diffusers_sigmas import ATOL, DIFFUSERS
+
+    shift_node = nodes.NODE_CLASS_MAPPINGS["BC_QwenImageShift"]()
+    aura_node = nodes.NODE_CLASS_MAPPINGS["ModelSamplingAuraFlow"]()
+    kept = tiny_wan("tiny_shift_wan.safetensors")
+    seen = []  # (sigma the model got, the run's schedule, model_sampling's shift) per model call
+    models = []  # the model each RecordRun got
+
+    def patch(model, mode, shift, shift_terminal):
+        return shift_node.patch(model, mode, shift, 1.0, shift_terminal, 0.02, 256, 8192, 0.5, 0.9)[0]
+
+    def same(a, b):
+        return a.shape == b.shape and torch.allclose(a, b, rtol=0, atol=0, equal_nan=True)
+
+    def close(got, expected):
+        return len(got) == len(expected) and all(abs(g - e) <= ATOL for g, e in zip(got, expected))
+
+    # fixed, shift_terminal off == ModelSamplingAuraFlow, on the sigma path alone
+    model = nodes.UNETLoader().load_unet("tiny_shift_wan.safetensors", "default")[0]
+    mismatched, counted = [], 0
+    for shift in (1.73, 2.3, 3.0):
+        ours, aura = patch(model, "fixed", shift, False), aura_node.patch_aura(model, shift)[0]
+        ms_ours, ms_aura = ours.get_model_object("model_sampling"), aura.get_model_object("model_sampling")
+        if ours.get_wrappers(WrappersMP.OUTER_SAMPLE, "bcnodes_qwen_image_shift"):
+            mismatched.append((shift, "wrapper"))
+        if type(ms_ours).__mro__[1:] != type(ms_aura).__mro__[1:] or ms_ours.noise_scale != ms_aura.noise_scale:
+            mismatched.append((shift, "class"))
+        for percent in (0.0, 0.2, 0.5, 0.9, 1.0):
+            if ms_ours.percent_to_sigma(percent) != ms_aura.percent_to_sigma(percent):
+                mismatched.append((shift, "percent", percent))
+        for name in comfy.samplers.SCHEDULER_NAMES:
+            for steps in (1, 3, 8, 20, 30, 50):
+                counted += 1
+                # exact; NaN equal to NaN: core's kl_optimal at 1 step divides 0 by 0 on both
+                if not same(comfy.samplers.calculate_sigmas(ms_ours, name, steps),
+                            comfy.samplers.calculate_sigmas(ms_aura, name, steps)):
+                    mismatched.append((shift, name, steps))
+            for sampler in ("euler", "dpm_2"):
+                for denoise in (1.0, 0.45):
+                    counted += 1
+                    a = comfy.samplers.KSampler(ours, 20, "cpu", sampler=sampler, scheduler=name, denoise=denoise).sigmas
+                    b = comfy.samplers.KSampler(aura, 20, "cpu", sampler=sampler, scheduler=name, denoise=denoise).sigmas
+                    if not same(a, b):
+                        mismatched.append((shift, name, sampler, denoise))
+    check(f"QwenImageShift: fixed, shift_terminal off == ModelSamplingAuraFlow ({counted} schedules over "
+          f"{len(comfy.samplers.SCHEDULER_NAMES)} schedulers, 3 shifts): equal tensors, percent_to_sigma, no wrapper",
+          not mismatched, f"{mismatched[:8]}")
+
+    class RecordRun:
+        """A test-only node: a model_function_wrapper recording each model call's sigma, the run's schedule and
+        the shift of the model_sampling the model runs with; keeps the model it got."""
+        RETURN_TYPES = ("MODEL",)
+        FUNCTION = "patch"
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {"model": ("MODEL",)}}
+
+        def patch(self, model):
+            def record(apply_model, args):
+                seen.append((float(args["timestep"].max()), args["c"]["transformer_options"]["sample_sigmas"].tolist(),
+                             apply_model.__self__.model_sampling.shift))
+                return apply_model(args["input"], args["timestep"], **args["c"])
+
+            models.append(model)
+            patched = model.clone()
+            patched.set_model_unet_function_wrapper(record)
+            return (patched,)
+
+    nodes.NODE_CLASS_MAPPINGS["BCTest_RecordRun"] = RecordRun
+
+    def one_pass(shift_node_inputs):
+        return {
+            "1": N("UNETLoader", unet_name="tiny_shift_wan.safetensors", weight_dtype="default"),
+            "2": shift_node_inputs,
+            "3": N("BCTest_RecordRun", model=["2", 0]),
+            "4": N("BCTest_WanCond"),
+            "5": N("EmptyHunyuanLatentVideo", width=512, height=384, length=1, batch_size=1),
+            "6": N("KSampler", model=["3", 0], seed=0, steps=8, cfg=1.0, sampler_name="euler", scheduler="simple",
+                   positive=["4", 0], negative=["4", 0], latent_image=["5", 0], denoise=1.0),
+            "7": N("BCTest_KeepLatent", samples=["6", 0]),
+        }
+
+    async def sample(prompt, label):
+        """-> (the latents kept, [(sigma, schedule, shift)] per model call, console lines)."""
+        kept.clear()
+        seen.clear()
+        models.clear()
+        lines, root_logger = Lines(), logging.getLogger()
+        level = root_logger.level
+        root_logger.addHandler(lines)
+        root_logger.setLevel(logging.INFO)
+        try:
+            out, _ = await run(prompt, label)
+        finally:
+            root_logger.removeHandler(lines)
+            root_logger.setLevel(level)
+        return (list(kept) if out is not None else []), list(seen), [line for line in lines.lines if "Qwen Image Shift" in line]
+
+    try:
+        ours_latents, ours_calls, _ = await sample(one_pass(N(
+            "BC_QwenImageShift", model=["1", 0], mode="fixed", shift=3.0, multiplier=1.0, shift_terminal=False, terminal=0.02,
+            base_seq_len=256, max_seq_len=8192, base_shift=0.5, max_shift=0.9)), "qwen-shift-fixed")
+        aura_latents, aura_calls, _ = await sample(one_pass(N("ModelSamplingAuraFlow", model=["1", 0], shift=3.0)), "qwen-shift-aura")
+
+        two_pass = one_pass(N("BC_QwenImageShift", model=["1", 0], mode="dynamic", shift=3.0, multiplier=1.0, shift_terminal=True,
+                              terminal=0.02, base_seq_len=256, max_seq_len=8192, base_shift=0.5, max_shift=0.9))
+        two_pass["8"] = N("LatentUpscaleBy", samples=["6", 0], upscale_method="nearest-exact", scale_by=1.25)
+        two_pass["9"] = N("KSampler", model=["3", 0], seed=1, steps=4, cfg=1.0, sampler_name="euler", scheduler="simple",
+                          positive=["4", 0], negative=["4", 0], latent_image=["8", 0], denoise=0.5)
+        two_pass["10"] = N("BCTest_KeepLatent", samples=["9", 0])
+        dyn_latents, dyn_calls, dyn_lines = await sample(two_pass, "qwen-shift-dynamic")
+        dyn_models = list(models)
+    finally:
+        for key in ("BCTest_WanCond", "BCTest_KeepLatent", "BCTest_RecordRun"):
+            del nodes.NODE_CLASS_MAPPINGS[key]
+
+    lightning = DIFFUSERS["lightning_1328x1328_8"][5]
+    schedule = ours_calls[0][1] if ours_calls else []
+    check("QwenImageShift: fixed 3, shift_terminal off: one KSampler run has ModelSamplingAuraFlow's schedule and "
+          "model calls, and a bit-identical latent",
+          len(ours_calls) == 8 and ours_calls == aura_calls and len(ours_latents) == 1 and len(aura_latents) == 1
+          and torch.equal(ours_latents[0], aura_latents[0]), f"{ours_calls} {aura_calls}")
+    check("QwenImageShift: fixed 3, shift_terminal off is Qwen-Image-Lightning's diffusers schedule (simple, 8 steps)",
+          close(schedule, lightning), f"{schedule} {lightning}")
+
+    _, _, _, seq1, mu1, ref1 = DIFFUSERS["512x384_8_terminal"]
+    _, _, _, seq2, mu2, ref2 = DIFFUSERS["640x480_8_terminal"]
+    first, second = dyn_calls[:8], dyn_calls[8:]
+    check("QwenImageShift: dynamic, two passes on one model: 8 + 4 model calls, both latents kept",
+          len(first) == 8 and len(second) == 4 and sorted(tuple(x.shape[-2:]) for x in dyn_latents) == [(48, 64), (60, 80)],
+          f"{len(dyn_calls)} {[tuple(x.shape) for x in dyn_latents]}")
+    check("QwenImageShift: dynamic, pass 1 (512x384, 768 tokens) has diffusers' schedule and the model is called at it",
+          len(first) == 8 and all(close(s, ref1) for _, s, _ in first)
+          and all(math.isclose(sigma, ref1[i], abs_tol=ATOL) for i, (sigma, _, _) in enumerate(first)),
+          f"{first and first[0][1]} {ref1}")
+    check("QwenImageShift: dynamic, pass 2 (1.25x, 1200 tokens, denoise 0.5) has the tail of diffusers' 8-step schedule",
+          len(second) == 4 and all(close(s, ref2[-5:]) for _, s, _ in second)
+          and all(math.isclose(sigma, ref2[-5 + i], abs_tol=ATOL) for i, (sigma, _, _) in enumerate(second)),
+          f"{second and second[0][1]} {ref2[-5:]}")
+    check("QwenImageShift: dynamic: model_sampling has each run's shift (e^mu) during it and 1 after",
+          len(dyn_calls) == 12 and all(math.isclose(s, math.exp(mu1), rel_tol=1e-12) for _, _, s in first)
+          and all(math.isclose(s, math.exp(mu2), rel_tol=1e-12) for _, _, s in second)
+          and len(dyn_models) == 1 and dyn_models[0].get_model_object("model_sampling").shift == 1.0,
+          f"{[s for _, _, s in dyn_calls]} {math.exp(mu1)} {math.exp(mu2)}")
+    check("QwenImageShift: dynamic: one console line per run with its size, tokens, mu and shift",
+          dyn_lines == [f"[BCNodes] Qwen Image Shift: latent 64x48, {seq1} tokens, mu {mu1:.4f}, shift {math.exp(mu1):.4f}",
+                        f"[BCNodes] Qwen Image Shift: latent 80x60, {seq2} tokens, mu {mu2:.4f}, shift {math.exp(mu2):.4f}"],
+          f"{dyn_lines}")
 
 
 def lm_core():
