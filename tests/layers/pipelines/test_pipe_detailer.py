@@ -7,6 +7,10 @@ VAE, Differential Diffusion and node_helpers:
   - ControlNet hints cut to the crop: same size, another size, another aspect (core's centre cut), a
     chain copied link by link and shared by the positive and the negative, a 1x1 extra concat kept, the
     input conditioning untouched;
+  - Z-Image's Fun ControlNet on the model (core's ZImageControlPatch): its hint, inpaint image and mask
+    cut to the crop with the same centre cut, no encoded hint kept, one copy per region on a clone of
+    the Differential Diffusion clone, the model connected and its patch untouched; a model without it
+    sampled as it is;
   - core's inpaint conditioning: the pixels under the rounded mask grey in the concat latent, the mask
     as concat_mask, the latent of the pixels;
   - the paste: every pixel outside the mask keeps its exact value, a colour drift is matched away, the
@@ -54,6 +58,40 @@ class FakeControl:
         return self
 
 
+def copy_lists(obj):
+    """comfy.utils.deepcopy_list_dict: dicts and lists copied, every other object shared."""
+    if isinstance(obj, dict):
+        return {k: copy_lists(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [copy_lists(v) for v in obj]
+    return obj
+
+
+class FakeModel:
+    """What the detailer reads and calls of core's ModelPatcher: model_options, and clone() as core's (its
+    model_options through deepcopy_list_dict, `parent` the model cloned)."""
+
+    def __init__(self, patches=None, tag=None):
+        self.model_options = {"transformer_options": {} if patches is None else {"patches": patches}}
+        self.tag, self.parent = tag, None
+
+    def clone(self):
+        c = FakeModel(tag=("clone", self.tag))
+        c.model_options, c.parent = copy_lists(self.model_options), self
+        return c
+
+
+class ZImageControlPatch:
+    """What the cut reads and writes of core's ZImageControlPatch (comfy_extras/nodes_model_patch.py): the
+    hint and the inpaint image (B, H, W, C), the mask as core keeps it ((B, 1, 1, H, W)), the encoded hint
+    and the state between blocks."""
+
+    def __init__(self, image, inpaint_image=None, mask=None):
+        self.model_patch, self.vae, self.strength = object(), object(), 0.8
+        self.image, self.inpaint_image, self.mask = image, inpaint_image, mask
+        self.encoded_image, self.temp_data = torch.zeros(1, 33, 8, 8), None
+
+
 def conditioning_set_values(conditioning, values={}, append=False):
     """node_helpers.conditioning_set_values as core writes it (no append)."""
     return [[t[0], dict(t[1], **values)] for t in conditioning]
@@ -95,7 +133,9 @@ def sampled(monkeypatch):
     class DifferentialDiffusion:
         @classmethod
         def execute(cls, model, strength=1.0):
-            return types.SimpleNamespace(args=(("dd", model, strength),))
+            dd = model.clone() if isinstance(model, FakeModel) else FakeModel()
+            dd.tag = ("dd", model, strength)
+            return types.SimpleNamespace(args=(dd,))
 
     dd.DifferentialDiffusion = DifferentialDiffusion
     monkeypatch.setitem(sys.modules, "comfy_extras", extras)
@@ -173,6 +213,26 @@ def test_hint_cut_to_the_crop(det):
     assert torch.equal(wide, hint(100, 200)[..., 20:40, 60:80])
 
 
+def hwc(h, w):
+    return hint(h, w).movedim(1, -1)
+
+
+def test_zimage_patch_cut_to_the_crop(det):
+    crop = det.region.Crop(10, 20, 30, 40, 128, 128)
+    patch = ZImageControlPatch(hwc(100, 100), inpaint_image=hwc(50, 100), mask=hint(200, 100)[:, :1, None])
+    cut = det.cond._crop_patch(patch, crop, 100, 100)
+    assert torch.equal(cut.image, hwc(100, 100)[:, 20:40, 10:30])
+    # as wide as the image, half as tall: core uses its centre 50 x 50, at half the image's scale
+    assert torch.equal(cut.inpaint_image, hwc(50, 100)[:, 10:20, 30:40])
+    # twice as tall as the image: core uses its centre 100 x 100
+    assert cut.mask.shape == (1, 1, 1, 20, 20) and torch.equal(cut.mask, hint(200, 100)[:, :1, None, 70:90, 10:30])
+    assert cut.encoded_image is None and cut.temp_data is None
+    assert (cut.model_patch, cut.vae, cut.strength) == (patch.model_patch, patch.vae, patch.strength)
+    # core's node takes the hint, the inpaint image and the mask each as optional
+    bare = det.cond._crop_patch(ZImageControlPatch(None, inpaint_image=hwc(100, 100)), crop, 100, 100)
+    assert bare.image is None and bare.mask is None and torch.equal(bare.inpaint_image, hwc(100, 100)[:, 20:40, 10:30])
+
+
 def test_control_chain_cut_once_for_positive_and_negative(det):
     crop = det.region.Crop(10, 20, 30, 40, 128, 128)
     first = FakeControl(hint(100, 100))
@@ -231,7 +291,7 @@ def test_two_passes_on_a_differential_diffusion_clone(det, sampled):
     image, mask = picture(2), square()
     out, changed = det.core.run(image, mask, "model", settings(det))
     assert [(c["denoise"], c["seed"]) for c in sampled] == [(0.5, 7), (0.2, 8)]
-    assert all(c["model"] == ("dd", "model", 1.0) for c in sampled)
+    assert all(c["model"].tag == ("dd", "model", 1.0) for c in sampled)
     assert (sampled[0]["steps"], sampled[0]["cfg"], sampled[0]["sampler_name"], sampled[0]["scheduler"]) == (3, 2.5, "euler", "simple")
     # the refine pass samples the structure pass's latent
     assert torch.equal(sampled[1]["latent"], 1.0 - sampled[0]["latent"])
@@ -270,6 +330,54 @@ def test_controlnet_hint_reaches_the_sampler_cut(det, sampled):
     cut = sampled[0]["positive"][0][1]["control"]
     assert torch.equal(cut.cond_hint_original, hint(64, 64)[..., 15:35, 19:39])
     assert control.cond_hint_original.shape[-2:] == (64, 64)
+
+
+def zimage_model(patch, other=None):
+    """A model as core's ZImageFunControlnet patches it, `patch` in both lists; `other` (another pack's
+    patch, unhashable) after it in double_block."""
+    return FakeModel({"noise_refiner": [patch], "double_block": [patch] + ([] if other is None else [other])})
+
+
+def test_zimage_patch_cut_on_a_clone(det, sampled):
+    patch, other = ZImageControlPatch(hwc(64, 64), inpaint_image=hwc(64, 64), mask=hint(64, 64)[:, :1, None]), types.SimpleNamespace()
+    image, inpaint_image, mask, encoded = patch.image, patch.inpaint_image, patch.mask, patch.encoded_image
+    model = zimage_model(patch, other)
+    det.core.run(picture(2), square(), model, settings(det))
+    m = sampled[0]["model"]
+    assert m is sampled[1]["model"] and m.parent.tag == ("dd", model, 1.0)  # both passes: one clone of the DD clone
+    patches = m.model_options["transformer_options"]["patches"]
+    cut = patches["noise_refiner"][0]
+    assert cut is not patch and patches["double_block"][0] is cut and patches["double_block"][1] is other
+    # Crop(19, 15, 39, 35), as for the ControlNet's hint above
+    assert torch.equal(cut.image, hwc(64, 64)[:, 15:35, 19:39]) and torch.equal(cut.inpaint_image, hwc(64, 64)[:, 15:35, 19:39])
+    assert torch.equal(cut.mask, hint(64, 64)[:, :1, None, 15:35, 19:39]) and cut.encoded_image is None
+    # the model connected and the DD clone keep the patch, and the patch keeps its hint and its encode
+    for kept in (model, m.parent):
+        lists = kept.model_options["transformer_options"]["patches"]
+        assert lists["noise_refiner"] == [patch] and lists["double_block"][0] is patch and lists["double_block"][1] is other
+    assert patch.image is image and patch.inpaint_image is inpaint_image and patch.mask is mask and patch.encoded_image is encoded
+
+
+def test_zimage_patch_cut_once_per_region(det, sampled):
+    """Each region its own copy: core keeps one encode per latent size, which two regions sampled at the same
+    size would otherwise share."""
+    patch = ZImageControlPatch(hwc(64, 64))
+    masks = torch.cat([square(top=4, left=4, size=8), square(top=40, left=40, size=8)])
+    s = settings(det)
+    det.core.run(picture(4), masks, zimage_model(patch), s)
+    cuts = [c["model"].model_options["transformer_options"]["patches"]["double_block"][0] for c in sampled]
+    assert len(cuts) == 4 and cuts[0] is cuts[1] and cuts[2] is cuts[3] and cuts[0] is not cuts[2]
+    for cut, mask in zip(cuts[::2], masks):
+        crop, _ = det.core.locate(mask > 0.5, s)
+        assert (crop.width, crop.height) == (128, 128) and torch.equal(cut.image, hwc(64, 64)[:, crop.y0:crop.y1, crop.x0:crop.x1])
+
+
+def test_a_model_without_the_zimage_patch_is_sampled_as_it_is(det, sampled):
+    other = types.SimpleNamespace()
+    model = FakeModel({"double_block": [other]})
+    det.core.run(picture(2), square(), model, settings(det))
+    assert all(c["model"].tag == ("dd", model, 1.0) for c in sampled)  # the DD clone itself, not a clone of it
+    assert sampled[0]["model"].model_options["transformer_options"]["patches"]["double_block"][0] is other
 
 
 def test_regions_in_batch_order_and_skipped_when_too_large(det, sampled):

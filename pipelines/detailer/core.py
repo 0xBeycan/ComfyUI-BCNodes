@@ -5,7 +5,8 @@ sampled in two passes, shrunk back and pasted through the region's own shape.
   region whose crop would not be enlarged is left as it is.
 - Sampling: the model with core's Differential Diffusion (a clone), core's inpaint conditioning of the
   crop with the region's mask, softened at its edge, as the noise mask, every ControlNet's hint cut to the
-  crop (conditioning.py). The structure pass samples at `denoise`, the refine pass samples its latent
+  crop (conditioning.py: those in the conditioning, and Z-Image's Fun ControlNet on a clone of the model per
+  region). The structure pass samples at `denoise`, the refine pass samples its latent
   again at `refine_denoise` (seed + 1); a pass at 0 does not run.
 - The paste: the decoded crop shrunk back, its colour matched to the image's in the mask's edge band
   (libs/color.match_band), Laplacian-pyramid blended under the mask softened inward (libs/blend), and
@@ -26,7 +27,7 @@ from ...libs.color import match_band
 from ...libs.filters import gauss_reflect
 from ...libs.image import float_frame, output_dtype
 from ...libs.mask import fit_mask_frame
-from .conditioning import crop_conditioning, inpaint
+from .conditioning import crop_conditioning, crop_model, inpaint
 from .region import bounds, plan
 
 FEATHER = 0.02    # sigma of the mask's soft edge, a fraction of the crop's shorter side (~20 px at 1024)
@@ -108,6 +109,7 @@ def _sample(base, region, crop, model, s, image_width, image_height):
     positive = crop_conditioning(s.positive, crop, image_width, image_height, done)
     negative = crop_conditioning(s.negative, crop, image_width, image_height, done)
     positive, negative, latent = inpaint(positive, negative, s.vae, pixels, noise_mask)
+    model = crop_model(model, crop, image_width, image_height)
     for denoise, seed in ((s.denoise, s.seed), (s.refine_denoise, (s.seed + 1) & SEED_MAX)):
         if denoise > 0:
             latent = _ksampler(model, s, positive, negative, latent, noise_mask, denoise, seed)

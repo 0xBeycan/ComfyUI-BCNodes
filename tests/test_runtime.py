@@ -763,6 +763,7 @@ async def main():
     await sage_attention()
     await detail_boost()
     await qwen_image_shift()
+    detailer_zimage_patch()
     lm_core()
     await lm_nodes()
     await claude_nodes()
@@ -1407,6 +1408,71 @@ async def qwen_image_shift():
           dyn_lines == [f"[BCNodes] Qwen Image Shift: latent 64x48, {seq1} tokens, mu {mu1:.4f}, shift {math.exp(mu1):.4f}",
                         f"[BCNodes] Qwen Image Shift: latent 80x60, {seq2} tokens, mu {mu2:.4f}, shift {math.exp(mu2):.4f}"],
           f"{dyn_lines}")
+
+
+def detailer_zimage_patch():
+    """The detailer's cut of Z-Image's Fun ControlNet (pipelines/detailer/conditioning.crop_model) on a model
+    patched by core's own ZImageFunControlnet node, with an inpaint image and a mask: a Union 2.1-shaped
+    ZImage_Control (inpaint channels) built on the meta device, no weights (the node reads its class and
+    additional_in_dim; a call past the last control block returns before the model runs) and a stand-in VAE.
+    Core's patch is found although core loads its module under the file's path; on a clone, its hint,
+    inpaint image and mask are cut to the crop, and core's own call encodes the cut at the crop's sampling
+    size; the model connected keeps its lists, its patch and the patch's encode."""
+    import importlib
+
+    import comfy.ldm.lumina.controlnet
+    import comfy.model_patcher
+    import comfy.ops
+    import torch
+
+    pkg = nodes.NODE_CLASS_MAPPINGS["BC_Detailer"].__module__.rsplit(".", 2)[0]
+    cond = importlib.import_module(f"{pkg}.pipelines.detailer.conditioning")
+    crop = importlib.import_module(f"{pkg}.pipelines.detailer.region").Crop(32, 16, 96, 80, 512, 512)
+
+    class VAE:
+        def __init__(self):
+            self.encoded = []
+
+        def encode(self, pixels):
+            self.encoded.append(tuple(pixels.shape))
+            return torch.zeros(pixels.shape[0], 16, pixels.shape[1] // 8, pixels.shape[2] // 8)
+
+        def spacial_compression_encode(self):
+            return 8
+
+    control = comfy.ldm.lumina.controlnet.ZImage_Control(dim=64, n_heads=2, n_kv_heads=2, n_control_layers=3, additional_in_dim=17,
+                                                         refiner_control=True, device="meta", operations=comfy.ops.manual_cast)
+    model = comfy.model_patcher.ModelPatcher(torch.nn.Linear(1, 1), torch.device("cpu"), torch.device("cpu"))
+    image, mask, vae = torch.rand(1, 96, 128, 3), torch.zeros(1, 96, 128), VAE()
+    mask[:, 20:60, 40:90] = 1.0
+    patched = nodes.NODE_CLASS_MAPPINGS["ZImageFunControlnet"]().diffsynth_controlnet(
+        model, types.SimpleNamespace(model=control), vae, image=image, strength=0.8, inpaint_image=image, mask=mask)[0]
+    lists = patched.model_options["transformer_options"]["patches"]
+    patch = lists["double_block"][0]
+    held = (patch.image, patch.inpaint_image, patch.mask, patch.encoded_image)
+    entries = {name: list(entry) for name, entry in lists.items()}
+
+    out = cond.crop_model(patched, crop, 128, 96)
+    cut_lists = out.model_options["transformer_options"]["patches"]
+    cut = cut_lists["double_block"][0]
+    check("Detailer Z-Image ControlNet: core's patch found and copied on a clone, one copy in both of core's lists",
+          out is not patched and type(cut) is type(patch) and cut is not patch and cut_lists["noise_refiner"] == [cut]
+          and len(cut_lists["double_block"]) == 1, f"{ {k: [type(p).__name__ for p in v] for k, v in cut_lists.items()} }")
+    check("Detailer Z-Image ControlNet: the hint, the inpaint image and core's mask cut to the crop, no encode kept",
+          torch.equal(cut.image, image[:, 16:80, 32:96]) and torch.equal(cut.inpaint_image, image[:, 16:80, 32:96])
+          and cut.mask.shape == (1, 1, 1, 64, 64) and torch.equal(cut.mask, patch.mask[..., 16:80, 32:96])
+          and cut.encoded_image is None and cut.temp_data is None,
+          f"{tuple(cut.image.shape)} {tuple(cut.mask.shape)} {cut.encoded_image is None}")
+
+    vae.encoded.clear()
+    latent = torch.zeros(1, 16, crop.height // 8, crop.width // 8)
+    cut({"x": latent, "img": None, "img_input": None, "txt": None, "pe": None, "vec": None, "block_index": 30, "block_type": "double"})
+    check("Detailer Z-Image ControlNet: core's call encodes the cut hint and inpaint image at the crop's sampling size",
+          vae.encoded == [(1, 512, 512, 3)] * 2 and tuple(cut.encoded_image.shape) == (1, 33, 64, 64), f"{vae.encoded}")
+    check("Detailer Z-Image ControlNet: the model connected keeps its lists, its patch and the patch's hint and encode",
+          {name: list(entry) for name, entry in lists.items()} == entries and lists["double_block"][0] is patch
+          and all(a is b for a, b in zip((patch.image, patch.inpaint_image, patch.mask, patch.encoded_image), held))
+          and tuple(patch.encoded_image.shape) == (1, 33, 12, 16), f"{tuple(patch.encoded_image.shape)}")
 
 
 def lm_core():

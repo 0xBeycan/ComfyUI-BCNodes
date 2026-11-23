@@ -40,7 +40,8 @@ pipelines/model_download.py   downloader entries -> resolved items, token gate, 
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
 pipelines/skin_texture.py     SAM 3 prompts, face gate, mask assembly, texture call
 pipelines/detailer/           region (the crop around a region and its sampling size; None when it would not be enlarged),
-                              conditioning (each ControlNet's hint cut to the crop, core's inpaint conditioning), core
+                              conditioning (each ControlNet's hint cut to the crop: the conditioning's, and Z-Image Fun
+                              ControlNet's model patch on a clone of the model; core's inpaint conditioning), core
                               (Detailer's flow: crop -> Differential Diffusion structure + refine pass -> paste), face (Face
                               Detailer: SAM 3 faces, the character, the size gate, mouth and eye passes)
 pipelines/quality_gate.py     shot profiles, QualityCheck, verdict, report, badge

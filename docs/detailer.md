@@ -30,7 +30,9 @@ A pass at `0` does not run. The refine pass uses `seed + 1`.
 
 A ControlNet applied with ComfyUI's Apply ControlNet (for example Qwen-Image-2512 Fun ControlNet Union) sits in `positive` / `negative`. For each crop, every ControlNet of the chain is copied and its hint image (and any image-sized extra input) cut to the same part of the image, so the hint lines up with the crop; ComfyUI then scales the cut hint to the crop's latent as it always does. A hint of another size than the image is mapped the way ComfyUI maps it onto the whole image (its centre cut to the image's aspect). The conditioning you connect is not changed.
 
-Not cut: a ControlNet applied as a model patch (ComfyUI's Qwen-Image DiffSynth ControlNet node, for one), area or mask conditioning, and reference latents (Qwen-Image Edit).
+Z-Image Turbo's Fun ControlNet Union (ComfyUI's ModelPatchLoader, then its ZImageFunControlnet node) patches the `MODEL` instead. For each crop the detailer samples a copy of the model whose ControlNet patch holds the hint, and the inpaint image and mask when they are given, cut to the crop the same way; ComfyUI then encodes the cut hint at the crop's sampling size. This holds for every model the nodes sample with: Face Detailer's `model` and `model_no_lora`, and its face, mouth and eye passes. The model you connect is not changed.
+
+Not cut: other ControlNets applied as a model patch (ComfyUI's Qwen-Image DiffSynth ControlNet node, for one), area or mask conditioning, and reference latents (Qwen-Image Edit).
 
 ## `BC_FaceDetailer` — Face Detailer
 

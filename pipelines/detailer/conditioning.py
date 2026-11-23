@@ -1,12 +1,20 @@
-"""The conditioning a crop is sampled with: every ControlNet in it cut to the crop, then core's inpaint
-conditioning of the crop. node_helpers is imported on first use.
+"""The conditioning and the model a crop is sampled with: every ControlNet in them cut to the crop, then
+core's inpaint conditioning of the crop. node_helpers is imported on first use.
 
 A ControlNet applied with core's Apply ControlNet (Qwen-Image's Fun ControlNet Union among them,
 comfy/controlnet.py QwenFunControlNet) sits in the conditioning as a chain of ControlBase objects, each
 holding its hint image in cond_hint_original. Core scales that hint onto the latent at sampling time
 (ControlNet.get_control: comfy.utils.common_upscale(..., "center"), then the VAE encode when the
 ControlNet needs one), so a hint cut to the crop is all a crop needs: core does the rest.
+
+Z-Image's Fun ControlNet (core's ZImageFunControlnet, comfy_extras/nodes_model_patch.py ZImageControlPatch)
+patches the MODEL instead: one patch object in the model's "noise_refiner" and "double_block" patch lists
+holds the hint, the inpaint image and the mask. Core scales them onto the latent with the same "center"
+cut and VAE-encodes them on the patch's first call at a latent size it has not encoded, so here too a cut
+hint is all a crop needs, on a clone of the model (crop_model).
 """
+
+import copy
 
 
 def _cut(tensor, crop, image_width, image_height):
@@ -53,6 +61,45 @@ def crop_conditioning(conditioning, crop, image_width, image_height, done):
             extra = dict(extra, control=_crop_control(extra["control"], crop, image_width, image_height, done))
         out.append([t[0], extra])
     return out
+
+
+def _crop_patch(patch, crop, image_width, image_height):
+    """A copy of the Z-Image Fun ControlNet patch `patch` with its hint and inpaint image ((B, H, W, C), None
+    when not given) and its mask (core's (B, 1, 1, H, W) of 1 - mask, or None) cut to `crop`, and no encoded
+    hint. A copy: core shares one patch object between a model and every clone of it, and the patch writes
+    its encoded hint into itself. No encoded hint: the patch keeps one encode per latent size, which another
+    crop sampled at the same size would reuse, so the copy encodes the cut hint at the crop's sampling size
+    on its first call."""
+    c = copy.copy(patch)
+    c.image, c.inpaint_image = (None if t is None else _cut(t.movedim(-1, 1), crop, image_width, image_height).movedim(1, -1)
+                                for t in (patch.image, patch.inpaint_image))
+    c.mask = None if patch.mask is None else _cut(patch.mask, crop, image_width, image_height)
+    c.encoded_image = c.temp_data = None
+    return c
+
+
+def crop_model(model, crop, image_width, image_height):
+    """`model` itself when no Z-Image Fun ControlNet patches it; otherwise a clone of it (Differential
+    Diffusion and every other patch kept) with each such patch replaced by its copy cut to `crop`
+    (_crop_patch), the same copy in every list that holds the patch (its state runs from the noise refiner's
+    blocks into the main ones). The input model and its patches are left as they are.
+
+    The patch is found by its class name: core loads each comfy_extras module under its file path
+    (nodes.py load_custom_node), so an import of comfy_extras.nodes_model_patch would make a second class
+    no patch is an instance of."""
+    patches = model.model_options["transformer_options"].get("patches", {})
+    done = {}  # id(patch) -> its copy (by id: another pack's patch may be unhashable)
+    for entries in patches.values():
+        for p in entries:
+            if type(p).__name__ == "ZImageControlPatch" and id(p) not in done:
+                done[id(p)] = _crop_patch(p, crop, image_width, image_height)
+    if not done:
+        return model
+    clone = model.clone()
+    cloned = clone.model_options["transformer_options"]["patches"]
+    for name, entries in cloned.items():
+        cloned[name] = [done.get(id(p), p) for p in entries]
+    return clone
 
 
 def inpaint(positive, negative, vae, pixels, mask):
