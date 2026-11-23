@@ -93,3 +93,60 @@ SageAttention 2.2.x built for the torch and CUDA ComfyUI runs on: `pip install s
 Two branches from the same model loader: one Patch Sage Attention on `disabled`, one on `auto`, each feeding its own sampler with the same seed, sampler, scheduler, steps, prompt and image inputs. Compare the two results side by side (Image Comparer), and read the run summary of the `auto` branch: it says how many attention calls ran the kernel. One branch works too: switch `mode` between two queues of the same workflow.
 
 To measure the kernels themselves on a GPU (accuracy against torch SDPA at Qwen-Image and Wan shapes, `smooth_k` on and off, `per_thread` against `per_warp`, time per call, the fallbacks, the cost of `nan_guard`, and fused QKV views past 2^31), run `python tests/compare_sage_attention.py` from the pack's directory; it needs no ComfyUI.
+
+## `BC_DetailBoost` — Detail Boost
+
+`model` (`MODEL`) + `weight` + `mode` + `eta` + `start_step` + `end_step` → `MODEL`: a clone of the model that is told a lower noise level than the sampler's in a range of steps. The input model is never changed.
+
+### What it does
+
+A sampler calls the model at each step's sigma and steps with the prediction it gets back. In the steps `start_step` to `end_step` the node tells the model a lower sigma: the model takes the latent for less noisy than it is and removes less noise, so the fine structure a step would smooth away (skin pores, fine hair, stone grain) stays. The sampler's own sigmas, its noise and its steps are unchanged, and nothing is added to the latent. That is the difference from raising `s_noise` on an SDE sampler, which adds noise the model then has to remove again.
+
+Put the node between the model loader (and its LoRA loaders) and the sampler: KSampler or KSamplerAdvanced, no custom sampler. In a two-pass workflow give it only to the pass that should get the detail (for example the second pass at denoise 0.45); each pass is a run of its own.
+
+### Steps
+
+Steps are counted from 0 in each sampler run; with denoise below 1 they are the run's own steps (20 steps at denoise 0.45: steps 0 to 19). `end_step` is not boosted itself; -1 boosts to the end of the run. The run's very first model call keeps its sigma: it has no schedule sigma before it. Samplers that call the model between two schedule points (dpmpp_sde, heun, the 2s samplers) get every call of a boosted step boosted; euler and the 2m samplers call the model once per step.
+
+### `weight` and `eta`
+
+`eta` is the mode's strength (no noise is added); `weight` blends: the model is told sigma + weight × (lowered sigma − sigma). 1 is the mode's full effect; negative values move the other way (the model is told more noise: softer, smoother). `weight` 0 or `eta` 0 leaves the model unpatched: the output is bit-identical to the model without the node.
+
+`hard` on a flow model (Qwen-Image, Flux, Wan) multiplies the noise-to-signal ratio sigma / (1 − sigma) the model is told by √(1 − eta²). At `eta` 0.5 and `weight` 1:
+
+| Sampler's sigma | Sigma the model is told |
+| --- | --- |
+| 0.95 | 0.943 |
+| 0.60 | 0.565 |
+| 0.20 | 0.178 |
+| 0.05 | 0.044 |
+
+From `eta` 1 on, `hard` is capped: the ratio is multiplied by 0.014, and the model is told almost no noise.
+
+### Modes
+
+Each mode takes noise out of the call's sigma: an amount of ratio × base, the base being the call's sigma unless the table says otherwise. On a flow model the noise that is left is renormalised by the signal (x = (1 − sigma) x0 + sigma noise); on any other model the sigma itself is what is left. `s` is the call's sigma and `p` the schedule sigma before it, both divided by the model's sigma_max (1 on a flow model).
+
+| `mode` | Ratio | Where it acts |
+| --- | --- | --- |
+| `hard` (default) | eta | every boosted step alike |
+| `soft` | eta (1 + s / p) | about twice `hard` |
+| `softer` | 1 − √(1 − eta² (p² − s²) / p²) | grows with the step's size |
+| `soft-linear` | 1 − eta (s − p) | above 1 on a falling schedule, so capped: `hard`'s result below `eta` 1 |
+| `sinusoidal` | eta sin²(π s) | strongest at s 0.5, the middle steps; nothing near 0 and 1 |
+| `eps` | eta (s / p) √(p² − s²) | grows with the step's size |
+| `exp` | √(1 − (s / p)^(2 eta)) | grows with the step's size and `eta` |
+| `lorentzian` | eta, of the base sigma_max · s / √(s² + 1) | weaker at high sigma |
+| `hard_var` | eta, of the base √(p − s) | only the late steps, where s ≤ (√(1 + 4p) − 1) / 2 |
+| `er4` | √(s² − p² (n(s) / n(p))²) / s, with n(v) = v (e^(v^eta) + 10) | `eta` is an exponent |
+| `vpsde` | none: the model is told s − eta / 4 · p (1 − p)(p − s) | a flow-model formula; a small cut |
+
+On a flow model an amount at or over the call's sigma is capped to eta × sigma (0.9999 × sigma from `eta` 1 on). A formula with no real answer (a negative square root, an amount over the sigma of another model) leaves the call's sigma as it is.
+
+### Other patches
+
+The node puts a `PREDICT_NOISE` wrapper on the clone (ComfyUI's patcher wrappers). ComfyUI chains wrappers, so the model's other wrappers and a `model_function_wrapper` it already has stay, and run inside it with the sigma the model is told; two Detail Boost nodes in a row both apply. With an inpaint noise mask, the masked area is re-noised at the sampler's own sigma (that happens before the wrapper).
+
+### A/B test
+
+`weight` 0 is the model without the node: queue the same seed, sampler and steps with `weight` 0 and with your value, and compare the two images side by side (Image Comparer).

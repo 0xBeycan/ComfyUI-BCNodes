@@ -22,6 +22,7 @@ ComfyUI-BCNodes/
     power_lora_loader.py   BC_PowerLoraLoader
     lora_key_fix.py        BC_LoraLoaderKeyFix
     sage_attention.py      BC_PatchSageAttention
+    detail_boost.py        BC_DetailBoost
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
     seedvr2.py             BC_SeedVR2FramingDownscale, BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2ChunkSize,
                            BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess, BC_SeedVR2PreprocessCompact, BC_SeedVR2PostProcessCompact
@@ -155,6 +156,8 @@ ComfyUI-BCNodes/
     lm_lora.py             LM LoRAs: the format table, alpha resolution, config checks, base-model check, the list
     sage_attention.py      SageAttention kernels as ComfyUI's attention override: the kernel table, resolve + test call,
                            layouts, the calls that run the original attention, nan_guard, the per-run counts
+    detail_boost.py        Detail Boost: the lowered sigma per mode, where a model call sits in the run's schedule,
+                           the step range and the weight blend
   docs/                    the node documentation, one page per menu category; README.md links them
   luts/                    drop .cube LUTs here for PostFx LUT (gitignored)
   web/js/

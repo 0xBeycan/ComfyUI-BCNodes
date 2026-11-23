@@ -37,6 +37,7 @@ Nodes:
     BC_PowerLoraLoader           MODEL + LoRA rows -> MODEL (no CLIP)
     BC_LoraLoaderKeyFix          MODEL + one LoRA -> MODEL, keys core's loader drops renamed first
     BC_PatchSageAttention        MODEL -> MODEL whose attention runs one SageAttention kernel, per model
+    BC_DetailBoost               MODEL -> MODEL told a lower sigma in a step range: more fine detail
     BC_AnythingEverywhere        feeds unconnected inputs of a type at prompt time
     BC_FastGroupsBypasser        one bypass toggle per group
     BC_SeedVR2FramingDownscale   SeedVR2 Resize's downscale_factor from the face size (SAM 3)
@@ -74,7 +75,7 @@ on by default; its ComfyUI setting turns it off.
 """
 
 from .nodes import (
-    any_switch, birefnet, caption_audit, claude, depth_anything, downloader, everywhere, frequency_merge, image_comparer, image_quality_gate,
+    any_switch, birefnet, caption_audit, claude, depth_anything, detail_boost, downloader, everywhere, frequency_merge, image_comparer, image_quality_gate,
     image_scale, lists, lm, logic, lora_key_fix, mask, math_expression, postfx, power_lora_loader, preflight, prompt_list,
     sage_attention, save_image, save_image_with_caption, seed, seedvr2, select_switch, show_text, skin_texture,
     social_media_export,
@@ -85,7 +86,7 @@ from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's route
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
-                lm, claude, image_comparer, power_lora_loader, lora_key_fix, sage_attention, everywhere, seedvr2,
+                lm, claude, image_comparer, power_lora_loader, lora_key_fix, sage_attention, detail_boost, everywhere, seedvr2,
                 postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture,
                 frequency_merge, preflight):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)

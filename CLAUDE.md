@@ -122,6 +122,9 @@ libs/sage_attention.py        Patch Sage Attention: SageAttention kernels as cor
                               kernel table from the official code, resolve + one test call, core's layouts, the calls
                               that run the original attention, nan_guard, the per-run counts); the node hangs it on a
                               model clone with ON_PRE_RUN / ON_CLEANUP callbacks
+libs/detail_boost.py          Detail Boost: the sigma a model call is told (each mode's lowered sigma, where the call
+                              sits in the run's schedule, the step range, the weight blend); the node hangs it on a
+                              model clone as a PREDICT_NOISE wrapper
 web/js/preflight.js           PreFlight Outcome's record list: GET /bcnodes/preflight/records on creation / load, the
                               bcnodes.preflight.records event after Report logs; a saved value never rewritten
 web/js/grow_inputs.js         growing input slots (<prefix>1, <prefix>2, ...: one empty after the last linked one):

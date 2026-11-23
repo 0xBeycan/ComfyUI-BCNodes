@@ -765,6 +765,7 @@ async def main():
 
     await lora_key_fix()
     await sage_attention()
+    await detail_boost()
     lm_core()
     await lm_nodes()
     await claude_nodes()
@@ -967,6 +968,58 @@ async def lora_key_fix():
           and not any(line.startswith("lora key not loaded") for line in lines.lines), f"{lines.lines}")
 
 
+def tiny_wan(name):
+    """A tiny Wan 2.1 T2V (one block of 128, random weights) saved as diffusion_models/<name>, and the
+    test-only nodes BCTest_WanCond (a zero Wan text conditioning, 8 tokens of 4096) and BCTest_KeepLatent
+    (an output node keeping the latent it gets) registered. -> the list KeepLatent appends to; the caller
+    deletes the two nodes."""
+    import comfy.ops
+    import folder_paths
+    import torch
+    from comfy.ldm.wan.model import WanModel
+    from safetensors.torch import save_file
+
+    root = tempfile.mkdtemp(prefix="bcnodes_wan_")
+    os.makedirs(os.path.join(root, "diffusion_models"))
+    folder_paths.add_model_folder_path("diffusion_models", os.path.join(root, "diffusion_models"))
+    net = WanModel(model_type="t2v", dim=128, ffn_dim=256, num_heads=1, num_layers=1, operations=comfy.ops.disable_weight_init)
+    save_file({key: torch.randn(t.shape) * 0.02 for key, t in net.state_dict().items()},
+              os.path.join(root, "diffusion_models", name))
+    kept = []
+
+    class WanCond:
+        """A test-only node: a zero Wan text conditioning (8 tokens of 4096)."""
+        RETURN_TYPES = ("CONDITIONING",)
+        FUNCTION = "make"
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {}}
+
+        def make(self):
+            return ([[torch.zeros(1, 8, 4096), {}]],)
+
+    class KeepLatent:
+        """A test-only output node: keeps the latent it gets."""
+        RETURN_TYPES = ()
+        FUNCTION = "keep"
+        OUTPUT_NODE = True
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {"samples": ("LATENT",)}}
+
+        def keep(self, samples):
+            kept.append(samples["samples"].clone())
+            return {}
+
+    nodes.NODE_CLASS_MAPPINGS["BCTest_WanCond"] = WanCond
+    nodes.NODE_CLASS_MAPPINGS["BCTest_KeepLatent"] = KeepLatent
+    return kept
+
+
 async def sage_attention():
     """Patch Sage Attention through ComfyUI itself. No SageAttention kernel runs here (no GPU): the
     kernel is a stand-in, torch SDPA with SageAttention's call signature, in an Active whose device
@@ -987,12 +1040,8 @@ async def sage_attention():
 
     import comfy.ldm.modules.attention as attention
     import comfy.model_management
-    import comfy.ops
-    import folder_paths
     import torch
     import torch.nn.functional as F
-    from comfy.ldm.wan.model import WanModel
-    from safetensors.torch import save_file
 
     node_class = nodes.NODE_CLASS_MAPPINGS["BC_PatchSageAttention"]
     lib = importlib.import_module(node_class.__module__.rsplit(".", 2)[0] + ".libs.sage_attention")
@@ -1044,44 +1093,7 @@ async def sage_attention():
           f"{override.stats.sage} {override.stats.fallbacks}")
 
     # --- through the executor ----------------------------------------------------------------------
-    root = tempfile.mkdtemp(prefix="bcnodes_sage_")
-    os.makedirs(os.path.join(root, "diffusion_models"))
-    folder_paths.add_model_folder_path("diffusion_models", os.path.join(root, "diffusion_models"))
-    net = WanModel(model_type="t2v", dim=128, ffn_dim=256, num_heads=1, num_layers=1, operations=comfy.ops.disable_weight_init)
-    save_file({key: torch.randn(t.shape) * 0.02 for key, t in net.state_dict().items()},
-              os.path.join(root, "diffusion_models", "tiny_sage_wan.safetensors"))
-    kept = []
-
-    class WanCond:
-        """A test-only node: a zero Wan text conditioning (8 tokens of 4096)."""
-        RETURN_TYPES = ("CONDITIONING",)
-        FUNCTION = "make"
-        CATEGORY = "testing"
-
-        @classmethod
-        def INPUT_TYPES(cls):
-            return {"required": {}}
-
-        def make(self):
-            return ([[torch.zeros(1, 8, 4096), {}]],)
-
-    class KeepLatent:
-        """A test-only output node: keeps the latent it gets."""
-        RETURN_TYPES = ()
-        FUNCTION = "keep"
-        OUTPUT_NODE = True
-        CATEGORY = "testing"
-
-        @classmethod
-        def INPUT_TYPES(cls):
-            return {"required": {"samples": ("LATENT",)}}
-
-        def keep(self, samples):
-            kept.append(samples["samples"].clone())
-            return {}
-
-    nodes.NODE_CLASS_MAPPINGS["BCTest_WanCond"] = WanCond
-    nodes.NODE_CLASS_MAPPINGS["BCTest_KeepLatent"] = KeepLatent
+    kept = tiny_wan("tiny_sage_wan.safetensors")
 
     def prompt(mode):
         return {
@@ -1144,6 +1156,93 @@ async def sage_attention():
     check("PatchSageAttention: the real resolve without sageattention / CUDA leaves the model unpatched with a warning",
           len(real_lines) == 1 and real_lines[0][0] == "WARNING" and real_lines[0][1].endswith("the model keeps ComfyUI's attention.")
           and real is not None and base is not None and torch.equal(real, base), f"{real_lines}")
+
+
+async def detail_boost():
+    """Detail Boost through ComfyUI's own sampler: UNETLoader (a tiny Wan 2.1, a flow model) -> a test-only
+    node putting a model_function_wrapper on the model (it records the sigma each model call gets and the
+    run's schedule) -> Detail Boost -> KSampler (dpmpp_2m_sde, beta, 20 steps, cfg 2, denoise 0.45), through
+    validate_prompt + PromptExecutor. Without the node and with weight 0 the model gets the schedule's sigmas
+    and the latents are bit-identical; with weight 1 (hard, eta 0.5, steps 3 to 10) the model_function_wrapper
+    still runs, the model gets the lowered sigma at steps 3 to 9 only, and the latent differs."""
+    import importlib
+
+    import torch
+
+    node_class = nodes.NODE_CLASS_MAPPINGS["BC_DetailBoost"]
+    lib = importlib.import_module(node_class.__module__.rsplit(".", 2)[0] + ".libs.detail_boost")
+    kept = tiny_wan("tiny_boost_wan.safetensors")
+    seen = []  # (sigma the model got, the run's schedule) per model call
+
+    class RecordSigma:
+        """A test-only node: a model_function_wrapper recording each model call's sigma and schedule."""
+        RETURN_TYPES = ("MODEL",)
+        FUNCTION = "patch"
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {"model": ("MODEL",)}}
+
+        def patch(self, model):
+            def record(apply_model, args):
+                seen.append((float(args["timestep"].max()), args["c"]["transformer_options"]["sample_sigmas"].tolist()))
+                return apply_model(args["input"], args["timestep"], **args["c"])
+
+            patched = model.clone()
+            patched.set_model_unet_function_wrapper(record)
+            return (patched,)
+
+    nodes.NODE_CLASS_MAPPINGS["BCTest_RecordSigma"] = RecordSigma
+
+    def prompt(weight):
+        boost = {} if weight is None else {
+            "3": N("BC_DetailBoost", model=["2", 0], weight=weight, mode="hard", eta=0.5, start_step=3, end_step=10)}
+        return {
+            "1": N("UNETLoader", unet_name="tiny_boost_wan.safetensors", weight_dtype="default"),
+            "2": N("BCTest_RecordSigma", model=["1", 0]),
+            **boost,
+            "4": N("BCTest_WanCond"),
+            "5": N("EmptyHunyuanLatentVideo", width=32, height=32, length=1, batch_size=1),
+            "6": N("KSampler", model=["3" if boost else "2", 0], seed=0, steps=20, cfg=2.0, sampler_name="dpmpp_2m_sde",
+                   scheduler="beta", positive=["4", 0], negative=["4", 0], latent_image=["5", 0], denoise=0.45),
+            "7": N("BCTest_KeepLatent", samples=["6", 0]),
+        }
+
+    async def sample(weight):
+        """-> (the latent or None, [(sigma, schedule)] per model call)."""
+        kept.clear()
+        seen.clear()
+        out, _ = await run(prompt(weight), f"detail-boost-{weight}")
+        return (kept[0] if out is not None and kept else None), list(seen)
+
+    try:
+        base, base_calls = await sample(None)
+        off, off_calls = await sample(0.0)
+        on, on_calls = await sample(1.0)
+    finally:
+        for key in ("BCTest_WanCond", "BCTest_KeepLatent", "BCTest_RecordSigma"):
+            del nodes.NODE_CLASS_MAPPINGS[key]
+
+    schedule = base_calls[0][1] if base_calls else []
+    per_step = len(base_calls) // 20 or 1  # cond and uncond in one batch, or one call each
+    check("DetailBoost: the run is 20 steps over a 21-point schedule, every call has it",
+          len(schedule) == 21 and len(base_calls) in (20, 40)
+          and all(s == schedule for calls in (base_calls, off_calls, on_calls) for _, s in calls),
+          f"{len(schedule)} {len(base_calls)}")
+    got = [sigma for sigma, _ in base_calls[::per_step]]
+    check("DetailBoost: without the node the model gets the schedule's sigmas",
+          len(got) == 20 and all(math.isclose(g, s, rel_tol=1e-6) for g, s in zip(got, schedule)), f"{got}")
+    check("DetailBoost: weight 0: the same sigmas and a bit-identical latent",
+          off_calls == base_calls and off is not None and base is not None and torch.equal(off, base))
+    expected = [lib.lowered_sigma("hard", s, schedule[i - 1], 0.5, True, 1.0) if 3 <= i < 10 else s
+                for i, s in enumerate(schedule[:20])]
+    got = [sigma for sigma, _ in on_calls[::per_step]]
+    check("DetailBoost: weight 1: the model_function_wrapper still runs, the lowered sigma at steps 3 to 9 only",
+          len(on_calls) == len(base_calls) and len(got) == 20
+          and all(math.isclose(g, e, rel_tol=1e-5) for g, e in zip(got, expected))
+          and all(g < s for g, s in zip(got[3:10], schedule[3:10])), f"{got} {expected}")
+    check("DetailBoost: weight 1: the latent differs", on is not None and base is not None and not torch.equal(on, base))
 
 
 def lm_core():
