@@ -6,13 +6,14 @@ def text_condition(clip, text):
     return clip.encode_from_tokens_scheduled(clip.tokenize(text))
 
 
-def detect(model, cond, image, threshold, refine_iterations=2):
+def detect(model, cond, image, threshold, refine_iterations=2, individual_masks=False):
     """SAM 3 text detection through the core node, `cond` from text_condition: -> (B, H, W) union mask,
     per-frame boxes (a list per frame of {x, y, width, height, score} in pixels). `refine_iterations` 0
-    skips the SAM decoder's mask refinement (the boxes are the detector's either way)."""
+    skips the SAM decoder's mask refinement (the boxes are the detector's either way). `individual_masks`
+    True: the masks one per detection instead, (N, H, W) over the whole batch, in the boxes' order."""
     from comfy_extras.nodes_sam3 import SAM3_Detect
 
     out = SAM3_Detect.execute(model, image, conditioning=cond, threshold=threshold, refine_iterations=refine_iterations,
-                              individual_masks=False)
+                              individual_masks=individual_masks)
     masks, boxes = out.args
     return masks.float().cpu(), boxes

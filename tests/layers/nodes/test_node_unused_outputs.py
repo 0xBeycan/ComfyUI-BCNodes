@@ -13,7 +13,8 @@
 - per node: each unlinked heavy output is a new 0-frame tensor of the full output's dtype and
   trailing shape, every other output equals the full run's, and where the output is a step of its
   own the step does not run (Image Resize's frames, Image Scale By Aspect Ratio's fits, BiRefNet's
-  composite and mask image, SeedVR2 Resize's two resizes, Skin Texture's texture).
+  composite and mask image, SeedVR2 Resize's two resizes, Skin Texture's texture, Detailer's sampling);
+  Face Detailer computes both (its mask reads the detailed image) and drops the unlinked one at return.
 
 The full run is the same node call without a stamp. The runtime behaviour through ComfyUI's
 executor is in tests/test_runtime.py.
@@ -34,6 +35,8 @@ HEAVY = {
     "BC_BiRefNetRemoveBackground": ("IMAGE", "MASK", "MASK_IMAGE"),
     "BC_SeedVR2Resize": ("image", "reference"),
     "BC_SkinTexture": ("image", "skin_mask"),
+    "BC_Detailer": ("image", "mask"),
+    "BC_FaceDetailer": ("image", "mask"),
 }
 
 
@@ -404,3 +407,42 @@ def test_skin_texture_applies_the_texture_only_when_linked(bcnodes, common, monk
     out = cls().run(image, **widgets, **hidden(common, cls, linked))
     check_outputs(cls, out, full, set(cls.HEAVY_OUTPUTS) - set(linked))
     assert len(textured) == 2 * ("image" in linked)  # one frame at a time
+
+
+DETAILER_WIDGETS = dict(model=None, vae=None, positive=[], negative=[], seed=0, steps=1, cfg=1.0, sampler_name="euler",
+                        scheduler="simple", denoise=0.5, refine_denoise=0.2, resolution=256, context=2.0)
+
+
+@pytest.mark.parametrize("linked", [(), ("image",), ("mask",)])
+def test_detailer_samples_only_when_the_image_is_linked(bcnodes, common, monkeypatch, linked):
+    cls, core = bcnodes["detailer"].Detailer, bcnodes["pipelines.detailer.core"]
+
+    def detail(frame, located, model, s):  # a stand-in pass: paints the region
+        crop, region = located
+        frame[crop.y0:crop.y1, crop.x0:crop.x1][region] = 0.5
+
+    monkeypatch.setattr(core, "detail", detail)
+    monkeypatch.setattr(core, "differential", lambda model: model)
+    image = torch.rand(2, 32, 32, 3)
+    mask = torch.zeros(1, 32, 32)
+    mask[0, 10:18, 10:18] = 1.0
+    full = cls().detail(image, mask, **DETAILER_WIDGETS)
+    sampled = spy(monkeypatch, core, "detail")
+    out = cls().detail(image, mask, **DETAILER_WIDGETS, **hidden(common, cls, linked))
+    check_outputs(cls, out, full, set(cls.HEAVY_OUTPUTS) - set(linked))
+    assert len(sampled) == 2 * ("image" in linked)  # one region on each of the two frames
+
+
+@pytest.mark.parametrize("linked", [(), ("image",), ("mask",)])
+def test_face_detailer_drops_the_unlinked_output_at_return(bcnodes, common, monkeypatch, linked):
+    cls, flow = bcnodes["detailer"].FaceDetailer, bcnodes["pipelines.detailer.face"]
+    runs = []
+    monkeypatch.setattr(flow, "run", lambda *args: runs.append(args) or (torch.rand(1, 8, 8, 3), torch.ones(1, 8, 8)))
+    widgets = dict(DETAILER_WIDGETS, sam3_model="unused", threshold=0.5, min_face_height=64, max_face_height=16384, face=True,
+                   mouth=False, eyes=True)
+    full = cls().detail(torch.rand(1, 8, 8, 3), **widgets)
+    runs.clear()
+    out = cls().detail(torch.rand(1, 8, 8, 3), **widgets, **hidden(common, cls, linked))
+    assert len(runs) == 1
+    assert all(emptied(a, b) for name, a, b in zip(cls.RETURN_NAMES, out, full) if name not in linked)
+    assert all(a.shape == b.shape for name, a, b in zip(cls.RETURN_NAMES, out, full) if name in linked)

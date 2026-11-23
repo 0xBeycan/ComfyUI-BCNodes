@@ -40,6 +40,7 @@ ComfyUI-BCNodes/
     save_image_with_caption.py  BC_SaveImageWithCaption
     skin_texture.py        BC_SkinTexture
     frequency_merge.py     BC_FrequencyMerge
+    detailer.py            BC_Detailer, BC_FaceDetailer
     preflight.py           BC_PreFlightObserve, BC_PreFlightReport, BC_PreFlightOutcome, BC_PreFlightCalibrate
                            + GET /bcnodes/preflight/records and the bcnodes.preflight.records event; the store's path
     process_monitor.py     Process Monitor: its HTTP routes and live event, the full clear's baseline (no nodes)
@@ -48,6 +49,11 @@ ComfyUI-BCNodes/
     model_download.py      downloader lines resolved to files under ComfyUI/models, token gate
     postfx.py              the postfx adapter: dropdown catalogs, looks, apply, contact sheet
     skin_texture.py        SAM 3 prompts, face gate, mask assembly, texture call
+    detailer/
+      region.py            the crop around a region and its sampling size; None when it would not be enlarged
+      conditioning.py      ControlNet hints cut to the crop; core's inpaint conditioning of the crop
+      core.py              the detailer core (Detailer's flow): crop -> structure + refine pass -> paste
+      face.py              Face Detailer: SAM 3 faces, the character, the size gate, mouth and eye passes
     quality_gate.py        shot profiles, the three-tier checks, verdict, report, badge
     social_export.py       Social Media Export geometry / encoding engine, no ComfyUI or torch imports
     save_image.py          Save Image name grammar, job JSON, save loop; Save Image With Caption's folder,
@@ -139,7 +145,8 @@ ComfyUI-BCNodes/
     frequency.py           Frequency Merge: one image's Gaussian low-pass + another's high-pass
     mask.py                fill holes, grow / blur, draw a colour through a mask, blockify, offset, refine foreground, fit a mask batch
     resize.py              Image Resize: size plan, crop / resample / pad per frame
-    color.py               hex colour parser, sRGB <-> linear
+    color.py               hex colour parser, sRGB <-> linear, colour match over a band (the detailer's paste)
+    blend.py               Laplacian-pyramid (multiband) blend
     texture.py             the skin-texture engine
     image_metrics.py       blur / sharpness / noise / clipping / entropy
     math_expression.py     the whitelisted expression evaluator

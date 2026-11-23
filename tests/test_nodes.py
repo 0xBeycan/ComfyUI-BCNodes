@@ -658,6 +658,24 @@ def main():
     check("FrequencyMerge detail = base -> base", lambda: torch.allclose(fm.merge(pic, pic, 3.0, 1.0)[0], pic, atol=1e-6) or _fail())
     check("FrequencyMerge on the gpu choice runs (ComfyUI's device)", lambda: fm.merge(pic, pic, 3.0, 1.0, device="gpu")[0].shape == pic.shape or _fail())
 
+    # --- Detailer / Face Detailer -------------------------------------------
+    dt = m["detailer"]
+    sampling = dict(seed=0, steps=1, cfg=1.0, sampler_name="euler", scheduler="simple", denoise=0.5, refine_denoise=0.2, resolution=1024,
+                    context=3.0)
+    face_kw = dict(sampling, sam3_model=default_sam3, threshold=0.5, min_face_height=64, max_face_height=16384, face=True, mouth=False,
+                   eyes=True)
+    check("FaceDetailer: the default checkpoint is offered even with no checkpoints on disk",
+          lambda: default_sam3 in dt.FaceDetailer.INPUT_TYPES()["required"]["sam3_model"][0] or _fail())
+    check("Detailer None -> empty", lambda: dt.Detailer().detail(None, None, None, None, [], [], **sampling)[0].shape == (0, 64, 64, 3) or _fail())
+    check("FaceDetailer None -> empty",
+          lambda: dt.FaceDetailer().detail(None, None, None, [], [], **face_kw)[1].shape == (0, 64, 64) or _fail())
+    check("Detailer empty mask -> the input, nothing changed",
+          lambda: (lambda o: torch.equal(o[0], pic) and not bool(o[1].any()))(dt.Detailer().detail(pic, torch.zeros(0, 24, 32), None, None, [], [], **sampling))
+          or _fail())
+    check("Detailer zero mask -> the input, nothing sampled",
+          lambda: (lambda o: torch.equal(o[0], pic) and not bool(o[1].any()))(dt.Detailer().detail(pic, torch.zeros(1, 24, 32), None, None, [], [], **sampling))
+          or _fail())
+
     if failures:
         print(f"\nFAIL: {len(failures)}")
         sys.exit(1)

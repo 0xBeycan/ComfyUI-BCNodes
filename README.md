@@ -62,6 +62,8 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_SaveImageWithCaption` | [Save Image With Caption](docs/image.md#bc_saveimagewithcaption--save-image-with-caption) | Saves images as PNG and, with a caption connected, the caption next to each image under the same name, for training datasets |
 | `BC_SkinTexture` | [Skin Texture](docs/image.md#bc_skintexture--skin-texture) | Micro-texture on skin inside a SAM 3 mask: boosts the image's own detail and multiplies in a synthetic pore field, in linear light |
 | `BC_FrequencyMerge` | [Frequency Merge](docs/image.md#bc_frequencymerge--frequency-merge) | The low frequencies (structure, colour) of one image + the high frequencies (texture, fine detail) of another of the same size, split by a Gaussian |
+| `BC_Detailer` | [Detailer](docs/detailer.md#bc_detailer--detailer) | Details each mask region of an image with any model: the region cropped with its context, enlarged to the sampling resolution, sampled in a structure and a refine pass (Differential Diffusion, inpaint conditioning, ControlNet hints cut to the crop), shrunk back and pasted through the mask's own shape (colour matched, Laplacian-blended); pixels outside the masks never change |
+| `BC_FaceDetailer` | [Face Detailer](docs/detailer.md#bc_facedetailer--face-detailer) | Details every face SAM 3 finds: the character's face (the one the mask overlaps, or the largest) with the LoRA model, the other faces with `model_no_lora` when connected; optional mouth and eye passes (each eye on its own crop), a face height range, and faces too large to gain from sampling left alone |
 | — | [Align](docs/workflow.md#align) | Align / distribute buttons in the selection toolbox |
 | — | [Process Monitor](docs/process-monitor.md) | Not a node: live RAM / VRAM bars, an estimate before a run, per-node measurement, the reason a killed run died, a full clear back to the startup memory without a restart, and a drop stale outputs setting (off) (see [Process Monitor](docs/process-monitor.md)) |
 
@@ -79,6 +81,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | [`BCNodes/preflight`](docs/preflight.md) | PreFlight Observe, Report, Outcome, Calibrate |
 | [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Lora Loader (Key Fix), Auto Model Downloader |
 | [`BCNodes/model`](docs/model.md) | Patch Sage Attention, Detail Boost, Qwen Image Shift |
+| [`BCNodes/detailer`](docs/detailer.md) | Detailer, Face Detailer |
 | [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, Chunk Size, VAE Decode, PostProcess; Compact: Preprocess (Compact), PostProcess (Compact) |
 | [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
 
@@ -109,6 +112,7 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [PreFlight](docs/preflight.md) — how Instagram, TikTok and X would likely treat an image or video before it is published: the observation sensor, the rules engine, reading a verdict, the feedback loop and calibration
 - [Loaders](docs/loaders.md) — LoRA loading (with the key fix for LoRAs core loads only in part) and the model downloader
 - [Model](docs/model.md) — SageAttention for one model in one workflow: the modes, `qk_quant`, long sequences, the calls that run the original attention, `nan_guard`, the console, install, an A/B test
+- [Detailer](docs/detailer.md) — a mask region or every face sampled again at the model's size and pasted back: the crop, the two passes, ControlNet hints, the paste; the character and model_no_lora, the size gate, mouth and eye passes
 - [SeedVR2](docs/seedvr2.md) — the downscale factor from the framing, the SeedVR2 input stage, streaming VAE encode / decode, the chunk size and the VAE tile for the card, post-processing
 - [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, Auto Bypass, the Align buttons
 - [Unused outputs](docs/unused-outputs.md) — unconnected whole-batch outputs come out empty

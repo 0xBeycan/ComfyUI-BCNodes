@@ -61,6 +61,8 @@ Nodes:
     BC_SaveImageWithCaption      save images as PNG, a caption file next to each (datasets)
     BC_SkinTexture               micro-texture on skin inside a SAM 3 mask, before upscale and grain
     BC_FrequencyMerge            low frequencies of one image + high frequencies of another
+    BC_Detailer                  each mask region cropped, sampled at the model's size in two passes, pasted back
+    BC_FaceDetailer              SAM 3 faces detailed: the character with the LoRA model, others with model_no_lora; mouth, eyes
     BC_PreFlightObserve          Qwen3.5-9B as an observation sensor: image / frames -> observations JSON
     BC_PreFlightReport           rules engine: observations + caption -> IG / TikTok / X verdict ranges, logged
     BC_PreFlightOutcome          what a platform did to a post, into the feedback store
@@ -76,7 +78,7 @@ on by default; its ComfyUI setting turns it off.
 """
 
 from .nodes import (
-    any_switch, birefnet, caption_audit, claude, depth_anything, detail_boost, downloader, everywhere, frequency_merge, image_comparer, image_quality_gate,
+    any_switch, birefnet, caption_audit, claude, depth_anything, detail_boost, detailer, downloader, everywhere, frequency_merge, image_comparer, image_quality_gate,
     image_scale, lists, lm, logic, lora_key_fix, mask, math_expression, postfx, power_lora_loader, preflight, prompt_list,
     qwen_image_shift, sage_attention, save_image, save_image_with_caption, seed, seedvr2, select_switch, show_text, skin_texture,
     social_media_export,
@@ -89,7 +91,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {}
 for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
                 lm, claude, image_comparer, power_lora_loader, lora_key_fix, sage_attention, detail_boost, qwen_image_shift, everywhere, seedvr2,
                 postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture,
-                frequency_merge, preflight):
+                frequency_merge, detailer, preflight):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(_module.NODE_DISPLAY_NAME_MAPPINGS)
 

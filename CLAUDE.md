@@ -30,7 +30,7 @@ nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, co
                               lm_folders (an LM family's model and text_encoders folders, its folder_paths key
                               registered; Qwen LM and PreFlight Observe), the unused-heavy-outputs helper (LinkStamp,
                               register_link_stamp, stamps_last, heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (30); social_specs.json is the user-editable platform table
+nodes/<domain>.py             one per domain (33); social_specs.json is the user-editable platform table
 nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, precision, LoRA, keep -> a BC_LM value, an
                               LMSpec; loads nothing);
                               model_inputs and MODEL_DEFAULTS, the model / precision / lora / lora_strength widgets
@@ -39,6 +39,10 @@ pipelines/matting.py          finish() option chain; remove_background() -> mode
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
 pipelines/skin_texture.py     SAM 3 prompts, face gate, mask assembly, texture call
+pipelines/detailer/           region (the crop around a region and its sampling size; None when it would not be enlarged),
+                              conditioning (each ControlNet's hint cut to the crop, core's inpaint conditioning), core
+                              (Detailer's flow: crop -> Differential Diffusion structure + refine pass -> paste), face (Face
+                              Detailer: SAM 3 faces, the character, the size gate, mouth and eye passes)
 pipelines/quality_gate.py     shot profiles, QualityCheck, verdict, report, badge
 pipelines/social_export.py    Social Media Export engine: plan, crop/pad, encode, report line
 pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop; Save Image With Caption's folder,
@@ -101,7 +105,8 @@ libs/image.py                 is_half, float_frame, output_dtype (half-precision
                               pil_to_tensor_hwc, fit_image
 libs/mask.py filters.py       mask ops; the two Gaussians (reflect / replicate), kept apart on purpose
 libs/frequency.py             Frequency Merge: one image's Gaussian low-pass + another's high-pass
-libs/color.py texture.py image_metrics.py
+libs/color.py texture.py image_metrics.py   (color.match_band: a patch's colour matched over a band, the detailer's paste)
+libs/blend.py                 Laplacian-pyramid (multiband) blend
 libs/geometry.py              integer size arithmetic; short_side_size (a ControlNet preprocessor's output size)
 libs/resize.py                Image Resize: size plan, crop / resample / pad per frame
 libs/math_expression.py       whitelisted AST evaluator with injected resolvers
@@ -236,7 +241,7 @@ where it is.
 ## How to add a node
 
 - Key `BC_<Name>`, a display name, and a `CATEGORY` under `BCNodes/`. The groups today:
-  `analysis`, `image`, `lm`, `loaders`, `logic`, `mask`, `model`, `postfx`, `preflight`, `seedvr2` (with
+  `analysis`, `detailer`, `image`, `lm`, `loaders`, `logic`, `mask`, `model`, `postfx`, `preflight`, `seedvr2` (with
   its subcategory `seedvr2/compact`), `text`, `workflow`. A new group is added when a new kind of node needs one.
 - A literal `INPUT_TYPES` in the node class. The node file holds the surface only; the work goes
   to a pipeline (or straight to libs/models when there is no flow).

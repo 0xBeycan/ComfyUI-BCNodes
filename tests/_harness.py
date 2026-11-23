@@ -97,6 +97,11 @@ def stub_comfy(tmp):
             pass
 
     cu.ProgressBar = ProgressBar
+    # comfy.samplers: the sampler and scheduler lists a sampling node's INPUT_TYPES reads (the Detailers).
+    samplers = types.ModuleType("comfy.samplers")
+    samplers.KSampler = type("KSampler", (), {"SAMPLERS": ["euler"], "SCHEDULERS": ["simple"]})
+    comfy.samplers = samplers
+    sys.modules["comfy.samplers"] = samplers
     comfy.model_management = mm
     comfy.utils = cu
     comfy.cli_args = cli_args
@@ -127,7 +132,7 @@ def load_package():
             for name in ("logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
                          "lm", "claude", "image_comparer", "power_lora_loader", "lora_key_fix", "sage_attention", "detail_boost", "everywhere", "seedvr2",
                          "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption",
-                         "skin_texture", "frequency_merge", "preflight", "qwen_image_shift")})
+                         "skin_texture", "frequency_merge", "preflight", "qwen_image_shift", "detailer")})
 
 
 def bind_package(name):

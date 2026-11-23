@@ -1,4 +1,5 @@
-"""Colour helpers: the hex colour parser and the sRGB <-> linear transfer functions."""
+"""Colour helpers: the hex colour parser, the sRGB <-> linear transfer functions and the colour match of
+a patch to a reference over a band of pixels (the detailer's paste)."""
 
 import torch
 
@@ -22,3 +23,15 @@ def srgb_to_linear(x):
 
 def linear_to_srgb(x):
     return torch.where(x <= 0.0031308, x * 12.92, 1.055 * x.clamp(min=0) ** (1 / 2.4) - 0.055)
+
+
+def match_band(patch, reference, band):
+    """`patch` (C, H, W) with each channel shifted and scaled so that its mean and standard deviation over
+    the pixels of `band` (H, W bool) are `reference`'s there, clamped to [0, 1]; a channel flat in the band
+    is only shifted. An empty band leaves `patch` as it is."""
+    if not bool(band.any()):
+        return patch
+    p, r = patch[:, band], reference[:, band]
+    p_std, r_std = p.std(dim=1, correction=0), r.std(dim=1, correction=0)
+    scale = torch.where(p_std > 1e-6, r_std / p_std, torch.ones_like(p_std))
+    return ((patch - p.mean(dim=1)[:, None, None]) * scale[:, None, None] + r.mean(dim=1)[:, None, None]).clamp(0, 1)

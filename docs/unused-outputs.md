@@ -5,7 +5,9 @@ tensor instead of staying in ComfyUI's cache until the prompt ends; where it is 
 the step does not run at all. That covers Image Resize `IMAGE` and `mask` and Image Scale By Aspect
 Ratio `image` and `mask` (not resized), BiRefNet Remove Background `IMAGE` and `MASK_IMAGE` (not
 built) and `MASK` (the matte, dropped), SeedVR2 Resize `image` and `reference` (each resize runs
-only for a connected output), and Skin Texture `image` (no texture) and `skin_mask` (dropped).
+only for a connected output), Skin Texture `image` (no texture) and `skin_mask` (dropped), Detailer
+`image` (nothing sampled) and `mask` (dropped), and Face Detailer `image` and `mask` (both computed, since
+the mouth and eyes are found on the detailed face, and the unconnected one dropped).
 Connecting such an output later runs the node again.
 
 When a prompt is queued, the pack writes which of these outputs are connected into the node's
