@@ -283,10 +283,6 @@ async def unused_outputs():
 
 async def main():
     await setup()
-
-
-async def main():
-    await setup()
     process_monitor_default()
 
     # Join Image Lists: In3 exists only on the canvas; list outputs fan out downstream.
