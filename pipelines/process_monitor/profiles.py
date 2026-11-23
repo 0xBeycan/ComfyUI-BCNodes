@@ -26,6 +26,7 @@ MASK_GUARD_WINDOW = 5  # frames of booleans the mask guard keeps (the frame and 
 RENDER_CHUNK = 16  # frames the colored masks are cut at a time
 SAM3_SIDE = 1008  # core SAM3_Detect scales its input to 1008 x 1008
 FRAMING_CHUNK = 4  # frames SeedVR2 Framing Downscale hands SAM 3 at a time (pipelines/seedvr2 FRAMES_PER_CHUNK)
+DETAILER_REGION_PEAK = 8 * 3 * F32  # bytes per resolution^2 pixel the detailer core holds for a region, at most
 # BCVLoadVideo's model rules: its frame counts are step * n + 1, and with resolution "source" each side
 # is cut down to a multiple of the grid. Its sizes come from its own node definition (bcv_sizes).
 LOAD_VIDEO_MODELS = {"Wan": {"step": 4, "grid": 16}, "SCAIL": {"step": 4, "grid": 32}, "None": {"step": 1, "grid": 1}}
@@ -784,6 +785,54 @@ def _skin_texture(c):
         "one frame at a time into outputs of the image's dtype; SAM 3 and the texture's working set not counted"
 
 
+def _detailer_region(c):
+    """The bytes the detailer core (pipelines/detailer/core.py) holds for the region it works on, at most:
+    the crop sampled at most resolution x resolution and pasted back at a crop smaller than that, with
+    eight float32 RGB images of resolution^2 alive at its peak (the paste: the patch, its colour-matched
+    copy, the soft mask and the weight, the pyramid's difference and levels, the blend; 74 to 92 bytes per
+    resolution^2 pixel measured on the CPU at 1024 and 2048)."""
+    if c.linked("resolution"):
+        raise NotCounted("resolution comes from a link: the crops' size is known at run time only")
+    r = int(c.widget("resolution", 1024))
+    return r, DETAILER_REGION_PEAK * r * r
+
+
+def _detailer(c):
+    img, masks = c.tensor("image"), c.tensor("mask")
+    n, h, w, dtype, channels = img["n"], img["h"], img["w"], dtype_of(img), img["shape"][-1]
+    r, region = _detailer_region(c)
+    made = {0: image(n, h, w, dtype, channels), 1: mask(n, h, w, dtype)}
+    out = {slot: est for slot, est in made.items() if c.output_linked(slot)}
+    # each mask's pixels inside its crop (one byte each, a crop smaller than resolution^2), held for the run;
+    # the changed mask is made whole and dropped at return when unlinked
+    held = masks["n"] * min(h * w, r * r) + (0 if 1 in out else made[1]["bytes"])
+    if 0 not in out:
+        # nothing sampled: each mask read as a float32 frame of the image's size, then compared
+        return out, held + mask_bytes(1, h, w) + h * w, "image not linked: nothing sampled, only the regions located"
+    # a float32 working copy of each frame, detailed in place
+    return (out, held + image_bytes(1, h, w, channels=channels) + region,
+            "one frame at a time into outputs of the image's dtype; per region at most eight float32 images of "
+            "resolution^2 (an upper bound); the model's and the VAE's working sets and the latents not counted")
+
+
+def _face_detailer(c):
+    img = c.tensor("image")
+    n, h, w, dtype, channels = img["n"], img["h"], img["w"], dtype_of(img), img["shape"][-1]
+    _, region = _detailer_region(c)
+    made = {0: image(n, h, w, dtype, channels), 1: mask(n, h, w, dtype)}
+    out = {slot: est for slot, est in made.items() if c.output_linked(slot)}
+    # both outputs are made (the mouth and eyes are found on the detailed face): an unlinked one is dropped at
+    # return; a float32 working copy of each frame; the character's mask read as a float32 frame and compared;
+    # then either core SAM3_Detect's 1008 x 1008 float32 copy (the frame, or a face's box) or a region's work
+    unlinked = sum(est["bytes"] for slot, est in made.items() if slot not in out)
+    select = mask_bytes(1, h, w) + h * w if c.linked("mask") else 0
+    transient = unlinked + image_bytes(1, h, w, channels=channels) + select + max(image_bytes(1, SAM3_SIDE, SAM3_SIDE), region)
+    return (out, transient,
+            "one frame at a time into outputs of the image's dtype; per region at most eight float32 images of resolution^2 "
+            "(an upper bound); the faces' masks (one byte per pixel per face, their number known at run time only), SAM 3's, "
+            "the model's and the VAE's working sets and the latents not counted")
+
+
 def _frequency_merge(c):
     base, detail = c.tensor("base"), c.tensor("detail")
     n, h, w = base["n"], base["h"], base["w"]
@@ -907,6 +956,7 @@ PROFILES = {
     "BC_SkinTexture": _skin_texture, "BC_AnySwitch": _any_switch, "BC_SelectSwitch": _select_switch,
     "BC_JoinImageLists": _join_lists,
     "BC_FrequencyMerge": _frequency_merge,
+    "BC_Detailer": _detailer, "BC_FaceDetailer": _face_detailer,
     # LM nodes
     "BC_QwenLM": _qwen_lm, "BC_LMConfig": _lm_config, "BC_LMLoader": _lm_loader,
     # PreFlight (Outcome and Calibrate output text only: no profile needed)
