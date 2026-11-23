@@ -39,7 +39,8 @@ pipelines/matting.py          finish() option chain; remove_background() -> mode
 pipelines/model_download.py   downloader entries -> resolved items, token gate, "seen" marker
 pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, contact sheet
 pipelines/skin_texture.py     SAM 3 prompts, face gate, mask assembly, texture call
-pipelines/detailer/           region (the crop around a region and its sampling size; None when it would not be enlarged),
+pipelines/detailer/           region (the crop around a region: its box + padding, its longer side sampled at size; None when
+                              that side is size or more),
                               conditioning (each ControlNet's hint cut to the crop: the conditioning's, and Z-Image Fun
                               ControlNet's model patch on a clone of the model; core's inpaint conditioning), core
                               (Detailer's flow: crop -> Differential Diffusion structure + refine pass -> paste), face (Face

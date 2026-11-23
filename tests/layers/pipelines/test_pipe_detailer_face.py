@@ -5,8 +5,8 @@ records each region and the model, and paints the region so a later detection ca
   - the character: the largest face without a mask, the face the mask overlaps most with one, none when
     the mask overlaps no face; detailed first, with the main model; the others with model_no_lora, and
     not at all without it;
-  - the size gate: a face under min_face_height gets no pass and no part detection; a face over
-    max_face_height skips the face pass while its eyes still run;
+  - the size gate: a face under min_face_height gets no pass and no part detection; a face whose longer
+    side is face_size or more (at it and above it) skips the face pass while its eyes still run;
   - the parts: found on the face's box of the frame the face pass left, cut to the face's mask (a part
     outside it dropped); the mouth's detections one region, each eye a region of its own;
   - the passes in order face, mouth, eyes; the mask output the union of the regions detailed.
@@ -62,16 +62,16 @@ def flow(bcnodes):
     return bcnodes["pipelines.detailer.face"]
 
 
-def run(flow, monkeypatch, world, model_no_lora="other", select=None, min_h=32, max_h=16384, face=True, mouth=False, eyes=False):
+def run(flow, monkeypatch, world, model_no_lora="other", select=None, min_h=32, size=1024, face=True, mouth=False, eyes=False):
     settings = importlib.import_module(flow.__package__ + ".core").Settings(None, [], [], 0, 1, 1.0, "euler", "simple", 0.5, 0.2,
-                                                                            1024, 2.0)
+                                                                            size, 0.5)
     monkeypatch.setattr(flow, "load", lambda name: ("sam", "clip") if name == "sam3.safetensors" else None)
     monkeypatch.setattr(flow, "text_condition", lambda clip, text: text)
     monkeypatch.setattr(flow, "detect", world.detect)
     monkeypatch.setattr(flow, "detail", world.detail)
     monkeypatch.setattr(flow, "differential", lambda model: ("dd", model))
     image = torch.zeros(1, H, W, 3)
-    return flow.run(image, "main", model_no_lora, settings, "sam3.safetensors", 0.4, select, min_h, max_h, face, mouth, eyes)
+    return flow.run(image, "main", model_no_lora, settings, "sam3.safetensors", 0.4, select, min_h, face, mouth, eyes)
 
 
 def details(world):
@@ -137,10 +137,15 @@ def test_parts_found_on_the_detailed_face_and_cut_to_its_mask(flow, monkeypatch)
 
 def test_size_gate(flow, monkeypatch):
     world = World(faces=("a", "b"), parts={"eyes:2": eye_masks})
-    run(flow, monkeypatch, world, max_h=80, eyes=True)
-    # a (100 px) skips its face pass but its eyes run; b (60 px) gets both
+    run(flow, monkeypatch, world, size=80, eyes=True)
+    # a (100 px, above face_size 80) skips its face pass but its eyes (20 px wide) run; b (60 px) gets all three
     assert [call[0] for call in details(world)] == [("dd", "main")] * 2 + [("dd", "other")] * 3
     assert details(world)[0][1] == (30, 50, 50, 60) and details(world)[2][1] == (130, 30, 180, 90)
+    for size, face_pass in ((100, False), (101, True)):  # a's longer side at face_size skips; one px under it runs
+        world = World(faces=("a",), parts={"eyes:2": eye_masks})
+        run(flow, monkeypatch, world, size=size, eyes=True)
+        assert [call[1] for call in details(world)][0] == ((20, 20, 100, 120) if face_pass else (30, 50, 50, 60))
+        assert len(details(world)) == 2 + face_pass
     world = World(faces=("a", "b"), parts={"eyes:2": eye_masks})
     run(flow, monkeypatch, world, min_h=61, eyes=True)
     # b (60 px) is under the minimum: no pass and no part search on its box

@@ -1,8 +1,9 @@
-"""The detailer core: a region of an image cut out with its context, enlarged to the sampling size,
-sampled in two passes, shrunk back and pasted through the region's own shape.
+"""The detailer core: a region of an image cut out with its surroundings, enlarged until the region's
+longer side is `size` px, sampled in two passes, shrunk back and pasted through the region's own shape.
 
-- The crop: region.plan (`context` times the region's box, the long side sampled at `resolution`); a
-  region whose crop would not be enlarged is left as it is.
+- The crop: region.plan (the region's box grown by `padding` times the box on each side, sampled with the
+  region's longer side at `size` px, both sampling sides multiples of 64); a region whose longer side is
+  `size` px or more is left as it is.
 - Sampling: the model with core's Differential Diffusion (a clone), core's inpaint conditioning of the
   crop with the region's mask, softened at its edge, as the noise mask, every ControlNet's hint cut to the
   crop (conditioning.py: those in the conditioning, and Z-Image's Fun ControlNet on a clone of the model per
@@ -48,8 +49,8 @@ class Settings:
     scheduler: str
     denoise: float
     refine_denoise: float
-    resolution: int
-    context: float
+    size: int        # px the region's longer side is sampled at (face_size / region_size)
+    padding: float   # the surroundings on each side of the region's box, a fraction of the box
 
 
 def differential(model):
@@ -69,9 +70,9 @@ def working_frame(frame):
 
 def locate(hard, s):
     """(Crop, the region's pixels inside it (h, w bool)) of the region `hard` (H, W bool); None when it
-    is empty or its crop would not be enlarged for sampling."""
+    is empty or its longer side is s.size px or more."""
     box = bounds(hard)
-    crop = None if box is None else plan(box, hard.shape[1], hard.shape[0], s.context, s.resolution)
+    crop = None if box is None else plan(box, hard.shape[1], hard.shape[0], s.padding, s.size)
     return None if crop is None else (crop, hard[crop.y0:crop.y1, crop.x0:crop.x1])
 
 

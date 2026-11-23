@@ -50,7 +50,8 @@ ComfyUI-BCNodes/
     postfx.py              the postfx adapter: dropdown catalogs, looks, apply, contact sheet
     skin_texture.py        SAM 3 prompts, face gate, mask assembly, texture call
     detailer/
-      region.py            the crop around a region and its sampling size; None when it would not be enlarged
+      region.py            the crop around a region (its box + padding) and its sampling size (its longer side at size);
+                           None when that side is size or more
       conditioning.py      ControlNet hints cut to the crop (the conditioning's, Z-Image Fun ControlNet's model
                            patch on a clone); core's inpaint conditioning of the crop
       core.py              the detailer core (Detailer's flow): crop -> structure + refine pass -> paste

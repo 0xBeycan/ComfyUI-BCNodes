@@ -26,7 +26,7 @@ MASK_GUARD_WINDOW = 5  # frames of booleans the mask guard keeps (the frame and 
 RENDER_CHUNK = 16  # frames the colored masks are cut at a time
 SAM3_SIDE = 1008  # core SAM3_Detect scales its input to 1008 x 1008
 FRAMING_CHUNK = 4  # frames SeedVR2 Framing Downscale hands SAM 3 at a time (pipelines/seedvr2 FRAMES_PER_CHUNK)
-DETAILER_REGION_PEAK = 8 * 3 * F32  # bytes per resolution^2 pixel the detailer core holds for a region, at most
+DETAILER_REGION_PEAK = 8 * 3 * F32  # bytes per pixel of a crop's sampling size the detailer core holds for a region, at most
 # BCVLoadVideo's model rules: its frame counts are step * n + 1, and with resolution "source" each side
 # is cut down to a multiple of the grid. Its sizes come from its own node definition (bcv_sizes).
 LOAD_VIDEO_MODELS = {"Wan": {"step": 4, "grid": 16}, "SCAIL": {"step": 4, "grid": 32}, "None": {"step": 1, "grid": 1}}
@@ -785,25 +785,28 @@ def _skin_texture(c):
         "one frame at a time into outputs of the image's dtype; SAM 3 and the texture's working set not counted"
 
 
-def _detailer_region(c):
-    """The bytes the detailer core (pipelines/detailer/core.py) holds for the region it works on, at most:
-    the crop sampled at most resolution x resolution and pasted back at a crop smaller than that, with
-    eight float32 RGB images of resolution^2 alive at its peak (the paste: the patch, its colour-matched
-    copy, the soft mask and the weight, the pyramid's difference and levels, the blend; 74 to 92 bytes per
-    resolution^2 pixel measured on the CPU at 1024 and 2048)."""
-    if c.linked("resolution"):
-        raise NotCounted("resolution comes from a link: the crops' size is known at run time only")
-    r = int(c.widget("resolution", 1024))
+def _detailer_region(c, size):
+    """(r, the bytes the detailer core (pipelines/detailer/core.py) holds for the region it works on, at most):
+    a crop is sampled at most r x r, r = the widget `size` (the px the region's longer side is sampled at)
+    times 1 + 2 x padding, rounded up to a multiple of 64, as pipelines/detailer/region.plan rounds each
+    sampling side, and pasted back at a crop smaller than that; eight float32 RGB images of the sampling
+    size alive at its peak (the paste: the patch, its colour-matched copy, the soft mask and the weight, the
+    pyramid's difference and levels, the blend; 74 to 92 bytes per pixel measured on the CPU at 1024 x 1024
+    and 2048 x 2048)."""
+    for name in (size, "padding"):
+        if c.linked(name):
+            raise NotCounted(f"{name} comes from a link: the crops' size is known at run time only")
+    r = round_up_to_multiple(math.ceil(round(int(c.widget(size, 640)) * (1 + 2 * float(c.widget("padding", 0.5))), 6)), 64)
     return r, DETAILER_REGION_PEAK * r * r
 
 
 def _detailer(c):
     img, masks = c.tensor("image"), c.tensor("mask")
     n, h, w, dtype, channels = img["n"], img["h"], img["w"], dtype_of(img), img["shape"][-1]
-    r, region = _detailer_region(c)
+    r, region = _detailer_region(c, "region_size")
     made = {0: image(n, h, w, dtype, channels), 1: mask(n, h, w, dtype)}
     out = {slot: est for slot, est in made.items() if c.output_linked(slot)}
-    # each mask's pixels inside its crop (one byte each, a crop smaller than resolution^2), held for the run;
+    # each mask's pixels inside its crop (one byte each, a crop smaller than its r x r sampling size), held for the run;
     # the changed mask is made whole and dropped at return when unlinked
     held = masks["n"] * min(h * w, r * r) + (0 if 1 in out else made[1]["bytes"])
     if 0 not in out:
@@ -811,14 +814,14 @@ def _detailer(c):
         return out, held + mask_bytes(1, h, w) + h * w, "image not linked: nothing sampled, only the regions located"
     # a float32 working copy of each frame, detailed in place
     return (out, held + image_bytes(1, h, w, channels=channels) + region,
-            "one frame at a time into outputs of the image's dtype; per region at most eight float32 images of "
-            "resolution^2 (an upper bound); the model's and the VAE's working sets and the latents not counted")
+            f"one frame at a time into outputs of the image's dtype; per region at most eight float32 images of {r} x {r} "
+            "(region_size x (1 + 2 x padding), an upper bound); the model's and the VAE's working sets and the latents not counted")
 
 
 def _face_detailer(c):
     img = c.tensor("image")
     n, h, w, dtype, channels = img["n"], img["h"], img["w"], dtype_of(img), img["shape"][-1]
-    _, region = _detailer_region(c)
+    r, region = _detailer_region(c, "face_size")
     made = {0: image(n, h, w, dtype, channels), 1: mask(n, h, w, dtype)}
     out = {slot: est for slot, est in made.items() if c.output_linked(slot)}
     # both outputs are made (the mouth and eyes are found on the detailed face): an unlinked one is dropped at
@@ -828,9 +831,9 @@ def _face_detailer(c):
     select = mask_bytes(1, h, w) + h * w if c.linked("mask") else 0
     transient = unlinked + image_bytes(1, h, w, channels=channels) + select + max(image_bytes(1, SAM3_SIDE, SAM3_SIDE), region)
     return (out, transient,
-            "one frame at a time into outputs of the image's dtype; per region at most eight float32 images of resolution^2 "
-            "(an upper bound); the faces' masks (one byte per pixel per face, their number known at run time only), SAM 3's, "
-            "the model's and the VAE's working sets and the latents not counted")
+            f"one frame at a time into outputs of the image's dtype; per region at most eight float32 images of {r} x {r} "
+            "(face_size x (1 + 2 x padding), an upper bound); the faces' masks (one byte per pixel per face, their number "
+            "known at run time only), SAM 3's, the model's and the VAE's working sets and the latents not counted")
 
 
 def _frequency_merge(c):

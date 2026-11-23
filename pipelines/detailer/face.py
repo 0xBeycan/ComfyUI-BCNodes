@@ -6,10 +6,11 @@ the face's box of the frame the face pass left, cut to the face's mask.
 
 - The character: the face the external mask overlaps most (none when it overlaps none); without the
   mask, the face of the largest area. Chosen among every face found, before the size gate.
-- The size gate: a face shorter than `min_height` px is left as it is (its eyes are a few pixels); a
-  face taller than `max_height` skips only the face pass, the mouth and eyes still run. Every pass also
-  skips itself when its crop would not be enlarged for sampling (core.locate): a large face is left
-  alone while its eyes, a fifth of its width each, are still detailed.
+- The size gate: a face shorter than `min_height` px is left as it is (its eyes are a few pixels). Every
+  pass samples its region (the face, the mouth, an eye) by one rule, core's: the region's longer side at
+  s.size px (face_size), its crop the region's box grown by s.padding on each side; a region whose longer
+  side is s.size px or more skips its pass (core.locate). So a face as large as face_size keeps its own
+  pixels while its mouth and eyes, a fraction of its width each, are still detailed.
 - Order: the character first, with its model, then the other faces with theirs, so the model changes
   once per frame.
 
@@ -70,15 +71,14 @@ def find_parts(sam, cond, frame, face, threshold, separate):
 
 def _detail(frame, region, sampler, s, changed):
     """One pass of the core on `region` (H, W bool) of `frame`, its pixels marked in `changed`; nothing
-    when its crop would not be enlarged."""
+    when its longer side is s.size px or more."""
     located = locate(region, s)
     if located is not None:
         detail(frame, located, sampler, s)
         mark(changed, located)
 
 
-def run(image, model, model_no_lora, s, sam3_model, threshold, select, min_height, max_height, face_pass, mouth_pass,
-        eyes_pass):
+def run(image, model, model_no_lora, s, sam3_model, threshold, select, min_height, face_pass, mouth_pass, eyes_pass):
     """BC_FaceDetailer: (image with the faces detailed, the pixels changed), frame by frame into outputs of
     the image's dtype when that is half precision, float32 otherwise. `select`: the optional MASK that
     picks the character; `s`: core.Settings."""
@@ -101,7 +101,7 @@ def run(image, model, model_no_lora, s, sam3_model, threshold, select, min_heigh
             _, top, _, bottom = bounds(face)
             if bottom - top < min_height:
                 continue
-            if face_pass and bottom - top <= max_height:
+            if face_pass:
                 _detail(frame, face, sampler, s, changed[i])
             if mouth_pass:
                 for part in find_parts(sam, mouth_cond, frame, face, threshold, separate=False):

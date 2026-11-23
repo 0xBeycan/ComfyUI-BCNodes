@@ -1,4 +1,4 @@
-"""Detailer — a region of an image sampled again at a higher resolution and pasted back.
+"""Detailer — a region of an image sampled again at a larger size and pasted back.
 
     BC_Detailer      (Detailer)
     BC_FaceDetailer  (Face Detailer)
@@ -10,8 +10,8 @@ from .common import LINK_INPUTS, drop_unlinked_heavy, drop_unwanted, heavy_wante
 
 
 def sampling_inputs():
-    """The sampler and detailer widgets both nodes take, in order: core KSampler's (same ranges), then the
-    two passes' denoise, the sampling resolution and the crop's context."""
+    """The sampler widgets both nodes take, in order: core KSampler's (same ranges), then the two passes'
+    denoise. Each node's size and padding follow them, named and described for what it details."""
     import comfy.samplers
 
     return {
@@ -26,17 +26,11 @@ def sampling_inputs():
                               "tooltip": "Denoise of the structure pass, the first one: how far the region may be redrawn. 0 skips the pass."}),
         "refine_denoise": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01,
                                      "tooltip": "Denoise of the refine pass, run on the structure pass's result: fine detail only. 0 skips the pass."}),
-        "resolution": ("INT", {"default": 1024, "min": 256, "max": 8192, "step": 64,
-                               "tooltip": "The long side, in px, each crop is sampled at: the model's native size (SD 1.5 512, SDXL 1024, "
-                                          "Qwen-Image 1328). A crop already this large or larger is left as it is: sampling it adds no detail."}),
-        "context": ("FLOAT", {"default": 3.0, "min": 1.0, "max": 10.0, "step": 0.1,
-                              "tooltip": "The crop around a region, as a multiple of the region's box: the surroundings the model sees. "
-                                         "Larger shows more context but samples the region itself at fewer pixels."}),
     }
 
 
 class Detailer:
-    """Details each mask region of an image: crop with context, sample at the model's size, paste back."""
+    """Details each mask region of an image: crop with padding, sample with the region at region_size px, paste back."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -50,6 +44,17 @@ class Detailer:
                 "positive": ("CONDITIONING", {"tooltip": "A ControlNet applied to it (Apply ControlNet) has its hint cut to each crop."}),
                 "negative": ("CONDITIONING",),
                 **sampling_inputs(),
+                "region_size": ("INT", {"default": 640, "min": 64, "max": 8192, "step": 64,
+                                        "tooltip": "The size, in px, each region is redrawn at: its box's longer side is enlarged to "
+                                                   "region_size px. A region whose longer side is already region_size px or more is "
+                                                   "left as it is (sampling it adds no detail). The crop is sampled at about (1 + 2 x "
+                                                   "padding) x region_size px on its longer side, both sides rounded up to multiples of "
+                                                   "64 px."}),
+                "padding": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 4.5, "step": 0.05,
+                                      "tooltip": "The surroundings the model sees around each region, on every side, as a fraction of "
+                                                 "the region's box: 0.5 adds half the box's width left and right and half its height "
+                                                 "above and below (a crop twice the box). The crop is cut at the image's edges and "
+                                                 "moved inside it. Only for context: pixels outside the mask never change."}),
             },
             "hidden": dict(LINK_INPUTS),
         }
@@ -61,14 +66,15 @@ class Detailer:
     FUNCTION = "detail"
     CATEGORY = "BCNodes/detailer"
     SEARCH_ALIASES = ["BCNodes", "detailer", "detail", "inpaint", "crop and stitch", "differential diffusion"]
-    DESCRIPTION = ("Details each mask region of the image: the region is cropped with its context, enlarged to the sampling "
-                   "resolution, sampled in a structure pass and a refine pass (Differential Diffusion, inpaint conditioning, "
-                   "ControlNet hints cut to the crop), shrunk back and pasted through the mask's own shape, colour matched at "
-                   "its edge and blended with a Laplacian pyramid. Pixels outside the masks never change. Outputs the image and "
-                   "the pixels that changed.")
+    DESCRIPTION = ("Details each mask region of the image: the region's box, grown by padding on every side, is cropped and "
+                   "enlarged until the region's longer side is region_size px, sampled in a structure pass and a refine pass "
+                   "(Differential Diffusion, inpaint conditioning, ControlNet hints cut to the crop), shrunk back and pasted "
+                   "through the mask's own shape, colour matched at its edge and blended with a Laplacian pyramid. A region "
+                   "already region_size px or larger is left as it is. Pixels outside the masks never change. Outputs the image "
+                   "and the pixels that changed.")
 
     def detail(self, image, mask, model, vae, positive, negative, seed, steps, cfg, sampler_name, scheduler, denoise,
-               refine_denoise, resolution, context, prompt_graph=None, unique_id=None):
+               refine_denoise, region_size, padding, prompt_graph=None, unique_id=None):
         from ..pipelines.detailer import core
 
         if image is None or image.shape[0] == 0:
@@ -76,7 +82,7 @@ class Detailer:
         if mask is None:
             mask = torch.zeros((0, *image.shape[1:3]))
         settings = core.Settings(vae, positive, negative, seed, steps, cfg, sampler_name, scheduler, denoise, refine_denoise,
-                                 resolution, context)
+                                 region_size, padding)
         wanted = heavy_wanted(type(self), prompt_graph, unique_id)
         return drop_unwanted(type(self), core.run(image, mask, model, settings, want_image=wants(wanted, "image")), wanted)
 
@@ -96,15 +102,26 @@ class FaceDetailer:
                 "positive": ("CONDITIONING", {"tooltip": "A ControlNet applied to it (Apply ControlNet) has its hint cut to each crop."}),
                 "negative": ("CONDITIONING",),
                 **sampling_inputs(),
+                "face_size": ("INT", {"default": 640, "min": 64, "max": 8192, "step": 64,
+                                      "tooltip": "The size, in px, each face is redrawn at: its box's longer side (its height when "
+                                                 "upright) is enlarged to face_size px. A face whose longer side is already face_size "
+                                                 "px or more skips the face pass (nothing to gain); its mouth and eyes still run. The "
+                                                 "mouth and each eye follow the same rule: their box's longer side redrawn at face_size "
+                                                 "px, unless already that large. A crop is sampled at about (1 + 2 x padding) x "
+                                                 "face_size px on its longer side, both sides rounded up to multiples of 64 px."}),
+                "padding": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 4.5, "step": 0.05,
+                                      "tooltip": "The surroundings the model sees around each face (and each mouth and eye), on every "
+                                                 "side, as a fraction of its box: 0.5 adds half a face on every side (a crop twice the "
+                                                 "face). The crop is cut at the image's edges and moved inside it. Only for context: "
+                                                 "pixels outside the face, mouth and eye masks never change."}),
                 "sam3_model": (choices(), {"default": DEFAULT_SAM3,
                                           "tooltip": "SAM 3 checkpoint under models/checkpoints; the default is downloaded when missing."}),
                 "threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01,
                                         "tooltip": "SAM 3 detection threshold, for the faces, the mouth and the eyes."}),
                 "min_face_height": ("INT", {"default": 64, "min": 0, "max": 16384,
-                                            "tooltip": "A face shorter than this (px) is left as it is: no face, mouth or eye pass."}),
-                "max_face_height": ("INT", {"default": 16384, "min": 0, "max": 16384,
-                                            "tooltip": "A face taller than this (px) skips the face pass; its mouth and eyes are still "
-                                                       "detailed. A face whose crop is already at the sampling resolution skips it anyway."}),
+                                            "tooltip": "A face whose height is under min_face_height px is left as it is: no face, mouth "
+                                                       "or eye pass (at that size the model would invent the face rather than detail "
+                                                       "it)."}),
                 "face": ("BOOLEAN", {"default": True, "tooltip": "The face pass."}),
                 "mouth": ("BOOLEAN", {"default": False, "tooltip": "A mouth pass (teeth and lips) after the face pass, on a smaller crop."}),
                 "eyes": ("BOOLEAN", {"default": True, "tooltip": "An eye pass after the face pass, each eye on a crop of its own."}),
@@ -126,23 +143,24 @@ class FaceDetailer:
     CATEGORY = "BCNodes/detailer"
     SEARCH_ALIASES = ["BCNodes", "face detailer", "detailer", "face", "eyes", "mouth", "sam3"]
     DESCRIPTION = ("Finds every face with SAM 3 and details it with the Detailer's core: the character's face (the one the mask "
-                   "overlaps, or the largest) with the main model, the other faces with model_no_lora when it is connected. A "
-                   "mouth pass and an eye pass (each eye on its own crop) follow the face pass. Faces outside the height range "
-                   "are skipped; a face too large to gain from sampling keeps its own pixels while its eyes are still detailed. "
-                   "Outputs the image and the pixels that changed.")
+                   "overlaps, or the largest) with the main model, the other faces with model_no_lora when it is connected. Each "
+                   "face is redrawn with its longer side at face_size px, its box grown by padding on every side; a mouth pass "
+                   "and an eye pass (each eye on its own crop) follow by the same rule. A face under min_face_height px is "
+                   "skipped; a face already face_size px or larger keeps its own pixels while its mouth and eyes are still "
+                   "detailed. Outputs the image and the pixels that changed.")
 
     def detail(self, image, model, vae, positive, negative, seed, steps, cfg, sampler_name, scheduler, denoise, refine_denoise,
-               resolution, context, sam3_model, threshold, min_face_height, max_face_height, face, mouth, eyes,
-               model_no_lora=None, mask=None, prompt_graph=None, unique_id=None):
+               face_size, padding, sam3_model, threshold, min_face_height, face, mouth, eyes, model_no_lora=None, mask=None,
+               prompt_graph=None, unique_id=None):
         from ..pipelines.detailer import core
         from ..pipelines.detailer import face as face_flow
 
         if image is None or image.shape[0] == 0:
             return (torch.zeros((0, 64, 64, 3)), torch.zeros((0, 64, 64)))
         settings = core.Settings(vae, positive, negative, seed, steps, cfg, sampler_name, scheduler, denoise, refine_denoise,
-                                 resolution, context)
+                                 face_size, padding)
         return drop_unlinked_heavy(type(self), face_flow.run(image, model, model_no_lora, settings, sam3_model, threshold, mask,
-                                                             min_face_height, max_face_height, face, mouth, eyes),
+                                                             min_face_height, face, mouth, eyes),
                                    prompt_graph, unique_id)
 
 

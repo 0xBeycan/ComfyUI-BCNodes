@@ -1,9 +1,10 @@
 """The detailer core (pipelines/detailer: region, conditioning, core), with stand-ins for core's sampler,
 VAE, Differential Diffusion and node_helpers:
 
-  - the crop: `context` times the region's box around its centre, at the sampling aspect (long side
-    `resolution`, both sides multiples of 64), moved inside and cut to the image; None when the crop
-    would not be enlarged;
+  - the crop: the region's box grown by `padding` times the box on each side, cut to the image and moved
+    inside it, sampled with the region's longer side at `size` px (each sampling side rounded up to a
+    multiple of 64, the crop taken at that aspect, the zoom raised only where the crop would not fit);
+    wide, tall and square boxes; None when the longer side is `size` or more;
   - ControlNet hints cut to the crop: same size, another size, another aspect (core's centre cut), a
     chain copied link by link and shared by the positive and the negative, a 1x1 extra concat kept, the
     input conditioning untouched;
@@ -146,7 +147,7 @@ def sampled(monkeypatch):
 def settings(det, vae=None, positive=None, **kw):
     values = dict(vae=vae or FakeVAE(), positive=positive or [[torch.zeros(1, 2, 4), {}]], negative=[[torch.zeros(1, 2, 4), {}]],
                   seed=7, steps=3, cfg=2.5, sampler_name="euler", scheduler="simple", denoise=0.5, refine_denoise=0.2,
-                  resolution=128, context=2.0)
+                  size=64, padding=0.5)
     values.update(kw)
     return det.core.Settings(**values)
 
@@ -171,29 +172,46 @@ def test_bounds(det):
     assert det.region.bounds(hard) == (3, 2, 9, 5)
 
 
-def test_crop_around_the_centre_at_the_sampling_size(det):
-    crop = det.region.plan((450, 450, 550, 550), 1000, 1000, 3.0, 1024)
-    assert crop == det.region.Crop(350, 350, 650, 650, 1024, 1024)
-    # a wide box: the long side is the resolution, both sides multiples of 64, the crop at that aspect
-    crop = det.region.plan((400, 480, 600, 520), 1000, 1000, 2.0, 1024)
-    assert (crop.width, crop.height) == (1024, 192)
-    assert abs((crop.x1 - crop.x0) / (crop.y1 - crop.y0) - 1024 / 192) < 0.1
-    assert crop.x1 - crop.x0 >= 400 and crop.y1 - crop.y0 >= 80
+def test_region_sampled_at_size_with_padding(det):
+    Crop = det.region.Crop
+    # an 80 x 100 box (a face), padding 0.5: a 160 x 200 crop around its centre, its 100 px side sampled at 640
+    assert det.region.plan((450, 400, 530, 500), 1000, 1000, 0.5, 640) == Crop(410, 350, 570, 550, 1024, 1280)
+    # padding 0: the box itself; padding 1: a box's width and height on every side
+    assert det.region.plan((100, 100, 200, 180), 1000, 1000, 0.0, 640) == Crop(100, 100, 200, 180, 640, 512)
+    assert det.region.plan((450, 450, 550, 550), 1000, 1000, 1.0, 320) == Crop(350, 350, 650, 650, 960, 960)
+
+
+def test_no_crop_when_the_region_is_size_or_larger(det):
+    assert det.region.plan((300, 300, 380, 400), 2000, 2000, 0.5, 100) is None  # its longer side at size
+    assert det.region.plan((300, 300, 380, 401), 2000, 2000, 0.5, 100) is None  # above it
+    assert det.region.plan((300, 300, 401, 380), 2000, 2000, 0.5, 100) is None  # the longer side is the width
+    crop = det.region.plan((300, 300, 380, 399), 2000, 2000, 0.5, 100)  # one px under: sampled, enlarged
+    assert crop is not None and crop.height > crop.y1 - crop.y0 and crop.width > crop.x1 - crop.x0
 
 
 def test_crop_moved_inside_and_cut_to_the_image(det):
-    crop = det.region.plan((0, 0, 50, 50), 1000, 800, 3.0, 1024)
-    assert (crop.x0, crop.y0, crop.x1, crop.y1) == (0, 0, 150, 150)
-    crop = det.region.plan((940, 760, 1000, 800), 1000, 800, 3.0, 1024)
-    assert (crop.x1, crop.y1) == (1000, 800)
-    crop = det.region.plan((100, 100, 300, 140), 400, 200, 10.0, 1024)  # context past the image: cut to it
-    assert 0 <= crop.x0 and crop.x1 <= 400 and 0 <= crop.y0 and crop.y1 <= 200
+    Crop = det.region.Crop
+    # padding past the top-left and the bottom-right corners: the crop moved inside, its size kept (100 x 160 at zoom
+    # 8 is 800 x 1280; 800 rounded up to 832, so 104 columns)
+    assert det.region.plan((0, 0, 50, 80), 1000, 800, 0.5, 640) == Crop(0, 0, 104, 160, 832, 1280)
+    assert det.region.plan((950, 720, 1000, 800), 1000, 800, 0.5, 640) == Crop(896, 640, 1000, 800, 832, 1280)
+    # padding past the whole image: the crop is the image
+    assert det.region.plan((100, 50, 300, 150), 400, 200, 1.0, 640) == Crop(0, 0, 400, 200, 1280, 640)
+    # ... and where the sampling sides, rounded up (1400 -> 1408, 700 -> 704), would need more than the image, the
+    # zoom rises to fit: the region at 704 px instead of 700
+    assert det.region.plan((100, 50, 300, 150), 400, 200, 1.0, 700) == Crop(0, 0, 400, 200, 1408, 704)
 
 
-def test_no_crop_when_it_would_not_be_enlarged(det):
-    assert det.region.plan((300, 300, 700, 700), 2000, 2000, 3.0, 1024) is None  # 1200 px crop for 1024
-    assert det.region.plan((300, 300, 642, 642), 2000, 2000, 3.0, 1024) is None  # 1026 px for 1024
-    assert det.region.plan((300, 300, 600, 600), 2000, 2000, 3.0, 1024) is not None  # 900 px
+def test_non_square_regions(det):
+    Crop = det.region.Crop
+    # a wide box and a tall one: the longer side sampled at size, the crop at the box's aspect
+    assert det.region.plan((400, 480, 600, 520), 1000, 1000, 0.5, 640) == Crop(300, 460, 700, 540, 1280, 256)
+    assert det.region.plan((480, 400, 520, 600), 1000, 1000, 0.5, 640) == Crop(460, 300, 540, 700, 256, 1280)
+    # a 103 x 47 box: its 206 x 94 crop at 640 / 103 is 1280 x 584; 584 is rounded up to 640, and the crop taken at
+    # that aspect and the same zoom (103 rows, not 94): the rounding only adds surroundings, the region stays at 640
+    crop = det.region.plan((450, 450, 553, 497), 1000, 1000, 0.5, 640)
+    assert (crop.width, crop.height, crop.x1 - crop.x0, crop.y1 - crop.y0) == (1280, 640, 206, 103)
+    assert crop.x0 <= 450 and crop.x1 >= 553 and crop.y0 <= 450 and crop.y1 >= 497
 
 
 # --- ControlNet hints --------------------------------------------------------------------------------
@@ -383,8 +401,8 @@ def test_a_model_without_the_zimage_patch_is_sampled_as_it_is(det, sampled):
 def test_regions_in_batch_order_and_skipped_when_too_large(det, sampled):
     image = picture(4)
     masks = torch.cat([square(top=4, left=4, size=8), square(top=40, left=40, size=8), torch.ones(1, 64, 64)])
-    out, changed = det.core.run(image, masks, "model", settings(det, resolution=64))
-    assert len(sampled) == 4  # two regions, two passes each; the whole-image mask would not be enlarged
+    out, changed = det.core.run(image, masks, "model", settings(det))
+    assert len(sampled) == 4  # two regions, two passes each; the whole-image mask is 64 px, the size: left as it is
     assert torch.equal(changed[0], (masks[0] + masks[1]).clamp(0, 1))
     assert torch.equal(out[0][changed[0] == 0], image[0][changed[0] == 0])
 

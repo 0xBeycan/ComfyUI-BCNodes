@@ -1,4 +1,4 @@
-"""Detailer: a region of an image sampled again at a higher resolution and pasted back, one module per
+"""Detailer: a region of an image sampled again at a larger size and pasted back, one module per
 concern:
 
     region        the crop around a region and the size it is sampled at
