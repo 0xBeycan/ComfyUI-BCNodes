@@ -36,6 +36,7 @@ Nodes:
     BC_ImageComparer             two images, divider comparison on the node
     BC_PowerLoraLoader           MODEL + LoRA rows -> MODEL (no CLIP)
     BC_LoraLoaderKeyFix          MODEL + one LoRA -> MODEL, keys core's loader drops renamed first
+    BC_VAELoader                 VAE file for the model picked; Wan 2.1's packed-decoder (upscale 2x) VAEs decode larger
     BC_PatchSageAttention        MODEL -> MODEL whose attention runs one SageAttention kernel, per model
     BC_DetailBoost               MODEL -> MODEL told a lower sigma in a step range: more fine detail
     BC_QwenImageShift            MODEL -> MODEL with the official Qwen-Image-2512 shift (per latent size), replaces ModelSamplingAuraFlow
@@ -81,7 +82,7 @@ from .nodes import (
     any_switch, birefnet, caption_audit, claude, depth_anything, detail_boost, detailer, downloader, everywhere, frequency_merge, image_comparer, image_quality_gate,
     image_scale, lists, lm, logic, lora_key_fix, mask, math_expression, postfx, power_lora_loader, preflight, prompt_list,
     qwen_image_shift, sage_attention, save_image, save_image_with_caption, seed, seedvr2, select_switch, show_text, skin_texture,
-    social_media_export,
+    social_media_export, vae_loader,
 )
 from .nodes.common import register_link_stamp
 from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's routes and, when on, its sampler)
@@ -89,8 +90,8 @@ from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's route
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
-                lm, claude, image_comparer, power_lora_loader, lora_key_fix, sage_attention, detail_boost, qwen_image_shift, everywhere, seedvr2,
-                postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture,
+                lm, claude, image_comparer, power_lora_loader, lora_key_fix, vae_loader, sage_attention, detail_boost, qwen_image_shift, everywhere,
+                seedvr2, postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture,
                 frequency_merge, detailer, preflight):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(_module.NODE_DISPLAY_NAME_MAPPINGS)

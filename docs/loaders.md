@@ -23,6 +23,18 @@ A key ComfyUI already maps is never touched, and a key is renamed only when Comf
 
 Each run prints one console line: the keys, the renames per kind and the keys that still match no module of the model, e.g. `my_lora.safetensors: 1500 keys, 41 renamed (41 .diff_m -> .modulation.diff, 0 given the diffusion_model. prefix), 0 match no module of this model`. When some keys match no module (a LoRA made for another model, the image branch of a Wan 2.1 I2V LoRA on Wan 2.2, a LoRA's text-encoder keys) the line is a warning naming the first five, and ComfyUI's own `lora key not loaded` lines name each one. A key of a mapped module in a format ComfyUI does not read counts as matched; ComfyUI's line names it.
 
+## `BC_VAELoader` — VAE Loader
+
+`model` + `vae_name` (a file in `models/vae`) → `VAE`. The file is loaded through ComfyUI's own VAE class, as *Load VAE* loads it, and `model` decides what the model's special VAEs get on top. The output goes to ComfyUI's own *VAE Decode*, *VAE Decode (Tiled)* and *VAE Encode*.
+
+| `model` | Files | What it adds |
+| --- | --- | --- |
+| Wan 2.1 | VAEs of the Wan 2.1 latent space: Wan 2.1, Wan 2.2 T2V / I2V A14B (they ship the Wan 2.1 VAE), Qwen-Image | A decoder that packs a larger image into its channels decodes at that size: the Wan 2.1 upscale 2x VAE ([spacepxl/Wan2.1-VAE-upscale2x](https://huggingface.co/spacepxl/Wan2.1-VAE-upscale2x)) gives 12 channels, unpacked into a 2x image (4 channels per 2 × 2 block of pixels, as its model card does) |
+
+A plain VAE of the model comes out exactly as *Load VAE* gives it. A packed decoder works with every decode path: *VAE Decode*, *VAE Decode (Tiled)* and the tiled decode ComfyUI falls back to when memory runs out; encoding is unchanged (the encoder is the plain one). *Load VAE* itself hands the 12 channels on as they are, which no image node can use.
+
+One console line when the file needed anything, e.g. `upscale.safetensors: the decoder packs a 2x image into 12 channels: it decodes at 2x`. A file of another model stops the run with an error naming it (`ae.safetensors is not a Wan 2.1 VAE (...)`); the Wan 2.2 TI2V-5B VAE is another model (48 latent channels). The 2x VAE is trained on single images only.
+
 ## `BC_AutoModelDownloader` — Auto Model Downloader
 
 One line per model: a URL, a directory under `ComfyUI/models` and two switches, *HF token needed?* and *Civitai token needed?*. `Add line` adds a line, `Remove last line` drops the last one. Two boxes at the top take a Hugging Face token and a Civitai token.

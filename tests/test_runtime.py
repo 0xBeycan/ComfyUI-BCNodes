@@ -760,6 +760,7 @@ async def main():
     check("AutoModelDownloader: runs every queue by design", out is not None and executed == ["1"], f"{executed}")
 
     await lora_key_fix()
+    await vae_loader()
     await sage_attention()
     await detail_boost()
     await qwen_image_shift()
@@ -965,6 +966,131 @@ async def lora_key_fix():
                    "[BCNodes] Lora Loader (Key Fix): peft.safetensors: 4 keys, 4 renamed (0 .diff_m -> .modulation.diff, "
                    "4 given the diffusion_model. prefix), 0 match no module of this model"]
           and not any(line.startswith("lora key not loaded") for line in lines.lines), f"{lines.lines}")
+
+
+async def vae_loader():
+    """VAE Loader ("Wan 2.1") through ComfyUI itself, on tiny Wan 2.1 VAEs (dim 16, core's WanVAE at its
+    own init) saved under a temp vae folder: a plain one (decoder head 3 channels) and a packed one (12,
+    as Wan2.1-VAE-upscale2x), plus a tiny TAESD for another model's file. The latent is seeded noise.
+
+    The plain file decodes exactly as through core's Load VAE, with no console line. The packed file,
+    through core's VAE Decode, is core's own decoder output for that file (core's Load VAE hands its 12
+    channels on as they are) unpacked pixel by pixel into the 2x image, channel c x 4 + i x 2 + j to
+    pixel (2h + i, 2w + j); VAE Decode (Tiled) gives the same image in one tile and the 2x size in
+    several; VAE Encode is core's own; one console line names the file. The TAESD file is refused."""
+    import comfy.ldm.wan.vae
+    import folder_paths
+    import torch
+    from comfy.taesd.taesd import TAESD
+    from safetensors.torch import save_file
+
+    root = tempfile.mkdtemp(prefix="bcnodes_vae_")
+    folder_paths.add_model_folder_path("vae", root)
+    torch.manual_seed(0)
+    for name, conv_out in (("tiny_wan.safetensors", 3), ("tiny_wan_2x.safetensors", 12)):
+        # core builds the VAE without initialising its weights: seeded noise, RMS norm scales at 1
+        net = comfy.ldm.wan.vae.WanVAE(dim=16, z_dim=16, temperal_downsample=[False, True, True], conv_out_channels=conv_out)
+        save_file({key: torch.ones(t.shape) if key.endswith("gamma") else torch.randn(t.shape) * 0.05
+                   for key, t in net.state_dict().items()}, os.path.join(root, name))
+    save_file({key: t.contiguous() for key, t in TAESD().state_dict().items()}, os.path.join(root, "tiny_taesd.safetensors"))
+    kept = {}
+
+    class RandLatent:
+        """A test-only node: a seeded noise Wan latent, 1 frame of 12 x 16."""
+        RETURN_TYPES = ("LATENT",)
+        FUNCTION = "make"
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {}}
+
+        def make(self):
+            return ({"samples": torch.randn(1, 16, 1, 12, 16, generator=torch.Generator().manual_seed(1))},)
+
+    def keeper(kind):
+        class Keep:
+            """A test-only output node: keeps the tensor it gets under `key`."""
+            RETURN_TYPES = ()
+            FUNCTION = "keep"
+            OUTPUT_NODE = True
+            CATEGORY = "testing"
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {"required": {"value": (kind,), "key": ("STRING", {"default": ""})}}
+
+            def keep(self, value, key):
+                kept[key] = (value["samples"] if kind == "LATENT" else value).clone()
+                return {}
+        return Keep
+
+    test_nodes = {"BCTest_RandLatent": RandLatent, "BCTest_KeepImage": keeper("IMAGE"), "BCTest_KeepLatent2": keeper("LATENT")}
+    nodes.NODE_CLASS_MAPPINGS.update(test_nodes)
+    lines = Lines()
+    root_logger = logging.getLogger()
+    level = root_logger.level
+    root_logger.addHandler(lines)
+    root_logger.setLevel(logging.INFO)
+    try:
+        tiled = dict(temporal_size=64, temporal_overlap=8)
+        out, _ = await run({
+            "1": N("BCTest_RandLatent"),
+            "2": N("BC_VAELoader", model="Wan 2.1", vae_name="tiny_wan_2x.safetensors"),
+            "3": N("VAEDecode", samples=["1", 0], vae=["2", 0]), "4": N("BCTest_KeepImage", value=["3", 0], key="ours"),
+            "5": N("VAELoader", vae_name="tiny_wan_2x.safetensors"),
+            "6": N("VAEDecode", samples=["1", 0], vae=["5", 0]), "7": N("BCTest_KeepImage", value=["6", 0], key="core"),
+            "8": N("VAEDecodeTiled", samples=["1", 0], vae=["2", 0], tile_size=512, overlap=64, **tiled),
+            "9": N("BCTest_KeepImage", value=["8", 0], key="tiled_one"),
+            "10": N("VAEDecodeTiled", samples=["1", 0], vae=["2", 0], tile_size=64, overlap=32, **tiled),
+            "11": N("BCTest_KeepImage", value=["10", 0], key="tiled_many"),
+            "12": N("VAEEncode", pixels=["3", 0], vae=["2", 0]), "13": N("BCTest_KeepLatent2", value=["12", 0], key="enc_ours"),
+            "14": N("VAEEncode", pixels=["3", 0], vae=["5", 0]), "15": N("BCTest_KeepLatent2", value=["14", 0], key="enc_core"),
+            "16": N("BC_VAELoader", model="Wan 2.1", vae_name="tiny_wan.safetensors"),
+            "17": N("VAEDecode", samples=["1", 0], vae=["16", 0]), "18": N("BCTest_KeepImage", value=["17", 0], key="plain_ours"),
+            "19": N("VAELoader", vae_name="tiny_wan.safetensors"),
+            "20": N("VAEDecode", samples=["1", 0], vae=["19", 0]), "21": N("BCTest_KeepImage", value=["20", 0], key="plain_core"),
+        }, "vae-loader")
+        refused_server = Server()
+        refused, _ = await run({"1": N("BC_VAELoader", model="Wan 2.1", vae_name="tiny_taesd.safetensors"),
+                                "2": N("PreviewAny", source=["1", 0])}, "vae-loader-taesd", {"client_id": "test"}, refused_server)
+    finally:
+        root_logger.removeHandler(lines)
+        root_logger.setLevel(level)
+        for key in test_nodes:
+            del nodes.NODE_CLASS_MAPPINGS[key]
+
+    check("VAELoader: the prompt validates and runs", out is not None)
+    if out is None:
+        return
+    check("VAELoader: every output is finite (the comparisons below mean something)",
+          all(bool(torch.isfinite(t).all()) for t in kept.values()), f"{[k for k, t in kept.items() if not torch.isfinite(t).all()]}")
+    core = kept["core"]
+    reference = torch.empty(1, 12 * 8 * 2, 16 * 8 * 2, 3, dtype=core.dtype)
+    for c in range(3):
+        for i in range(2):
+            for j in range(2):
+                reference[:, i::2, j::2, c] = core[..., c * 4 + i * 2 + j]
+    ours = kept["ours"]
+    check("VAELoader: core's Load VAE hands the packed file's 12 channels on at 1x", core.shape == (1, 96, 128, 12), f"{core.shape}")
+    check("VAELoader: the packed file decodes to core's decoder output unpacked into the 2x image",
+          ours.shape == (1, 192, 256, 3) and torch.equal(ours, reference), f"{ours.shape}")
+    check("VAELoader: VAE Decode (Tiled) in one tile gives the same image",
+          torch.allclose(kept["tiled_one"], ours, atol=1e-6), f"{(kept['tiled_one'] - ours).abs().max()}")
+    check("VAELoader: VAE Decode (Tiled) in several tiles gives the 2x image",
+          kept["tiled_many"].shape == (1, 192, 256, 3) and bool(torch.isfinite(kept["tiled_many"]).all()), f"{kept['tiled_many'].shape}")
+    check("VAELoader: VAE Encode is core's own", torch.equal(kept["enc_ours"], kept["enc_core"]),
+          f"{kept['enc_ours'].dtype} {kept['enc_core'].dtype} {(kept['enc_ours'] - kept['enc_core']).abs().max()}")
+    check("VAELoader: the plain file decodes exactly as through core's Load VAE",
+          torch.equal(kept["plain_ours"], kept["plain_core"]) and kept["plain_ours"].shape == (1, 96, 128, 3),
+          f"{kept['plain_ours'].dtype} {kept['plain_core'].dtype} {(kept['plain_ours'] - kept['plain_core']).abs().max()}")
+    ours_lines = [line for line in lines.lines if line.startswith("[BCNodes] VAE Loader")]
+    check("VAELoader: one console line, for the packed file only",
+          ours_lines == ["[BCNodes] VAE Loader: tiny_wan_2x.safetensors: the decoder packs a 2x image into 12 channels: "
+                         "it decodes at 2x"], f"{ours_lines}")
+    errors = [data.get("exception_message", "") for event, data in refused_server.events if event == "execution_error"]
+    check("VAELoader: another model's file is refused naming it",
+          refused is None and any(e.startswith("tiny_taesd.safetensors is not a Wan 2.1 VAE") for e in errors), f"{errors}")
 
 
 def tiny_wan(name):

@@ -214,6 +214,11 @@ def main():
     check("LoraLoaderKeyFix strength 0 -> model untouched, no file read", lambda: lkf.load("M", "missing.safetensors", 0.0) == ("M",) or _fail())
     check("LoraLoaderKeyFix INPUT_TYPES with no LoRA on disk", lambda: lkf.INPUT_TYPES()["required"]["lora_name"][0] == [] or _fail())
 
+    vl_inputs = m["vae_loader"].VAELoader.INPUT_TYPES()["required"]
+    check("VAELoader INPUT_TYPES with no VAE on disk: the VAE family's models, Wan 2.1 first",
+          lambda: (vl_inputs["model"][0] == ["Wan 2.1"] and vl_inputs["model"][1]["default"] == "Wan 2.1"
+                   and vl_inputs["vae_name"][0] == []) or _fail())
+
     # Patch Sage Attention: a stand-in patcher; ComfyUI's attention module (0.3.60+, wrap_attn) and
     # patcher_extension as stubs; sageattention reported missing whatever this Python has installed.
     import logging

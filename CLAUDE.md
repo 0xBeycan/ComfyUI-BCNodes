@@ -30,7 +30,7 @@ nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, co
                               lm_folders (an LM family's model and text_encoders folders, its folder_paths key
                               registered; Qwen LM and PreFlight Observe), the unused-heavy-outputs helper (LinkStamp,
                               register_link_stamp, stamps_last, heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (33); social_specs.json is the user-editable platform table
+nodes/<domain>.py             one per domain (34); social_specs.json is the user-editable platform table
 nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, precision, LoRA, keep -> a BC_LM value, an
                               LMSpec; loads nothing);
                               model_inputs and MODEL_DEFAULTS, the model / precision / lora / lora_strength widgets
@@ -83,8 +83,8 @@ pipelines/process_monitor/    monitor (sampler thread, runs, per-node records, s
                               release_pack_models: the pack's model slots and every registered LM backend),
                               drop_stale (drop stale outputs: a hook on ComfyUI's output cache, applied monitor
                               on or off)
-models/common/                registry.py (families matting, depth, lm_family and lm_backend; a depth entry is a
-                              loader returning `predict`), download.py (fetch_with_progress; model_file: a file in a
+models/common/                registry.py (families matting, depth, lm_family, lm_backend and vae; a depth entry is a
+                              loader returning `predict`, a vae entry load(path) -> (core VAE, note)), download.py (fetch_with_progress; model_file: a file in a
                               ComfyUI model folder, downloaded there when missing)
 models/common/lm/             the LM runtime the LM families share: catalog (the built-in models.yaml merged with the
                               user's), family and backend contracts, core_backend (the "core" LM backend: core's
@@ -103,6 +103,9 @@ models/seedvr2/               VAE adapter (tile_for: the auto tile, rows and col
                               axis), frame-shape rules; dit (the sampler's
                               VRAM law and safety margin, from measurements) (no registry)
 models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 3)
+models/wan_vae/               "Wan 2.1" in the vae family (VAE Loader): core's VAE; a decoder packing an r-times image
+                              into its channels (upscale 2x) switched to a subclass whose decodes unpack it (no cache:
+                              core owns the VAE)
 libs/image.py                 is_half, float_frame, output_dtype (half-precision inputs), tensor_to_u8, tensor_to_pil_u8,
                               pil_to_tensor_hwc, fit_image
 libs/mask.py filters.py       mask ops; the two Gaussians (reflect / replicate), kept apart on purpose

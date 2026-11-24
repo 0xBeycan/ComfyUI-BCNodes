@@ -34,6 +34,7 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_ImageComparer` | [Image Comparer](docs/workflow.md#bc_imagecomparer--image-comparer) | Two images on the node, compared with a sliding divider |
 | `BC_PowerLoraLoader` | [Power Lora Loader](docs/loaders.md#bc_powerloraloader--power-lora-loader) | `MODEL` + any number of LoRA rows → `MODEL`, no CLIP; each LoRA with the key fix of Lora Loader (Key Fix) |
 | `BC_LoraLoaderKeyFix` | [Lora Loader (Key Fix)](docs/loaders.md#bc_loraloaderkeyfix--lora-loader-key-fix) | `MODEL` + one LoRA → `MODEL`, with the keys ComfyUI's own loader leaves out renamed first (lightx2v `.diff_m`, PEFT keys without the `diffusion_model.` prefix); the console says how many were renamed and how many match no module |
+| `BC_VAELoader` | [VAE Loader](docs/loaders.md#bc_vaeloader--vae-loader) | A VAE file loaded for the model picked, as ComfyUI's Load VAE does, plus that model's special VAEs: for Wan 2.1 (Wan 2.1, Wan 2.2 A14B, Qwen-Image) a decoder that packs a larger image into its channels (the upscale 2x VAE) decodes at that size through ComfyUI's VAE Decode nodes |
 | `BC_PatchSageAttention` | [Patch Sage Attention](docs/model.md#bc_patchsageattention--patch-sage-attention) | `MODEL` → a clone whose attention runs one SageAttention kernel, for that model only (no global `--use-sage-attention`); `auto` takes the most accurate kernel, `qk_quant` its Q·K quantization (per_thread / per_warp), and a call the kernel cannot take, a kernel error or a NaN output runs the original attention; the console counts both per run |
 | `BC_DetailBoost` | [Detail Boost](docs/model.md#bc_detailboost--detail-boost) | `MODEL` → a clone told a lower noise level than the sampler's in a step range (`start_step` to `end_step` of each sampler run), so it removes less noise there and keeps more fine detail; the sampler's sigmas and noise are unchanged; 11 modes, `eta` their strength, `weight` 0 leaves the model unpatched; works with KSampler and KSamplerAdvanced |
 | `BC_QwenImageShift` | [Qwen Image Shift](docs/model.md#bc_qwenimageshift--qwen-image-shift) | `MODEL` → a clone with the official Qwen-Image-2512 flow shift, in place of ModelSamplingAuraFlow, for the stock KSampler and schedulers: `dynamic` takes the shift from each sampler run's latent size (so a 1.25x second pass gets its own), `fixed` is ModelSamplingAuraFlow at `shift` (3 for Lightning); `shift_terminal` ends each run's schedule at 0.02 before 0 |
@@ -79,7 +80,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | [`BCNodes/text`](docs/text.md) | Prompt List, Show Text |
 | [`BCNodes/lm`](docs/lm.md) | Qwen LM, LM Config, LM Loader, Claude, Claude Config |
 | [`BCNodes/preflight`](docs/preflight.md) | PreFlight Observe, Report, Outcome, Calibrate |
-| [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Lora Loader (Key Fix), Auto Model Downloader |
+| [`BCNodes/loaders`](docs/loaders.md) | Power Lora Loader, Lora Loader (Key Fix), VAE Loader, Auto Model Downloader |
 | [`BCNodes/model`](docs/model.md) | Patch Sage Attention, Detail Boost, Qwen Image Shift |
 | [`BCNodes/detailer`](docs/detailer.md) | Detailer, Face Detailer |
 | [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, Chunk Size, VAE Decode, PostProcess; Compact: Preprocess (Compact), PostProcess (Compact) |
@@ -110,7 +111,7 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [Text](docs/text.md) — prompt lists and showing text
 - [LM](docs/lm.md) — chat models through ComfyUI core: Qwen LM, LM Config, LM Loader, the models and their files, sampling, LoRAs, `models.yaml`; Claude through Anthropic's API with your own key: the request, images, refusals, Claude Config, Claude Chat (the sidebar tab)
 - [PreFlight](docs/preflight.md) — how Instagram, TikTok and X would likely treat an image or video before it is published: the observation sensor, the rules engine, reading a verdict, the feedback loop and calibration
-- [Loaders](docs/loaders.md) — LoRA loading (with the key fix for LoRAs core loads only in part) and the model downloader
+- [Loaders](docs/loaders.md) — LoRA loading (with the key fix for LoRAs core loads only in part), VAE loading per model (the Wan 2.1 upscale 2x VAE) and the model downloader
 - [Model](docs/model.md) — SageAttention for one model in one workflow: the modes, `qk_quant`, long sequences, the calls that run the original attention, `nan_guard`, the console, install, an A/B test
 - [Detailer](docs/detailer.md) — a mask region or every face sampled again at the model's size and pasted back: the crop, the sampling, ControlNet hints, the paste; the character and model_no_lora, the size gate, the face and eye passes
 - [SeedVR2](docs/seedvr2.md) — the downscale factor from the framing, the SeedVR2 input stage, streaming VAE encode / decode, the chunk size and the VAE tile for the card, post-processing

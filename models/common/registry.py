@@ -17,6 +17,10 @@ LM_FAMILY = "lm_family"
 # An LM backend entry is an object of the models.common.lm.backend.LMBackend protocol: what loads a model
 # file, applies a LoRA, generates and unloads. A catalog model names its backend.
 LM_BACKEND = "lm_backend"
+# A VAE entry is load(path) -> (vae, note): the file loaded as core's comfy.sd.VAE, with what the
+# model's special files need done to it; note says what was done ("" for the model's plain VAE).
+# A file that is not a VAE of the entry's model raises ValueError naming it.
+VAE = "vae"
 
 _FAMILIES = {}
 
