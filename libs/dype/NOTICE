@@ -1,0 +1,20 @@
+ComfyUI-BCNodes — libs/dype/
+
+This directory contains code derived from ComfyUI-DyPE
+(https://github.com/wildminder/ComfyUI-DyPE), by wildminder and the ComfyUI-DyPE contributors,
+licensed under the Apache License, Version 2.0 (LICENSE in this directory). The source is the
+file src/rope.py at commit 266405844738da9f16e8a072482320168a17c494 (2026-10-24, version 2.20.0).
+
+ComfyUI-DyPE implements DyPE, Dynamic Position Extrapolation, by Noam Issachar, Guy Yariv and
+co-authors (https://github.com/guyyariv/DyPE), over the NTK-by-parts interpolation of YaRN.
+
+Changes made in ComfyUI-BCNodes (rope.py):
+- The frequencies are computed in float64 on the caller's device, as ComfyUI core's rope computes
+  them, with core's linspace exponents; the original computed them in a dtype its caller picked
+  (bfloat16 on CUDA for Z-Image).
+- The functions return the frequency table only. The angles, their cos / sin and the attention
+  scale are taken by the caller; the original returned cos / sin repeat-interleaved.
+- DyPE's modulation exponent (dype_scale * t ** dype_exponent) is computed by the caller and passed
+  in as k_t.
+- The NTK-by-parts blend shared by YaRN and Vision YaRN is one function (_parts); the
+  correction-range and ramp helpers are restated with the same values.

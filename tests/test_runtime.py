@@ -766,6 +766,7 @@ async def main():
     await sage_attention()
     await detail_boost()
     await qwen_image_shift()
+    await zit_dype()
     detailer_zimage_patch()
     detailer_qwen_fun_controlnet()
     lm_core()
@@ -1695,6 +1696,173 @@ async def qwen_image_shift():
           dyn_lines == [f"[BCNodes] Qwen Image Shift: latent 64x48, {seq1} tokens, mu {mu1:.4f}, shift {math.exp(mu1):.4f}",
                         f"[BCNodes] Qwen Image Shift: latent 80x60, {seq2} tokens, mu {mu2:.4f}, shift {math.exp(mu2):.4f}"],
           f"{dyn_lines}")
+
+
+def tiny_zimage():
+    """A tiny Z-Image on the CPU: core's ZImage config and Lumina 2 NextDiT with Z-Image's RoPE (axes 32 / 48 / 48 of
+    one 128-wide head, theta 256, axes_lens 1536 / 512 / 512) and modulation, dim 256, one layer of each kind, seeded
+    random weights; a ModelPatcher."""
+    import comfy.model_base
+    import comfy.model_patcher
+    import comfy.supported_models
+    import torch
+
+    config = comfy.supported_models.ZImage({
+        "image_model": "lumina2", "patch_size": 2, "in_channels": 16, "dim": 256, "n_layers": 1, "n_refiner_layers": 1,
+        "n_heads": 2, "n_kv_heads": 2, "multiple_of": 32, "ffn_dim_multiplier": 8.0 / 3.0, "norm_eps": 1e-5, "qk_norm": True,
+        "cap_feat_dim": 32, "axes_dims": [32, 48, 48], "axes_lens": [1536, 512, 512], "rope_theta": 256.0,
+        "z_image_modulation": True, "time_scale": 1000.0, "pad_tokens_multiple": 32})
+    config.set_inference_dtype(torch.float32, None)
+    model = comfy.model_base.Lumina2(config, device="cpu")
+    generator = torch.Generator().manual_seed(0)
+    model.diffusion_model.load_state_dict({key: torch.randn(t.shape, generator=generator) * 0.05
+                                           for key, t in model.diffusion_model.state_dict().items()})
+    return comfy.model_patcher.ModelPatcher(model, load_device=torch.device("cpu"), offload_device=torch.device("cpu"))
+
+
+async def zit_dype():
+    """DyPE Patcher and ZiT Dual Sampler inside ComfyUI on a tiny Z-Image (CPU), through validate_prompt +
+    PromptExecutor, with test-only nodes giving the model, a caption conditioning and a stand-in VAE (a fixed
+    decode / encode at 8 px per cell):
+    - DyPE Patcher in auto mode on a 1920 px latent: the latent bit-identical to the unpatched model's;
+    - enable on a 2048 px latent: a different latent, the model's own rotary embedder (core's EmbedND) on it after
+      the run, and the unpatched model's run after it bit-identical to the one before (nothing left on the model);
+    - ZiT Dual Sampler (1024 x 64 px, x2: DyPE on in the second pass) against the core chain KSampler -> Upscale
+      Latent By -> KSampler(DyPE Patcher at the second pass's first sigma) -> VAE Decode x2: bit-identical images and
+      latent at blend_factor 0; at 1 against VAE Decode -> ImageScale lanczos -> VAE Encode; at 0.5 against core's
+      Latent Blend of the two."""
+    import comfy.samplers
+    import torch
+    import torch.nn.functional as F
+
+    patcher = tiny_zimage()
+    caption = torch.randn(1, 8, 32, generator=torch.Generator().manual_seed(1))
+    kept = {}
+
+    class TinyVAE:
+        output_channels = 3
+
+        def decode(self, samples):
+            return torch.sigmoid(samples[:, :3]).repeat_interleave(8, -2).repeat_interleave(8, -1).movedim(1, -1).contiguous()
+
+        def encode(self, pixels):
+            x = torch.logit(F.avg_pool2d(pixels[..., :3].movedim(-1, 1), 8).clamp(1e-3, 1 - 1e-3))
+            return x.repeat(1, 6, 1, 1)[:, :16].contiguous()
+
+        def spacial_compression_encode(self):
+            return 8
+
+        def spacial_compression_decode(self):
+            return 8
+
+        def vae_output_dtype(self):
+            return torch.float32
+
+    class Keep:
+        """A test-only output node keeping a LATENT's samples or an IMAGE under `tag`."""
+        RETURN_TYPES = ()
+        FUNCTION = "keep"
+        OUTPUT_NODE = True
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {"tag": ("STRING", {"default": ""})}, "optional": {"latent": ("LATENT",), "image": ("IMAGE",)}}
+
+        def keep(self, tag, latent=None, image=None):
+            kept[tag] = (latent["samples"] if latent is not None else image).clone()
+            return {}
+
+    nodes.NODE_CLASS_MAPPINGS["BCTest_ZModel"] = type("Model", (), {"RETURN_TYPES": ("MODEL",), "FUNCTION": "make", "CATEGORY": "testing",
+                                                                   "INPUT_TYPES": classmethod(lambda cls: {"required": {}}),
+                                                                   "make": lambda self: (patcher,)})
+    nodes.NODE_CLASS_MAPPINGS["BCTest_ZCond"] = type("Cond", (), {"RETURN_TYPES": ("CONDITIONING",), "FUNCTION": "make", "CATEGORY": "testing",
+                                                                  "INPUT_TYPES": classmethod(lambda cls: {"required": {}}),
+                                                                  "make": lambda self: ([[caption, {}]],)})
+    nodes.NODE_CLASS_MAPPINGS["BCTest_ZVAE"] = type("VAE", (), {"RETURN_TYPES": ("VAE",), "FUNCTION": "make", "CATEGORY": "testing",
+                                                               "INPUT_TYPES": classmethod(lambda cls: {"required": {}}),
+                                                               "make": lambda self: (TinyVAE(),)})
+    nodes.NODE_CLASS_MAPPINGS["BCTest_Keep"] = Keep
+    base = {"1": N("BCTest_ZModel"), "2": N("BCTest_ZCond"), "3": N("BCTest_ZVAE")}
+
+    def sampler(model, latent, seed, denoise):
+        return N("KSampler", model=model, seed=seed, steps=2, cfg=1.0, sampler_name="dpmpp_sde", scheduler="beta",
+                 positive=["2", 0], negative=["2", 0], latent_image=latent, denoise=denoise)
+
+    async def one_pass(width, mode=None):
+        kept.clear()
+        patch = {} if mode is None else {"5": N("BC_DyPEPatcher", model=["1", 0], mode=mode, dype_start_sigma=1.0)}
+        out, _ = await run({**base, "4": N("EmptySD3LatentImage", width=width, height=64, batch_size=1), **patch,
+                            "6": sampler(["5" if patch else "1", 0], ["4", 0], 3, 1.0),
+                            "7": N("BCTest_Keep", tag="latent", latent=["6", 0])}, f"dype-{width}-{mode}")
+        return kept.get("latent") if out is not None else None
+
+    try:
+        plain, auto = await one_pass(1920), await one_pass(1920, "auto")
+        check("DyPE Patcher: auto on a 1920 px latent leaves the model's output bit-identical",
+              plain is not None and auto is not None and torch.equal(plain, auto))
+        before, dyped = await one_pass(2048), await one_pass(2048, "enable")
+        embedder = type(patcher.model.diffusion_model.rope_embedder).__name__
+        after = await one_pass(2048)
+        check("DyPE Patcher: on a 2048 px latent the output changes, and the model's own embedder is back after the run",
+              before is not None and dyped is not None and not torch.equal(before, dyped) and embedder == "EmbedND", embedder)
+        check("DyPE Patcher: the unpatched model's next run is bit-identical to its run before DyPE (nothing left on it)",
+              after is not None and torch.equal(before, after))
+
+        start = float(comfy.samplers.KSampler(patcher, steps=2, device="cpu", sampler="dpmpp_sde", scheduler="beta", denoise=0.45).sigmas[0])
+
+        def chain(blend):
+            prompt = {**base, "4": N("EmptySD3LatentImage", width=1024, height=64, batch_size=1),
+                      "5": sampler(["1", 0], ["4", 0], 3, 1.0),
+                      "6": N("LatentUpscaleBy", samples=["5", 0], upscale_method="bislerp", scale_by=2.0),
+                      "9": N("VAEDecode", samples=["5", 0], vae=["3", 0]),
+                      "11": N("ImageScale", image=["9", 0], upscale_method="lanczos", width=2048, height=128, crop="disabled"),
+                      "12": N("VAEEncode", pixels=["11", 0], vae=["3", 0]),
+                      "13": N("LatentBlend", samples1=["12", 0], samples2=["6", 0], blend_factor=blend),
+                      "7": N("BC_DyPEPatcher", model=["1", 0], mode="auto", dype_start_sigma=start),
+                      "8": sampler(["7", 0], [{0.0: "6", 1.0: "12"}.get(blend, "13"), 0], 4, 0.45),
+                      "10": N("VAEDecode", samples=["8", 0], vae=["3", 0]),
+                      "k1": N("BCTest_Keep", tag="first", image=["9", 0]), "k2": N("BCTest_Keep", tag="second", image=["10", 0]),
+                      "k3": N("BCTest_Keep", tag="latent", latent=["8", 0])}
+            if blend == 0.0:
+                for unused in ("11", "12", "13"):
+                    del prompt[unused]
+            elif blend == 1.0:
+                del prompt["6"], prompt["13"]
+            return prompt
+
+        def dual(blend):
+            return {**base, "4": N("EmptySD3LatentImage", width=1024, height=64, batch_size=1),
+                    "5": N("BC_ZiTDualSampler", model_1=["1", 0], model_2=["1", 0], positive=["2", 0], negative=["2", 0],
+                           latent_image=["4", 0], vae=["3", 0], seed=3, steps_1=2, cfg_1=1.0, sampler_1="dpmpp_sde",
+                           scheduler_1="beta", steps_2=2, cfg_2=1.0, sampler_2="dpmpp_sde", scheduler_2="beta", denoise_2=0.45,
+                           upscale_method="bislerp", scale_by=2.0, blend_factor=blend, pixel_upscale_method="lanczos",
+                           second_seed="increment", dype="auto"),
+                    "k1": N("BCTest_Keep", tag="first", image=["5", 0]), "k2": N("BCTest_Keep", tag="second", image=["5", 1]),
+                    "k3": N("BCTest_Keep", tag="latent", latent=["5", 2])}
+
+        for blend in (0.0, 1.0, 0.5):
+            kept.clear()
+            out_a, _ = await run(chain(blend), f"dype-chain-{blend}")
+            want = dict(kept)
+            kept.clear()
+            out_b, _ = await run(dual(blend), f"dype-dual-{blend}")
+            got = dict(kept)
+            same = out_a is not None and out_b is not None and set(want) == set(got) == {"first", "second", "latent"} and all(
+                torch.equal(want[k], got[k]) for k in want)
+            check(f"ZiT Dual Sampler: blend_factor {blend} bit-identical to the core chain (first and second image, latent)", same,
+                  f"{ {k: (tuple(want[k].shape), tuple(got[k].shape)) for k in want if k in got} }")
+        check("ZiT Dual Sampler: the second latent is 2048 x 128 px (x2, a multiple of 16)", got.get("latent") is not None
+              and tuple(got["latent"].shape) == (1, 16, 16, 256))
+        kept.clear()
+        prompt = dual(0.5)
+        prompt["5"]["inputs"]["dype"] = "disable"
+        out, _ = await run(prompt, "dype-dual-off")
+        check("ZiT Dual Sampler: DyPE was on in the second pass (dype disable gives another second latent)",
+              out is not None and "latent" in kept and not torch.equal(kept["latent"], got["latent"]))
+    finally:
+        for key in ("BCTest_ZModel", "BCTest_ZCond", "BCTest_ZVAE", "BCTest_Keep"):
+            nodes.NODE_CLASS_MAPPINGS.pop(key, None)
 
 
 def detailer_zimage_patch():

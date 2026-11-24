@@ -122,6 +122,23 @@ def _is_link(value):
     return isinstance(value, list) and len(value) == 2 and isinstance(value[0], str) and isinstance(value[1], (int, float))
 
 
+def edited_fields(label, edited, fields, prompt_graph, unique_id):
+    """The fields a config node applies (LM Config, DyPE Config): those named in its hidden `edited` widget (comma-
+    separated, kept by web/js/edited_fields.js), then every other field whose input in the prompt (`prompt_graph`,
+    the node `unique_id`) is a link: a linked value is always applied, whatever `edited` says. No prompt (a direct
+    call, a node made by expansion): `edited` alone. `fields`: the field names in widget order; a name `edited`
+    holds that is not one of them is a ValueError, `label` naming the node."""
+    names = list(dict.fromkeys(name for name in (part.strip() for part in edited.split(",")) if name))
+    unknown = [name for name in names if name not in fields]
+    if unknown:
+        raise ValueError(f"{label}: edited names unknown field(s) {', '.join(unknown)}; the fields are {', '.join(fields)}")
+    node = prompt_graph.get(unique_id) if isinstance(prompt_graph, dict) else None
+    inputs = node.get("inputs") if isinstance(node, dict) else None
+    if isinstance(inputs, dict):
+        names += [name for name in fields if name not in names and _is_link(inputs.get(name))]
+    return names
+
+
 def _heavy_indices(cls):
     """{output index: name} of the HEAVY_OUTPUTS of `cls`."""
     return {cls.RETURN_NAMES.index(name): name for name in getattr(cls, "HEAVY_OUTPUTS", ())}

@@ -25,6 +25,10 @@ VAE = "vae"
 # height and width by the weights file at path, in the input's dtype on ComfyUI's intermediate device. A file
 # whose weights do not fit the entry's model raises ValueError naming it.
 LATENT_UPSCALE = "latent_upscale"
+# A DyPE entry is a model's DyPE adapter (models.common.dype.Adapter): which ModelPatchers it takes (matches), their
+# DyPE values (defaults), the latent's px per cell and the diffusion model's rotary embedder attribute, and the
+# embedder of one model call. models/common/dype.py picks the first entry that takes the model.
+DYPE = "dype"
 
 _FAMILIES = {}
 

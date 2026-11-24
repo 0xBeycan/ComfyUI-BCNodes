@@ -13,8 +13,8 @@ longer side is `size` px, sampled, shrunk back and pasted through the region's o
   only the pixels inside the mask taken: every other pixel keeps its exact value.
 
 It knows nothing of what a mask shows and nothing of the model: MODEL, VAE and CONDITIONING go through
-core's sampler, VAE and ControlNet objects. comfy.*, comfy_extras.* and latent_preview are imported on
-first use.
+core's sampler, VAE and ControlNet objects (the sampler run: libs/sampling.ksampler). comfy.* and comfy_extras.*
+are imported on first use.
 """
 
 from dataclasses import dataclass
@@ -27,6 +27,7 @@ from ...libs.color import match_band
 from ...libs.filters import gauss_reflect
 from ...libs.image import float_frame, output_dtype
 from ...libs.mask import fit_mask_frame
+from ...libs.sampling import ksampler
 from .conditioning import crop_conditioning, crop_model, inpaint
 from .region import bounds, plan
 
@@ -84,20 +85,6 @@ def _soft(hard):
     return gauss_reflect(hard[None, None].float(), FEATHER * min(hard.shape))[0, 0]
 
 
-def _ksampler(model, s, positive, negative, latent, noise_mask):
-    """One run of core's common_ksampler (nodes.py, which this pack may not import) on the latent tensor, at
-    s.denoise with s.seed."""
-    import comfy.sample
-    import comfy.utils
-    import latent_preview
-
-    latent = comfy.sample.fix_empty_latent_channels(model, latent)
-    noise = comfy.sample.prepare_noise(latent, s.seed)
-    return comfy.sample.sample(model, noise, s.steps, s.cfg, s.sampler_name, s.scheduler, positive, negative, latent,
-                               denoise=s.denoise, noise_mask=noise_mask, callback=latent_preview.prepare_callback(model, s.steps),
-                               disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED, seed=s.seed)
-
-
 def _sample(base, region, crop, model, s, image_width, image_height):
     """The crop `base` (3, h, w) of an image_width x image_height image sampled at crop.width x
     crop.height with the region `region` (h, w bool) as its mask, shrunk back to (3, h, w)."""
@@ -110,7 +97,8 @@ def _sample(base, region, crop, model, s, image_width, image_height):
     positive, negative, latent = inpaint(positive, negative, s.vae, pixels, noise_mask)
     model = crop_model(model, crop, image_width, image_height)
     if s.denoise > 0:
-        latent = _ksampler(model, s, positive, negative, latent, noise_mask)
+        latent = ksampler(model, s.seed, s.steps, s.cfg, s.sampler_name, s.scheduler, positive, negative,
+                          {"samples": latent, "noise_mask": noise_mask}, s.denoise)["samples"]
     images = s.vae.decode(latent)
     image = images.reshape(-1, *images.shape[-3:])[:1]  # a video VAE decodes (B, T, H, W, C)
     return _resize(image[..., :3].movedim(-1, 1).float().cpu(), base.shape[-2], base.shape[-1])[0]

@@ -19,7 +19,7 @@ functions.
 
 import logging
 
-from .common import LINK_INPUTS, _is_link, lm_folders
+from .common import LINK_INPUTS, edited_fields, lm_folders
 
 # The model widgets' initial values, Qwen LM's and LM Loader's (both INPUT_TYPES read them here): a model of the
 # Qwen LM family, LM Loader's initial family (its family widget, which Qwen LM does not have, holds the family's
@@ -231,15 +231,7 @@ class LMConfig:
         fields = LMConfigValues.__annotations__  # in widget order, each with the type its value leaves with
         values = {"do_sample": do_sample, "temperature": temperature, "top_k": top_k, "top_p": top_p, "min_p": min_p,
                   "repetition_penalty": repetition_penalty, "presence_penalty": presence_penalty, "mtp": mtp}
-        names = list(dict.fromkeys(name for name in (part.strip() for part in edited.split(",")) if name))
-        unknown = [name for name in names if name not in fields]
-        if unknown:
-            raise ValueError(f"LM Config: edited names unknown field(s) {', '.join(unknown)}; the fields are "
-                             f"{', '.join(fields)}")
-        node = prompt_graph.get(unique_id) if isinstance(prompt_graph, dict) else None
-        inputs = node.get("inputs") if isinstance(node, dict) else None
-        if isinstance(inputs, dict):
-            names += [name for name in fields if name not in names and _is_link(inputs.get(name))]
+        names = edited_fields("LM Config", edited, fields, prompt_graph, unique_id)
         return (LMConfigValues(**{name: fields[name](values[name]) for name in names}),)
 
 

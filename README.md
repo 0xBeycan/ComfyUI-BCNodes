@@ -39,6 +39,9 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_PatchSageAttention` | [Patch Sage Attention](docs/model.md#bc_patchsageattention--patch-sage-attention) | `MODEL` → a clone whose attention runs one SageAttention kernel, for that model only (no global `--use-sage-attention`); `auto` takes the most accurate kernel, `qk_quant` its Q·K quantization (per_thread / per_warp), and a call the kernel cannot take, a kernel error or a NaN output runs the original attention; the console counts both per run |
 | `BC_DetailBoost` | [Detail Boost](docs/model.md#bc_detailboost--detail-boost) | `MODEL` → a clone told a lower noise level than the sampler's in a step range (`start_step` to `end_step` of each sampler run), so it removes less noise there and keeps more fine detail; the sampler's sigmas and noise are unchanged; 11 modes, `eta` their strength, `weight` 0 leaves the model unpatched; works with KSampler and KSamplerAdvanced |
 | `BC_QwenImageShift` | [Qwen Image Shift](docs/model.md#bc_qwenimageshift--qwen-image-shift) | `MODEL` → a clone with the official Qwen-Image-2512 flow shift, in place of ModelSamplingAuraFlow, for the stock KSampler and schedulers: `dynamic` takes the shift from each sampler run's latent size (so a 1.25x second pass gets its own), `fixed` is ModelSamplingAuraFlow at `shift` (3 for Lightning); `shift_terminal` ends each run's schedule at 0.02 before 0 |
+| `BC_DyPEPatcher` | [DyPE Patcher](docs/model.md#bc_dypepatcher--dype-patcher) | `MODEL` → a clone with DyPE (Dynamic Position Extrapolation) on its rotary positions, against the scene repeating itself above the training resolution; takes the model's own method and values (Z-Image: `vision_yarn`, 1024) and the size from each run's latent; `auto` only over 1920 px; the shift is never changed |
+| `BC_DyPEConfig` | [DyPE Config](docs/model.md#bc_dypeconfig--dype-config) | DyPE Patcher's and ZiT Dual Sampler's automatic DyPE values (method, base resolution, scale, exponent, auto threshold): only the fields you change or link replace them |
+| `BC_ZiTDualSampler` | [ZiT Dual Sampler](docs/sampling.md#bc_zitdualsampler--zit-dual-sampler) | Z-Image Turbo's two-pass hires fix in one node: first pass, upscale to a multiple of 16 px (latent upscale, decode → resize → encode, or a blend of the two), second pass with DyPE (start sigma from its own schedule); both images and the second latent out |
 | `BC_AnythingEverywhere` | [Anything Everywhere](docs/workflow.md#bc_anythingeverywhere--anything-everywhere) | Feeds unconnected inputs of a type at prompt time |
 | `BC_FastGroupsBypasser` | [Fast Groups Bypasser](docs/workflow.md#bc_fastgroupsbypasser--fast-groups-bypasser) | One bypass toggle per group |
 | `BC_CondPipePack` | [Cond Pipe Pack](docs/workflow.md#bc_condpipepack--bc_condpipeunpack--cond-pipe) | `positive`, `negative`, `cn_positive`, `cn_negative` (all optional) → one `BC_COND_PIPE` link, nothing copied |
@@ -117,7 +120,8 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [PreFlight](docs/preflight.md) — how Instagram, TikTok and X would likely treat an image or video before it is published: the observation sensor, the rules engine, reading a verdict, the feedback loop and calibration
 - [Loaders](docs/loaders.md) — LoRA loading (with the key fix for LoRAs core loads only in part), VAE loading per model (the Wan 2.1 upscale 2x VAE) and the model downloader
 - [Latent](docs/latent.md) — latent upscaling with a model (Wan 2.1 2x) for a second sampling pass
-- [Model](docs/model.md) — SageAttention for one model in one workflow: the modes, `qk_quant`, long sequences, the calls that run the original attention, `nan_guard`, the console, install, an A/B test
+- [Model](docs/model.md) — SageAttention for one model in one workflow: the modes, `qk_quant`, long sequences, the calls that run the original attention, `nan_guard`, the console, install, an A/B test; DyPE Patcher and DyPE Config
+- [Sampling](docs/sampling.md) — ZiT Dual Sampler: Z-Image Turbo's two passes, the upscale blend, DyPE on the second pass
 - [Detailer](docs/detailer.md) — a mask region or every face sampled again at the model's size and pasted back: the crop, the sampling, ControlNet hints, the paste; the character and model_no_lora, the size gate, the face and eye passes
 - [SeedVR2](docs/seedvr2.md) — the downscale factor from the framing, the SeedVR2 input stage, streaming VAE encode / decode, the chunk size and the VAE tile for the card, post-processing
 - [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, the conditioning pipe, Auto Bypass, the Align buttons
@@ -130,9 +134,10 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 
 - `models/birefnet/arch/` — the BiRefNet architecture and its Swin v1 backbone, MIT, notices in [`models/birefnet/arch/LICENSE`](models/birefnet/arch/LICENSE).
 - `models/depth_anything_v2/arch/` — the Depth Anything V2 DPT head and its DINOv2 ViT-S backbone, Apache-2.0, notices and license text in [`models/depth_anything_v2/arch/LICENSE`](models/depth_anything_v2/arch/LICENSE).
+- `libs/dype/` and `models/z_image/dype/` — DyPE's rotary tables and Z-Image embedder, derived from [ComfyUI-DyPE](https://github.com/wildminder/ComfyUI-DyPE) (wildminder), Apache-2.0: license text and the list of changes in each folder's `LICENSE` and `NOTICE`.
 
 Everything else in this pack is BCNodes' own code.
 
 ## License
 
-MIT. The code in `models/birefnet/arch/` keeps its own MIT notice, in `models/birefnet/arch/LICENSE`; the code in `models/depth_anything_v2/arch/` keeps its Apache-2.0 license, in `models/depth_anything_v2/arch/LICENSE`.
+MIT. The code in `models/birefnet/arch/` keeps its own MIT notice, in `models/birefnet/arch/LICENSE`; the code in `models/depth_anything_v2/arch/` keeps its Apache-2.0 license, in `models/depth_anything_v2/arch/LICENSE`; the code in `libs/dype/` and `models/z_image/dype/` keeps its Apache-2.0 license and notice, in each folder's `LICENSE` and `NOTICE`.

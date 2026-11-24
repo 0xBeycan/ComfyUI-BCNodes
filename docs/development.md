@@ -23,6 +23,8 @@ ComfyUI-BCNodes/
     lora_key_fix.py        BC_LoraLoaderKeyFix
     sage_attention.py      BC_PatchSageAttention
     detail_boost.py        BC_DetailBoost
+    dype.py                BC_DyPEPatcher, BC_DyPEConfig
+    zit_dual_sampler.py    BC_ZiTDualSampler
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
     cond_pipe.py           BC_CondPipePack, BC_CondPipeUnpack
     seedvr2.py             BC_SeedVR2FramingDownscale, BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2ChunkSize,
@@ -58,6 +60,7 @@ ComfyUI-BCNodes/
       core.py              the detailer core (Detailer's flow): crop -> sampling -> paste
       face.py              Face Detailer: SAM 3 faces, the character, the size gate, the face and eye passes
     quality_gate.py        shot profiles, the three-tier checks, verdict, report, badge
+    zit_dual_sampler.py    ZiT Dual Sampler: first pass, latent / pixel upscale blend, second pass with DyPE, decodes
     social_export.py       Social Media Export geometry / encoding engine, no ComfyUI or torch imports
     save_image.py          Save Image name grammar, job JSON, save loop; Save Image With Caption's folder,
                            caption extension check, save loop
@@ -104,6 +107,8 @@ ComfyUI-BCNodes/
     common/
       registry.py          model families (matting, depth) and the LM families and backends (lm_family,
                            lm_backend): register / names / get
+      dype.py              DyPE on a model: the adapter a model is taken by (the dype family), the values, the
+                           APPLY_MODEL wrapper that sets DyPE's embedder for one model call
       download.py          weight download with console progress; model_file (a file in a ComfyUI model folder)
       lm/                  the LM runtime the LM families share; registers the core backend
         catalog.py         the models.yaml schema, the built-in file merged with the user's, errors naming file + entry
@@ -141,6 +146,9 @@ ComfyUI-BCNodes/
       models.yaml          the built-in catalog: models, precisions with their files, sampling defaults and sources
       chat.py              the official chat templates (qwen3.5, qwen3.8, qwen3-vl), their checks, the output split
       images.py            the official image processor's sizing (smart_resize) and bicubic resize
+    z_image/               Z-Image (core's ZImage), registered as Z-Image in the dype family
+      adapter.py           which models, the DyPE values, the embedder of one call
+      dype/                DyPE's Z-Image rotary embedder (Apache-2.0, derived from ComfyUI-DyPE; LICENSE, NOTICE)
   libs/                    model-independent helpers
     image.py               IMAGE frame <-> PIL, fit into a target size, a frame's long side capped (thumbnail)
     geometry.py            integer size arithmetic for resizing; a ControlNet preprocessor's output size
@@ -168,6 +176,8 @@ ComfyUI-BCNodes/
                            layouts, the calls that run the original attention, nan_guard, the per-run counts
     detail_boost.py        Detail Boost: the lowered sigma per mode, where a model call sits in the run's schedule,
                            the step range and the weight blend
+    sampling.py            one sampler run as core's KSampler node makes it (common_ksampler)
+    dype/                  DyPE's 1-D rotary frequency tables (Apache-2.0, derived from ComfyUI-DyPE; LICENSE, NOTICE)
   docs/                    the node documentation, one page per menu category; README.md links them
   luts/                    drop .cube LUTs here for PostFx LUT (gitignored)
   web/js/
@@ -191,7 +201,9 @@ ComfyUI-BCNodes/
     save_image.js          no output preview under Save Image
     save_image_with_caption.js  the frontend's text replacements in its filename_prefix
     process_monitor.js     Process Monitor: top bar, modal, the on / off setting
-    lm.js                  Qwen LM's precision / thinking widgets; LM Config's shown defaults and `edited`
+    lm.js                  Qwen LM's precision / thinking widgets; LM Config's shown defaults
+    edited_fields.js       a config node's `edited` widget and greyed un-edited fields (LM Config, DyPE Config)
+    dype.js                DyPE Config's `edited` and Reset to automatic values
     preflight.js           PreFlight Outcome's record list, kept current from the records route and event
     bcnodes_api.js         JSON calls to the pack's routes (downloader, Process Monitor, LM catalog, PreFlight records)
   locales/en/main.json     tooltips for the Align buttons

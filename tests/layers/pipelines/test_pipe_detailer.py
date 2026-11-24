@@ -111,8 +111,8 @@ def sampled(monkeypatch):
     sampler calls (their keyword arguments, model and positive included). The sampler inverts the latent."""
     calls = []
     sample = types.ModuleType("comfy.sample")
-    sample.fix_empty_latent_channels = lambda model, latent: latent
-    sample.prepare_noise = lambda latent, seed: torch.zeros_like(latent)
+    sample.fix_empty_latent_channels = lambda model, latent, *ratios: latent
+    sample.prepare_noise = lambda latent, seed, batch_inds=None: torch.zeros_like(latent)
 
     def run(model, noise, steps, cfg, sampler_name, scheduler, positive, negative, latent, **kw):
         calls.append(dict(kw, model=model, steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler, positive=positive,

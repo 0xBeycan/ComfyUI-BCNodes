@@ -13,7 +13,8 @@
 - per node: each unlinked heavy output is a new 0-frame tensor of the full output's dtype and
   trailing shape, every other output equals the full run's, and where the output is a step of its
   own the step does not run (Image Resize's frames, Image Scale By Aspect Ratio's fits, BiRefNet's
-  composite and mask image, SeedVR2 Resize's two resizes, Skin Texture's texture, Detailer's sampling);
+  composite and mask image, SeedVR2 Resize's two resizes, Skin Texture's texture, Detailer's sampling, ZiT Dual
+  Sampler's decodes);
   Face Detailer computes both (its mask reads the detailed image) and drops the unlinked one at return.
 
 The full run is the same node call without a stamp. The runtime behaviour through ComfyUI's
@@ -37,6 +38,7 @@ HEAVY = {
     "BC_SkinTexture": ("image", "skin_mask"),
     "BC_Detailer": ("image", "mask"),
     "BC_FaceDetailer": ("image", "mask"),
+    "BC_ZiTDualSampler": ("first_image", "second_image"),
 }
 
 
@@ -447,3 +449,45 @@ def test_face_detailer_drops_the_unlinked_output_at_return(bcnodes, common, monk
     assert len(runs) == 1
     assert all(emptied(a, b) for name, a, b in zip(cls.RETURN_NAMES, out, full) if name not in linked)
     assert all(a.shape == b.shape for name, a, b in zip(cls.RETURN_NAMES, out, full) if name in linked)
+
+
+class DecodeVAE:
+    """ZiT Dual Sampler's VAE: counts its decodes."""
+
+    output_channels = 3
+
+    def __init__(self):
+        self.decodes = 0
+
+    def decode(self, samples):
+        self.decodes += 1
+        return torch.full((samples.shape[0], samples.shape[-2] * 8, samples.shape[-1] * 8, 3), 0.5)
+
+    def spacial_compression_encode(self):
+        return 8
+
+    def spacial_compression_decode(self):
+        return 8
+
+    def vae_output_dtype(self):
+        return torch.float32
+
+
+@pytest.mark.parametrize("linked", [(), ("first_image",), ("second_image",), ("first_image", "second_image")])
+def test_zit_dual_sampler_decodes_only_the_linked_images(bcnodes, common, monkeypatch, linked):
+    cls, flow = bcnodes["zit_dual_sampler"].ZiTDualSampler, bcnodes["pipelines.zit_dual_sampler"]
+    sampling = bcnodes["libs.sampling"]
+    monkeypatch.setattr(sampling, "ksampler", lambda model, seed, *a: {**a[-2], "samples": a[-2]["samples"] + 1})
+    monkeypatch.setattr(sys.modules["comfy.utils"], "common_upscale",
+                        lambda s, w, h, method, crop: torch.zeros(s.shape[0], s.shape[1], h, w), raising=False)
+    widgets = dict(model_1="m1", model_2="m2", positive=[], negative=[], latent_image={"samples": torch.zeros(1, 16, 4, 6)},
+                   seed=0, steps_1=1, cfg_1=1.0, sampler_1="euler", scheduler_1="simple", steps_2=1, cfg_2=1.0,
+                   sampler_2="euler", scheduler_2="simple", denoise_2=0.0, upscale_method="bislerp", scale_by=2.0,
+                   blend_factor=0.0, pixel_upscale_method="lanczos", second_seed="fixed", dype="disable")
+    full = cls().sample(vae=DecodeVAE(), **widgets)
+    vae = DecodeVAE()
+    out = cls().sample(vae=vae, **widgets, **hidden(common, cls, linked))
+    for name, a, b in zip(cls.RETURN_NAMES[:2], out, full):
+        assert emptied(a, b) if name not in linked else same(a, b), name
+    assert torch.equal(out[2]["samples"], full[2]["samples"])  # the latent (no heavy output) as the full run's
+    assert vae.decodes == len(linked)

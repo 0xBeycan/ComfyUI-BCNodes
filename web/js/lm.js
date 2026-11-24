@@ -1,5 +1,6 @@
 import { app } from "../../../scripts/app.js";
 import { callJson } from "./bcnodes_api.js";
+import { after, afterChange, editedNames, installEditedFields, see, setEdited, widget } from "./edited_fields.js";
 
 // LM nodes (Qwen LM, and any later family node), LM Loader and LM Config — the frontend half of nodes/lm.py.
 // The data comes from GET /bcnodes/lm/catalog, read once (again after a node-definition refresh).
@@ -24,64 +25,17 @@ import { callJson } from "./bcnodes_api.js";
 // promote): only a callback with a value other than the one last seen is a change.
 //
 // LM Config: the backend applies the fields named in the hidden `edited` widget and every field fed by
-// a link (it reads the links from the prompt; nothing here marks them). A user change to a field (its
-// widget callback with a changed value; setting a value from code does not call it) adds it to
-// `edited`. The other fields show the sampling defaults of the first LM node the config output is
-// linked to (its model, thinking on / off), refreshed when that link changes, when that node's model
-// or thinking changes, on "Reset to model defaults" (node menu; clears `edited`) and on a
-// node-definition refresh. Never on load: a saved workflow's values come back as saved.
-// On the node canvas un-edited fields are drawn with the disabled look and still take input. The Vue
-// node renderer has no such look: its only greyed state is `disabled`, which also blocks input, so
-// there un-edited fields look like edited ones.
+// a link (it reads the links from the prompt; nothing here marks them); edited_fields.js keeps `edited`
+// and draws the un-edited fields greyed. The other fields show the sampling defaults of the first LM
+// node the config output is linked to (its model, thinking on / off), refreshed when that link
+// changes, when that node's model or thinking changes, on "Reset to model defaults" (node menu; clears
+// `edited`) and on a node-definition refresh. Never on load: a saved workflow's values come back as saved.
 
 const ROUTE = "/bcnodes/lm/catalog";
 const CONFIG_TYPE = "BC_LM_CONFIG";
 const LM_TYPE = "BC_LM"; // LM Loader's output
-const EDITED = "edited";
 // BC_LMConfig's fields in widget order; `edited` lists them in this order.
 const FIELDS = ["do_sample", "temperature", "top_k", "top_p", "min_p", "repetition_penalty", "presence_penalty", "mtp"];
-// The node canvas's disabled look: LGraphNode.drawWidgets halves the alpha of a disabled widget.
-const DEFAULT_ALPHA = 0.5;
-
-function widget(node, name) {
-	return node.widgets?.find((w) => w.name === name);
-}
-
-// Calls fn after target[key] (a prototype method or a widget callback), with the same this and
-// arguments; the original's result is returned and an error in fn is logged.
-function after(target, key, fn) {
-	if (!target) return;
-	const original = target[key];
-	target[key] = function (...args) {
-		const r = original?.apply(this, args);
-		try {
-			fn.apply(this, args);
-		} catch (e) {
-			console.error("[BCNodes]", e);
-		}
-		return r;
-	};
-}
-
-// The value each watched widget was last seen with: at creation, on load, when set here, and at each
-// change.
-const seen = new WeakMap();
-
-function see(w) {
-	if (w) seen.set(w, w.value);
-}
-
-// Calls fn after w's callback when the value it is called with is not the one last seen.
-function afterChange(w, fn) {
-	if (!w) return;
-	see(w);
-	after(w, "callback", (value) => {
-		if (value === seen.get(w)) return;
-		seen.set(w, value);
-		fn();
-	});
-}
-
 // ---------------------------------------------------------------------------
 // Catalog
 // ---------------------------------------------------------------------------
@@ -228,25 +182,6 @@ function installLMNode(nodeType) {
 // LM Config node
 // ---------------------------------------------------------------------------
 
-function editedNames(node) {
-	const raw = String(widget(node, EDITED)?.value ?? "");
-	return [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))];
-}
-
-// Fields in widget order, then any other name as it was (the backend's error names it; Reset clears
-// it), so one set of fields always gives the same string: `edited` is part of the cache key.
-function setEdited(node, names) {
-	const w = widget(node, EDITED);
-	if (!w) return;
-	w.value = [...FIELDS.filter((f) => names.includes(f)), ...names.filter((n) => !FIELDS.includes(n))].join(", ");
-	node.setDirtyCanvas?.(true, false);
-}
-
-function markEdited(node, name) {
-	const names = editedNames(node);
-	if (!names.includes(name)) setEdited(node, [...names, name]);
-}
-
 // The first LM node the config output is linked to, among the catalog's family nodes.
 function firstLinkedLM(node, cat) {
 	const types = new Set(Object.values(cat.families ?? {}).map((f) => f.node));
@@ -282,43 +217,14 @@ function refreshDefaults(node, cat) {
 }
 
 function resetToDefaults(node) {
-	setEdited(node, []);
+	setEdited(node, [], FIELDS);
 	withCatalog((cat) => refreshDefaults(node, cat));
-}
-
-// Node canvas: an un-edited field is drawn at the disabled look's alpha but keeps taking input (a
-// disabled widget takes none and hides its value). The Vue renderer never calls drawWidget for
-// these widget types; it draws its own components.
-function greyUnlessEdited(node, w) {
-	const draw = w.drawWidget;
-	if (typeof draw !== "function") return;
-	w.drawWidget = function (ctx, options) {
-		if (editedNames(node).includes(this.name)) return draw.call(this, ctx, options);
-		ctx.save();
-		try {
-			ctx.globalAlpha *= DEFAULT_ALPHA;
-			draw.call(this, ctx, options);
-		} finally {
-			ctx.restore();
-		}
-	};
 }
 
 function installConfigNode(nodeType) {
 	const proto = nodeType.prototype;
 	after(proto, "onNodeCreated", function () {
-		const node = this;
-		// Hidden in both renderers: the node canvas skips a hidden widget in layout and drawing, the
-		// Vue renderer filters on options.hidden, which this sets. It is still serialized.
-		const edited = widget(node, EDITED);
-		if (edited) edited.hidden = true;
-		for (const name of FIELDS) {
-			const w = widget(node, name);
-			if (!w) continue;
-			afterChange(w, () => markEdited(node, name));
-			greyUnlessEdited(node, w);
-		}
-		node.setSize([node.size[0], node.computeSize()[1]]);
+		installEditedFields(this, FIELDS);
 	});
 
 	after(proto, "onConfigure", function () {

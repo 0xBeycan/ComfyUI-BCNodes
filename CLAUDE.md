@@ -29,8 +29,9 @@ Monitor's HTTP routes and, when the monitor's saved setting is on, starts it (se
 nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, compute_device (the device widgets),
                               lm_folders (an LM family's model and text_encoders folders, its folder_paths key
                               registered; Qwen LM and PreFlight Observe), the unused-heavy-outputs helper (LinkStamp,
-                              register_link_stamp, stamps_last, heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (36); social_specs.json is the user-editable platform table
+                              register_link_stamp, stamps_last, heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy),
+                              edited_fields (a config node's edited and linked fields: LM Config, DyPE Config)
+nodes/<domain>.py             one per domain (38); social_specs.json is the user-editable platform table
 nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, precision, LoRA, keep -> a BC_LM value, an
                               LMSpec; loads nothing);
                               model_inputs and MODEL_DEFAULTS, the model / precision / lora / lora_strength widgets
@@ -47,6 +48,9 @@ pipelines/detailer/           region (the crop around a region: sampled at crop_
                               Detailer: SAM 3 faces, the character, the size gate, the face and eye passes)
 pipelines/quality_gate.py     shot profiles, QualityCheck, verdict, report, badge
 pipelines/social_export.py    Social Media Export engine: plan, crop/pad, encode, report line
+pipelines/zit_dual_sampler.py ZiT Dual Sampler: first pass, the upscale (latent way, pixel way decode -> resize -> encode,
+                              core's Latent Blend of the two; 16 px sides), second pass with DyPE (start sigma: the first
+                              of its own schedule), the decodes wanted
 pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop; Save Image With Caption's folder,
                               caption extension check, save loop
 pipelines/depth_anything.py   Depth Anything: output size (short side, or cover + centre crop), per-frame
@@ -83,10 +87,13 @@ pipelines/process_monitor/    monitor (sampler thread, runs, per-node records, s
                               release_pack_models: the pack's model slots and every registered LM backend),
                               drop_stale (drop stale outputs: a hook on ComfyUI's output cache, applied monitor
                               on or off)
-models/common/                registry.py (families matting, depth, lm_family, lm_backend, vae and latent_upscale; a depth
+models/common/                registry.py (families matting, depth, lm_family, lm_backend, vae, latent_upscale and dype; a depth
                               entry is a loader returning `predict`, a vae entry load(path) -> (core VAE, note), a
-                              latent_upscale entry upscale(samples, path) -> samples), download.py (fetch_with_progress; model_file: a file in a
-                              ComfyUI model folder, downloaded there when missing)
+                              latent_upscale entry upscale(samples, path) -> samples, a dype entry a model's DyPE adapter),
+                              download.py (fetch_with_progress; model_file: a file in a ComfyUI model folder, downloaded
+                              there when missing), dype.py (DyPE on a model for DyPE Patcher and ZiT Dual Sampler: the
+                              adapter, the values, an APPLY_MODEL wrapper setting DyPE's embedder for one model call and
+                              putting the model's back; no object patch, the shift never touched)
 models/common/lm/             the LM runtime the LM families share: catalog (the built-in models.yaml merged with the
                               user's), family and backend contracts, core_backend (the "core" LM backend: core's
                               text-encoder loader, LoRA loader and generate; the prompt tokenized here, with the
@@ -107,6 +114,9 @@ models/sam3/                  checkpoint, loader, detect (over ComfyUI core SAM 
 models/wan_vae/               "Wan 2.1" in the vae family (VAE Loader): core's VAE; a decoder packing an r-times image
                               into its channels (upscale 2x) switched to a subclass whose decodes unpack it (no cache:
                               core owns the VAE)
+models/z_image/               "Z-Image" in the dype family (core's ZImage config only): adapter (values, the embedder of one
+                              call), dype/ (the Z-Image rotary embedder, derived from ComfyUI-DyPE, Apache-2.0, LICENSE +
+                              NOTICE)
 models/wan_latent_upscale/    "Wan 2.1 2x" in the latent_upscale family (Latent Upscale): arch/ (vendored, MIT), loader (the
                               file the node picks from core's latent_upscale_models folder, single slot keyed by path, in
                               release_pack_models; nothing downloaded), inference
@@ -136,11 +146,16 @@ libs/sage_attention.py        Patch Sage Attention: SageAttention kernels as cor
                               kernel table from the official code, resolve + one test call, core's layouts, the calls
                               that run the original attention, nan_guard, the per-run counts); the node hangs it on a
                               model clone with ON_PRE_RUN / ON_CLEANUP callbacks
+libs/sampling.py              ksampler: one sampler run as core's common_ksampler (Detailer, ZiT Dual Sampler)
+libs/dype/                    DyPE's 1-D rotary frequency tables (vision_yarn, yarn, ntk), float64 as core's rope; derived
+                              from ComfyUI-DyPE, Apache-2.0, LICENSE + NOTICE
 libs/detail_boost.py          Detail Boost: the sigma a model call is told (each mode's lowered sigma, where the call
                               sits in the run's schedule, the step range, the weight blend); the node hangs it on a
                               model clone as a PREDICT_NOISE wrapper
 web/js/preflight.js           PreFlight Outcome's record list: GET /bcnodes/preflight/records on creation / load, the
                               bcnodes.preflight.records event after Report logs; a saved value never rewritten
+web/js/edited_fields.js       a config node's hidden `edited` widget, fields marked on a user change and greyed until then
+                              (LM Config in lm.js, DyPE Config in dype.js)
 web/js/grow_inputs.js         growing input slots (<prefix>1, <prefix>2, ...: one empty after the last linked one):
                               Join Image Lists, Claude
 web/js/claude.js              Claude's image slots and its API key setting (a field of its own, posted to the
@@ -250,7 +265,7 @@ where it is.
 ## How to add a node
 
 - Key `BC_<Name>`, a display name, and a `CATEGORY` under `BCNodes/`. The groups today:
-  `analysis`, `detailer`, `image`, `latent`, `lm`, `loaders`, `logic`, `mask`, `model`, `postfx`, `preflight`, `seedvr2` (with
+  `analysis`, `detailer`, `image`, `latent`, `lm`, `loaders`, `logic`, `mask`, `model`, `postfx`, `preflight`, `sampling`, `seedvr2` (with
   its subcategory `seedvr2/compact`), `text`, `workflow`. A new group is added when a new kind of node needs one.
 - A literal `INPUT_TYPES` in the node class. The node file holds the surface only; the work goes
   to a pipeline (or straight to libs/models when there is no flow).

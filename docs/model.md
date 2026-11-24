@@ -193,3 +193,53 @@ On (default, as the official config): each run's schedule is stretched so its la
 ### Other patches
 
 The node replaces the model's `model_sampling`, as ModelSamplingAuraFlow does, and puts an `OUTER_SAMPLE` wrapper on the clone in `dynamic` mode or with `shift_terminal` on (fixed mode without it needs none). ComfyUI chains wrappers, so the model's other wrappers stay; a second Qwen Image Shift replaces the first one's. A node after it that replaces `model_sampling` again (ModelSamplingAuraFlow, ModelSamplingSD3) would have the shift applied twice: the run stops with an error saying to keep one of the two.
+
+## `BC_DyPEPatcher` — DyPE Patcher
+
+`model` (`MODEL`) + `mode` + `dype_start_sigma` + optional `dype_config` (`BC_DYPE_CONFIG`) → `MODEL`: a clone with DyPE (Dynamic Position Extrapolation) on the model's rotary position embedding. The input model is never changed. Z-Image only for now.
+
+### What it does
+
+Sampled above its training resolution (a 2x hires pass of Z-Image Turbo, say 1024 × 1536 → 2048 × 3072), a model extrapolates its rotary positions past the lengths it was trained on, and the scene starts repeating itself, mostly in the lower part of the image. DyPE changes the rotary frequencies of the two image axes at each model call, with a strength that follows the sigma: strong at high sigma, where the layout forms, fading out toward 0, where the detail forms. The node recognises the model and takes its own method and values; the image size is read from the latent of each model call, so one patched model serves any size.
+
+| Value | Z-Image | From DyPE Config |
+| --- | --- | --- |
+| `method` | `vision_yarn` | any of `vision_yarn`, `yarn`, `ntk`, `pi`, `base` |
+| `base_resolution` | 1024 px | yes |
+| `dype_scale` (λs) | 2.0 | yes |
+| `dype_exponent` (λt) | from the scale: 2.0 at 4x `base_resolution` and above (4K), 1.0 from 2x (2K to 3K), 0.5 below | yes (then fixed) |
+| `auto_threshold` | 1920 px | yes |
+
+The scale is the latent's longer side in px over `base_resolution` (2048 × 3072: 3.0). The model's shift is never changed: DyPE's own shift override (the original node replaces `model_sampling` with a resolution-dependent one, which keeps a hires pass from cleaning the latent upscale's residue) is not ported, so ModelSamplingAuraFlow's shift, or the model's own, stays.
+
+### `mode`
+
+- `auto` (default): DyPE only for a latent whose longer side is over `auto_threshold` (1920 px). At or below it the model runs exactly as unpatched (bit-identical output). Z-Image Turbo at 1024 × 1536: 1.25x (1280 × 1920) stays clean without DyPE, 1.5x (1536 × 2304) starts to repeat.
+- `enable`: DyPE for every latent larger than `base_resolution`.
+- `disable`: the model is returned as it is.
+
+### `dype_start_sigma`
+
+Below this sigma DyPE's attention scale decays. Set it to the first sigma of the sampler run the model goes into: 1.0 for a full run from noise; for a second pass at a denoise below 1, the first value of that run's own schedule (it depends on the steps, the scheduler, the denoise and the shift: 9 steps, `beta`, denoise 0.45 at shift 3 start at 0.6944). ZiT Dual Sampler reads it from its second pass's schedule itself. A value outside [0.001, 1] is clamped.
+
+### How it is applied
+
+The clone carries an `APPLY_MODEL` wrapper (ComfyUI's patcher wrappers). At each model call it reads the latent's size and the call's sigma; when DyPE is on for that size it sets DyPE's embedder on the diffusion model for that call only and puts the model's own embedder back when the call returns (or fails). Nothing stays on the model between calls: another clone of the same model (a first pass without DyPE, the next run) always runs with the model's own embedder. A second DyPE Patcher (or ZiT Dual Sampler's DyPE) replaces the first's; the model's other wrappers stay. The console says once per latent size whether DyPE is on, with the scale and values.
+
+The rotary tables are computed in float64 and given in float32, as ComfyUI core computes Z-Image's own. The original node computes them in bfloat16 on CUDA, so its output is not bit-identical to this one's.
+
+### Methods
+
+| `method` | On the image axes |
+| --- | --- |
+| `vision_yarn` | YaRN's per-band blend (NTK-aware for the fast frequencies, interpolated for the slow) at the scale, its ramps raised to k_t = λs · t^λt, times the attention scale 1 + 0.05 ln(scale) decaying below `dype_start_sigma` |
+| `yarn` | classic YaRN at the stretched length, the same modulation and attention scale |
+| `ntk` | NTK-aware scaling of theta by scale^(d / (d − 2)), raised to k_t: strongest at high sigma |
+| `pi` | position interpolation: the positions divided by scale^k_t (DY-PI) |
+| `base` | static NTK scaling, no change over the run |
+
+The time / caption axis keeps core's rotary table. The ported code (`libs/dype/`, `models/z_image/dype/`) comes from wildminder's ComfyUI-DyPE, Apache-2.0; each folder's NOTICE lists the changes (among them: `pi` on Z-Image is DY-PI, where the original falls back to `ntk`).
+
+## `BC_DyPEConfig` — DyPE Config
+
+`method` + `base_resolution` + `dype_scale` + `dype_exponent` + `auto_threshold` → `BC_DYPE_CONFIG`, for DyPE Patcher's and ZiT Dual Sampler's optional `dype_config`. Only the fields you change on the node, or feed by a link, are applied; every other field keeps the model's automatic value (the table above). Un-changed fields are drawn greyed on the classic canvas (the Vue renderer has no greyed look that still takes input). The node's menu item *Reset to automatic values* clears the changes. A changed `dype_exponent` replaces the per-scale choice with that value at every size. The shift is not a DyPE value and cannot be set here.
