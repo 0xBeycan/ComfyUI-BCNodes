@@ -22,6 +22,25 @@ Properties: `sort` (`position`, `alphanumeric` or `custom alphabet`), `customSor
 
 **API / serverless mode:** bypass is a frontend concept. When the frontend builds the prompt, bypassed nodes are already left out and their links routed around them, so an exported prompt reflects the toggles at export time and runs anywhere. A prompt assembled without the frontend cannot be switched by this node; it contains whatever nodes it was given. The Python side of the node is a no-op that is never executed.
 
+## `BC_CondPipePack` / `BC_CondPipeUnpack` — Cond Pipe
+
+Four conditionings on one link, of type `BC_COND_PIPE`: `positive` and `negative`, and `cn_positive` and `cn_negative`, the pair with a ControlNet applied. Made for a two-pass workflow whose sampling sits in a subgraph: the first pass sets the composition with the ControlNet pair, the second samples with the plain pair, and the subgraph takes one pipe input instead of four conditioning inputs. Cond Pipe Pack goes where the conditionings are made, Cond Pipe Unpack inside the subgraph; Unpack's outputs come in Pack's input order. The four slots are fixed. The pipe holds the conditionings themselves: nothing is copied.
+
+```
+prompts ───────────> positive, negative ──────┐
+Apply ControlNet ──> cn_positive, cn_negative ┴─> Cond Pipe Pack ── pipe ──> subgraph
+  inside: Cond Pipe Unpack ── cn_positive, cn_negative ──> KSampler (pass 1)
+                           └─ positive, negative ────────> KSampler (pass 2)
+```
+
+Every input of Cond Pipe Pack is optional; one left unlinked is an empty slot. Unpack's output for an empty slot does nothing while it is unlinked. Once linked, the node it feeds stops with
+
+```
+Execution Blocked: Cond Pipe Unpack: the pipe holds no cn_positive. Link cn_positive on Cond Pipe Pack, or unlink Cond Pipe Unpack's cn_positive output.
+```
+
+and neither that node nor anything after it runs; it is never handed `None`, an optional conditioning input included. This is ComfyUI's own execution blocker: the error is shown, and the parts of the workflow that do not depend on the stopped node still run.
+
 ## Align
 
 With two or more items selected (nodes, groups, reroutes, subgraph nodes), the selection toolbox gains eight buttons: align left / horizontal centers / right / top / vertical centers / bottom, and — from three items — distribute horizontally / vertically. A group moves with its contents. Each action is one undo step.

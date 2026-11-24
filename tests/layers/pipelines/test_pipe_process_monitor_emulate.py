@@ -47,6 +47,7 @@ class Env:
         "BC_SeedVR2PostProcessCompact": ["IMAGE"], "BC_ImageScaleByAspectRatio": ["IMAGE", "MASK", "BOX", "INT", "INT"],
         "BC_BiRefNetRemoveBackground": ["IMAGE", "MASK", "IMAGE"], "BC_DepthAnythingV2": ["IMAGE"], "BC_PostFxApply": ["IMAGE"],
         "BC_AnySwitch": ["*"], "BC_SelectSwitch": ["*"],
+        "BC_CondPipePack": ["BC_COND_PIPE"], "BC_CondPipeUnpack": ["CONDITIONING"] * 4,
         "BC_BlockifyMask": ["MASK"], "BC_MaskFillHoles": ["MASK"], "BlockifyMask": ["MASK"],
     }
     # BCVLoadVideo's bcv_sizes: the resolution "source" is the video's own size (None)
@@ -600,6 +601,14 @@ def test_bcnodes_image_nodes_and_switches(em):
     p["3"]["inputs"].update(width=["9", 1], height=["9", 2])  # sizes from links: known at run time only
     row = rows_of(em, p)["3"]
     assert row["status"] == "not counted" and "width / height come from links" in row["note"]
+
+
+def test_cond_pipe_holds_references(em):
+    p = {"1": N("BC_CondPipePack", positive=["9", 0], cn_positive=["9", 0]), "2": N("BC_CondPipeUnpack", pipe=["1", 0])}
+    rows = rows_of(em, p)
+    assert [(rows[i]["status"], rows[i]["outputs"], rows[i]["transient"]) for i in ("1", "2")] == [("counted", [], 0)] * 2
+    assert rows["1"]["note"] == "its conditioning inputs held in one pipe, no copy"
+    assert rows["2"]["note"] == "the pipe's conditionings passed on as they are, no copy"
 
 
 def test_a_passed_on_input_is_counted_once(em):

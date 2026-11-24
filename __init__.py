@@ -43,6 +43,8 @@ Nodes:
     BC_QwenImageShift            MODEL -> MODEL with the official Qwen-Image-2512 shift (per latent size), replaces ModelSamplingAuraFlow
     BC_AnythingEverywhere        feeds unconnected inputs of a type at prompt time
     BC_FastGroupsBypasser        one bypass toggle per group
+    BC_CondPipePack              positive / negative / cn_positive / cn_negative -> one BC_COND_PIPE link
+    BC_CondPipeUnpack            BC_COND_PIPE -> the four conditionings; an empty slot blocks the node it feeds
     BC_SeedVR2FramingDownscale   SeedVR2 Resize's downscale_factor from the face size (SAM 3)
     BC_SeedVR2Resize             SeedVR2 resize: shortest edge, antialiased bicubic, bf16 path
     BC_SeedVR2VAEEncode          SeedVR2 VAE encode, frames streamed from RAM
@@ -80,7 +82,7 @@ on by default; its ComfyUI setting turns it off.
 """
 
 from .nodes import (
-    any_switch, birefnet, caption_audit, claude, depth_anything, detail_boost, detailer, downloader, everywhere, frequency_merge, image_comparer, image_quality_gate,
+    any_switch, birefnet, caption_audit, claude, cond_pipe, depth_anything, detail_boost, detailer, downloader, everywhere, frequency_merge, image_comparer, image_quality_gate,
     image_scale, latent_upscale, lists, lm, logic, lora_key_fix, mask, math_expression, postfx, power_lora_loader, preflight, prompt_list,
     qwen_image_shift, sage_attention, save_image, save_image_with_caption, seed, seedvr2, select_switch, show_text, skin_texture,
     social_media_export, vae_loader,
@@ -92,7 +94,7 @@ NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
                 lm, claude, image_comparer, power_lora_loader, lora_key_fix, vae_loader, latent_upscale, sage_attention, detail_boost, qwen_image_shift, everywhere,
-                seedvr2, postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture,
+                cond_pipe, seedvr2, postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture,
                 frequency_merge, detailer, preflight):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(_module.NODE_DISPLAY_NAME_MAPPINGS)

@@ -30,7 +30,7 @@ nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, co
                               lm_folders (an LM family's model and text_encoders folders, its folder_paths key
                               registered; Qwen LM and PreFlight Observe), the unused-heavy-outputs helper (LinkStamp,
                               register_link_stamp, stamps_last, heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy)
-nodes/<domain>.py             one per domain (35); social_specs.json is the user-editable platform table
+nodes/<domain>.py             one per domain (36); social_specs.json is the user-editable platform table
 nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, precision, LoRA, keep -> a BC_LM value, an
                               LMSpec; loads nothing);
                               model_inputs and MODEL_DEFAULTS, the model / precision / lora / lora_strength widgets

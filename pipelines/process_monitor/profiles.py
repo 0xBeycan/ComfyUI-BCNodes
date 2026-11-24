@@ -884,6 +884,16 @@ def _join_lists(c):
     return {}, 0, "a list of references to its inputs, no copy (downstream sizes are not followed through lists)"
 
 
+def _cond_pipe_pack(c):
+    # Cond Pipe Pack (nodes/cond_pipe.py) returns a CondPipe holding its four inputs as they are
+    return {}, 0, "its conditioning inputs held in one pipe, no copy"
+
+
+def _cond_pipe_unpack(c):
+    # Cond Pipe Unpack returns the pipe's fields as they are; an empty one as core's ExecutionBlocker
+    return {}, 0, "the pipe's conditionings passed on as they are, no copy"
+
+
 # -- LM nodes -------------------------------------------------------------------------------------
 
 def _qwen_lm(c):
@@ -961,6 +971,7 @@ PROFILES = {
     "BC_BiRefNetRemoveBackground": _birefnet, "BC_DepthAnythingV2": _depth_anything, "BC_PostFxApply": _postfx_apply,
     "BC_SkinTexture": _skin_texture, "BC_AnySwitch": _any_switch, "BC_SelectSwitch": _select_switch,
     "BC_JoinImageLists": _join_lists,
+    "BC_CondPipePack": _cond_pipe_pack, "BC_CondPipeUnpack": _cond_pipe_unpack,
     "BC_FrequencyMerge": _frequency_merge,
     "BC_Detailer": _detailer, "BC_FaceDetailer": _face_detailer,
     # LM nodes

@@ -126,6 +126,10 @@ def main():
     check("SelectSwitch unconnected selection -> ValueError", lambda: _raises(ValueError, lambda: ss.select("option_a")))
     check("SelectSwitch None input passes None", lambda: ss.select("option_a", option_a=None) == (None,) or _fail())
 
+    cpp = m["cond_pipe"].CondPipePack()
+    check("CondPipePack no inputs -> four empty slots",
+          lambda: cpp.pack() == (m["cond_pipe"].CondPipe(positive=None, negative=None, cn_positive=None, cn_negative=None),) or _fail())
+
     bn = m["birefnet"].BiRefNetRemoveBackground()
     check("BiRefNet empty batch (no model load)", lambda: bn.remove_background(torch.zeros((0, 8, 8, 3)), "BiRefNet_lite")[1].shape == (0, 64, 64) or _fail())
     check("BiRefNet None image", lambda: bn.remove_background(None, "BiRefNet_lite")[0].shape == (0, 64, 64, 4) or _fail())

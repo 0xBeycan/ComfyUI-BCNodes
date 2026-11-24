@@ -24,6 +24,7 @@ ComfyUI-BCNodes/
     sage_attention.py      BC_PatchSageAttention
     detail_boost.py        BC_DetailBoost
     everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
+    cond_pipe.py           BC_CondPipePack, BC_CondPipeUnpack
     seedvr2.py             BC_SeedVR2FramingDownscale, BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2ChunkSize,
                            BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess, BC_SeedVR2PreprocessCompact, BC_SeedVR2PostProcessCompact
     common.py              wildcard type + flexible optional inputs + slot order + the device widget + an LM family's

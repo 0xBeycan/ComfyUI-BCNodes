@@ -759,6 +759,7 @@ async def main():
     out, executed = await run_twice({"1": N("BC_AutoModelDownloader", entries="[]")}, "cache-downloader")
     check("AutoModelDownloader: runs every queue by design", out is not None and executed == ["1"], f"{executed}")
 
+    await cond_pipe()
     await lora_key_fix()
     await vae_loader()
     await latent_upscale()
@@ -778,6 +779,81 @@ async def main():
 
     print(f"\n{results['pass']} passed, {results['fail']} failed")
     sys.exit(1 if results["fail"] else 0)
+
+
+async def cond_pipe():
+    """Cond Pipe Pack -> Unpack through validate_prompt + PromptExecutor, with two test-only nodes: one makes a
+    CONDITIONING, an output node keeps the one it gets. Every slot reaches its keeper as the object its maker
+    returned. A slot left unlinked on Pack whose Unpack output is linked stops the keeper it feeds with
+    Unpack's message (core's ExecutionBlocker: an execution_error event naming the keeper, which never runs);
+    one whose Unpack output is unlinked does nothing."""
+    import torch
+
+    slots = ("positive", "negative", "cn_positive", "cn_negative")
+    made, kept = {}, {}
+
+    class MakeCond:
+        """A test-only node: a CONDITIONING whose tensor holds `tag`."""
+        RETURN_TYPES = ("CONDITIONING",)
+        FUNCTION = "make"
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {"tag": ("INT", {"default": 0})}}
+
+        def make(self, tag):
+            made[tag] = [[torch.full((1, 2, 4), float(tag)), {}]]
+            return (made[tag],)
+
+    class KeepCond:
+        """A test-only output node: keeps the CONDITIONING it gets under `name`."""
+        RETURN_TYPES = ()
+        FUNCTION = "keep"
+        OUTPUT_NODE = True
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {"conditioning": ("CONDITIONING",), "name": ("STRING", {"default": ""})}}
+
+        def keep(self, conditioning, name):
+            kept[name] = conditioning
+            return {}
+
+    def prompt(packed, linked):
+        """A maker (node i + 1, tag i + 1) linked into Pack per slot in `packed`, a keeper (node i + 21) on
+        Unpack's output per slot in `linked`."""
+        p = {"10": N("BC_CondPipePack", **{name: [str(i + 1), 0] for i, name in enumerate(slots) if name in packed}),
+             "11": N("BC_CondPipeUnpack", pipe=["10", 0])}
+        for i, name in enumerate(slots):
+            if name in packed:
+                p[str(i + 1)] = N("BCTest_MakeCond", tag=i + 1)
+            if name in linked:
+                p[str(i + 21)] = N("BCTest_KeepCond", conditioning=["11", i], name=name)
+        return p
+
+    nodes.NODE_CLASS_MAPPINGS["BCTest_MakeCond"] = MakeCond
+    nodes.NODE_CLASS_MAPPINGS["BCTest_KeepCond"] = KeepCond
+    try:
+        out, valid = await run(prompt(slots, slots), "cond-pipe")
+        check("CondPipe: Pack -> Unpack validates and executes", out is not None, f"{valid[1]}")
+        check("CondPipe: every slot reaches its keeper as the object its maker returned",
+              sorted(kept) == sorted(slots) and all(kept[name] is made[i + 1] for i, name in enumerate(slots)),
+              f"{sorted(kept)}")
+        kept.clear()
+        server = Server()
+        await run(prompt(("positive", "negative"), ("positive", "negative", "cn_positive")), "cond-pipe-empty",
+                  {"client_id": "test"}, server)
+        errors = [(data.get("node_id"), data.get("exception_message")) for event, data in server.events
+                  if event == "execution_error"]
+        check("CondPipe: a linked empty slot stops the node it feeds with Unpack's message; an unlinked one does nothing",
+              errors == [("23", "Execution Blocked: Cond Pipe Unpack: the pipe holds no cn_positive. Link cn_positive "
+                                "on Cond Pipe Pack, or unlink Cond Pipe Unpack's cn_positive output.")], f"{errors}")
+        check("CondPipe: the keeper of the empty slot never runs, the others do", sorted(kept) == ["negative", "positive"],
+              f"{sorted(kept)}")
+    finally:
+        del nodes.NODE_CLASS_MAPPINGS["BCTest_MakeCond"], nodes.NODE_CLASS_MAPPINGS["BCTest_KeepCond"]
 
 
 def pack_module(suffix):

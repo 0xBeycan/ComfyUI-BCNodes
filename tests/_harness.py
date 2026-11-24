@@ -130,7 +130,7 @@ def load_package():
     sys.modules[PKG_NAME] = pkg
     return ModuleMap(PKG_NAME, {name: importlib.import_module(f"{PKG_NAME}.nodes.{name}")
             for name in ("logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
-                         "lm", "claude", "image_comparer", "power_lora_loader", "lora_key_fix", "sage_attention", "detail_boost", "everywhere", "seedvr2",
+                         "lm", "claude", "image_comparer", "power_lora_loader", "lora_key_fix", "sage_attention", "detail_boost", "everywhere", "cond_pipe", "seedvr2",
                          "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption",
                          "skin_texture", "frequency_merge", "preflight", "qwen_image_shift", "detailer", "vae_loader", "latent_upscale")})
 

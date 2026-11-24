@@ -41,6 +41,8 @@ Utility nodes for ComfyUI, in one small pack.
 | `BC_QwenImageShift` | [Qwen Image Shift](docs/model.md#bc_qwenimageshift--qwen-image-shift) | `MODEL` → a clone with the official Qwen-Image-2512 flow shift, in place of ModelSamplingAuraFlow, for the stock KSampler and schedulers: `dynamic` takes the shift from each sampler run's latent size (so a 1.25x second pass gets its own), `fixed` is ModelSamplingAuraFlow at `shift` (3 for Lightning); `shift_terminal` ends each run's schedule at 0.02 before 0 |
 | `BC_AnythingEverywhere` | [Anything Everywhere](docs/workflow.md#bc_anythingeverywhere--anything-everywhere) | Feeds unconnected inputs of a type at prompt time |
 | `BC_FastGroupsBypasser` | [Fast Groups Bypasser](docs/workflow.md#bc_fastgroupsbypasser--fast-groups-bypasser) | One bypass toggle per group |
+| `BC_CondPipePack` | [Cond Pipe Pack](docs/workflow.md#bc_condpipepack--bc_condpipeunpack--cond-pipe) | `positive`, `negative`, `cn_positive`, `cn_negative` (all optional) → one `BC_COND_PIPE` link, nothing copied |
+| `BC_CondPipeUnpack` | [Cond Pipe Unpack](docs/workflow.md#bc_condpipepack--bc_condpipeunpack--cond-pipe) | `BC_COND_PIPE` → the four conditionings; a slot left empty on Pack stops the node its output feeds, with a message |
 | `BC_BiRefNetRemoveBackground` | [BiRefNet Remove Background](docs/mask.md#bc_birefnetremovebackground--birefnet-remove-background) | Background removal with BiRefNet, plain torch |
 | `BC_DepthAnythingV2` | [Depth Anything](docs/image.md#bc_depthanythingv2--depth-anything) | Depth map with Depth Anything V2 Small or Depth Anything 3 (Small, Base, Mono-Large, Metric-Large; all Apache-2.0), near = white, at a ControlNet preprocessor's size or exactly width x height |
 | `BC_SeedVR2FramingDownscale` | [SeedVR2 Framing Downscale](docs/seedvr2.md#bc_seedvr2framingdownscale--seedvr2-framing-downscale) | SeedVR2 Resize's `downscale_factor` from the face size: the tallest SAM 3 face box picks close-up, medium or far, each with its factor; the measured face fraction comes out too |
@@ -86,7 +88,7 @@ Registration keys are BCNodes' own, so the packages above can be installed side 
 | [`BCNodes/latent`](docs/latent.md) | Latent Upscale |
 | [`BCNodes/detailer`](docs/detailer.md) | Detailer, Face Detailer |
 | [`BCNodes/seedvr2`](docs/seedvr2.md) | SeedVR2 Framing Downscale, Resize, VAE Encode, Chunk Size, VAE Decode, PostProcess; Compact: Preprocess (Compact), PostProcess (Compact) |
-| [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Auto Bypass |
+| [`BCNodes/workflow`](docs/workflow.md) | Image Comparer, Anything Everywhere, Fast Groups Bypasser, Cond Pipe Pack, Cond Pipe Unpack, Auto Bypass |
 
 ## Installation
 
@@ -118,7 +120,7 @@ The Align buttons are not a node; they appear in the toolbox above a multi-selec
 - [Model](docs/model.md) — SageAttention for one model in one workflow: the modes, `qk_quant`, long sequences, the calls that run the original attention, `nan_guard`, the console, install, an A/B test
 - [Detailer](docs/detailer.md) — a mask region or every face sampled again at the model's size and pasted back: the crop, the sampling, ControlNet hints, the paste; the character and model_no_lora, the size gate, the face and eye passes
 - [SeedVR2](docs/seedvr2.md) — the downscale factor from the framing, the SeedVR2 input stage, streaming VAE encode / decode, the chunk size and the VAE tile for the card, post-processing
-- [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, Auto Bypass, the Align buttons
+- [Workflow](docs/workflow.md) — image comparer, Anything Everywhere, group bypass, the conditioning pipe, Auto Bypass, the Align buttons
 - [Unused outputs](docs/unused-outputs.md) — unconnected whole-batch outputs come out empty
 - [Measurements](docs/measurements.md) — time, RAM and output size of the mask nodes and Image Resize against the nodes they replace
 - [Process Monitor](docs/process-monitor.md) — RAM / VRAM live, an estimate before a run, per-node measurement, the report of a killed run, the full clear
