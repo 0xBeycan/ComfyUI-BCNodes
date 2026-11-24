@@ -14,6 +14,9 @@ DEFAULT_QUALITY = 90
 # jpeg / webp / avif / jxl / tiff only; PNG is left out because Pillow then
 # compresses at level 9 regardless of compress_level.
 OPTIMIZE = True
+# PNG is lossless at every level: the level trades file size for time. Above 6 zlib buys a few percent
+# of size for many times the time (a 1280x1920 photo: level 9 12x the time of level 6 for 5% less).
+PNG_MAX_COMPRESS_LEVEL = 6
 PLUGINS = {".avif": "pillow_avif", ".jxl": "pillow_jxl"}
 
 
@@ -80,6 +83,6 @@ def write_image(path, img, prompt, save_metadata, extra_pnginfo, quality):
     elif ext in (".png", ".gif"):
         if save_metadata:
             kwargs["pnginfo"] = png_info(prompt, extra_pnginfo)
-        # quality 0-90 -> compress_level 0-9; above 90 buys nothing but time
-        kwargs["compress_level"] = round(min(quality, 90) / 10)
+        # quality 0-60 -> compress_level 0-6; above 60 stays 6
+        kwargs["compress_level"] = min(round(quality / 10), PNG_MAX_COMPRESS_LEVEL)
     img.save(path, **kwargs)

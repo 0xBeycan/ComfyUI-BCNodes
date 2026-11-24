@@ -48,7 +48,7 @@ class SaveImage:
                 "image_preview": ("BOOLEAN", {"default": True, "tooltip": "List the saved images in the queue / history gallery. They are never drawn under the node"}),
                 "output_ext": (output_extensions(), {"default": ".webp", "tooltip": "File format; AVIF and JXL appear when their Pillow plugins are installed"}),
                 "quality": ("INT", {"default": DEFAULT_QUALITY, "min": 0, "max": 100, "step": 1, "display": "slider", "tooltip": (
-                    "Encoder quality for JPEG / JXL / WebP / AVIF / JPEG 2000 (100 = lossless for WebP / AVIF / JXL); PNG maps it to compression level 0-9")}),
+                    "Encoder quality for JPEG / JXL / WebP / AVIF / JPEG 2000 (100 = lossless for WebP / AVIF / JXL); PNG maps it to compression level 0-6 (60 and above: 6; PNG is lossless at every level)")}),
                 "named_keys": ("BOOLEAN", {"default": False, "tooltip": "Prefix each value with its key: prefix-seed=123456-cfg=5.0-0001.webp"}),
             },
             "optional": {
