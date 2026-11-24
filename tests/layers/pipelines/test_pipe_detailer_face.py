@@ -13,7 +13,8 @@ records each region and the model, and paints the region so a later detection ca
     eye_crop_size and eye_denoise (the crops' sampling sizes worked out by hand from region.plan);
   - the eyes: found on the face's box of the frame the face pass left, cut to the face's mask (a part
     outside it dropped), both eyes one region on one crop; one eye alone when only one is found;
-  - the passes in order face, eyes; the mask output the union of the regions detailed.
+  - the passes in order face, eyes; the mask output the union of the regions detailed;
+  - face and eyes both off: the image passes through, SAM 3 is not loaded and no model is cloned.
 """
 
 import importlib
@@ -207,3 +208,18 @@ def test_no_face_leaves_the_image(flow, monkeypatch):
     world = World(faces=())
     out, changed = run(flow, monkeypatch, world, eyes=True)
     assert details(world) == [] and not bool(changed.any()) and not bool(out.any())
+
+
+def test_face_and_eyes_off_pass_the_image_through(flow, monkeypatch):
+    def unused(*args, **kwargs):
+        raise AssertionError("called with both passes off")
+
+    for name in ("load", "text_condition", "detect", "detail", "differential"):
+        monkeypatch.setattr(flow, name, unused)
+    s = importlib.import_module(flow.__package__ + ".core").Settings(None, [], [], 0, 1, 1.0, "euler", "simple", 0.5,
+                                                                      1024, 2048)
+    for dtype in (torch.float32, torch.float16):
+        image = torch.rand(2, H, W, 3).to(dtype)
+        out, changed = flow.run(image, "main", "other", s, s, "sam3.safetensors", 0.4, None, 1024, False, False)
+        assert out.dtype == dtype and torch.equal(out, image)
+        assert changed.dtype == dtype and changed.shape == (2, H, W) and not bool(changed.any())

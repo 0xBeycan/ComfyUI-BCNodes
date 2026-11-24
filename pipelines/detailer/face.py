@@ -15,6 +15,7 @@ alone when only one is found.
   its own pixels while its eyes are still detailed.
 - Order: the character first, with its model, then the other faces with theirs, so the model changes
   once per frame.
+- Face and eyes both off: the image passes through as it is and SAM 3 is not loaded.
 
 SAM 3 is the multiplex checkpoint under models/checkpoints (models/sam3, downloaded on first use when
 missing); its prompts are fixed here. Everything beyond torch is imported on first use.
@@ -79,6 +80,8 @@ def run(image, model, model_no_lora, face_s, eye_s, sam3_model, threshold, selec
     picks the character; `face_s`, `eye_s`: the core.Settings of the face pass and of the eye pass;
     `max_height`: px, a taller face skips the face pass."""
     b, h, w, c = image.shape
+    if not (face_pass or eyes_pass):  # nothing to detail: SAM 3 is not loaded, no model is cloned
+        return image.to(output_dtype(image)), torch.zeros((b, h, w), dtype=output_dtype(image))
     sam, clip = load(sam3_model)
     face_cond = text_condition(clip, FACE_PROMPT)
     eyes_cond = text_condition(clip, EYES_PROMPT) if eyes_pass else None
