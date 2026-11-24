@@ -133,7 +133,7 @@ def load_package():
                          "lm", "claude", "image_comparer", "power_lora_loader", "lora_key_fix", "sage_attention", "detail_boost", "everywhere", "cond_pipe", "seedvr2",
                          "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption",
                          "skin_texture", "frequency_merge", "preflight", "qwen_image_shift", "detailer", "vae_loader", "latent_upscale",
-                         "dype", "zit_dual_sampler")})
+                         "dype", "dual_sampler")})
 
 
 def bind_package(name):

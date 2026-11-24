@@ -9,10 +9,12 @@
 - yarn: the YaRN table at the stretched length int(512 s), its scale times the attention scale;
 - ntk: the NTK table at (s^(d / (d - 2)))^k_t; base: at s^(d / (d - 2)), whatever t;
 - pi: the image positions over s^k_t, the plain table (DY-PI);
-- the adapter takes core's ZImage config only (not a subclass: Ming-Image, the pixel-space Z-Image), reads theta
-  and axes_dim from the model's own rotary embedder and the longer image-axis RoPE length from axes_lens.
+- the adapter takes core's ZImage config only (not a subclass: Ming-Image, the pixel-space Z-Image), no ControlNet
+  model as one with its own embedder, reads theta and axes_dim from the model's own rotary embedder and the longer
+  image-axis RoPE length from axes_lens, and the settings' method, start sigma and dype_scale; its automatic values
+  are vision_yarn, 1024 px, 2.0, auto_threshold 1920 px, and no yarn_alt_scaling (its yarn has no such option).
 
-core's rope is restated here (comfy/ldm/flux/math.py rope, at ComfyUI 79be670).
+core's rope is restated in tests/_rope.py.
 """
 
 import math
@@ -22,27 +24,9 @@ import types
 import pytest
 import torch
 
+from _rope import core_rope, mm, rotation  # noqa: F401  (mm: a fixture)
+
 THETA, AXES, LENS = 256.0, (32, 48, 48), (1536, 512, 512)
-
-
-def core_rope(pos, dim, theta):
-    scale = torch.linspace(0, (dim - 2) / dim, steps=dim // 2, dtype=torch.float64)
-    omega = 1.0 / (theta ** scale)
-    out = torch.einsum("...n,d->...nd", pos.to(dtype=torch.float32), omega)
-    out = torch.stack([torch.cos(out), -torch.sin(out), torch.sin(out), torch.cos(out)], dim=-1)
-    return out.reshape(*out.shape[:-1], 2, 2).to(dtype=torch.float32)
-
-
-def rotation(cos, sin):
-    out = torch.stack([cos, -sin, sin, cos], dim=-1)
-    return out.reshape(*out.shape[:-1], 2, 2).to(torch.float32)
-
-
-@pytest.fixture
-def mm(monkeypatch, comfy_stubs):
-    module = sys.modules["comfy.model_management"]
-    monkeypatch.setattr(module, "supports_fp64", lambda device: True, raising=False)
-    return module
 
 
 @pytest.fixture
@@ -152,12 +136,17 @@ def patcher(config):
 def test_the_adapter_takes_z_image_only(adapter):
     assert adapter.matches(patcher(ZImage()))
     assert not adapter.matches(patcher(MingImage())) and not adapter.matches(patcher(object()))
-    assert adapter.defaults == {"method": "vision_yarn", "base_resolution": 1024, "dype_scale": 2.0}
+    assert adapter.defaults == {"method": "vision_yarn", "base_resolution": 1024, "dype_scale": 2.0, "auto_threshold": 1920}
     assert adapter.latent_scale == 8 and adapter.attribute == "rope_embedder"
+    assert not adapter.own_embedder(types.SimpleNamespace(rope_embedder=object()))
 
 
-def test_the_adapter_reads_the_models_own_rope(adapter, mm):
+def test_the_adapter_reads_the_models_own_rope(adapter, bcnodes, mm):
     rope = types.SimpleNamespace(theta=THETA, axes_dim=list(AXES))
     dm = types.SimpleNamespace(rope_embedder=rope, axes_lens=[1536, 512, 640])
-    e = adapter.embedder(dm, "ntk", 2.0, 0.5, 1.0, 2.0, 1.0)
+    s = bcnodes["models.common.dype"].Settings(mode="enable", method="ntk", base_resolution=1024, dype_scale=1.5,
+                                               dype_exponent=None, auto_threshold=1920, yarn_alt_scaling=True,
+                                               start_sigma=0.6)
+    e = adapter.embedder(dm, s, 1536, 2048, 2.0, 0.5, 1.0)
     assert (e.theta, list(e.axes_dim), e.base_len, e.method, e.scale, e.t) == (THETA, list(AXES), 640, "ntk", 2.0, 0.5)
+    assert e.k_t == 1.5 * 0.5 and e.mscale == pytest.approx(1 + 0.05 * math.log(2.0) * (0.5 / 0.6))

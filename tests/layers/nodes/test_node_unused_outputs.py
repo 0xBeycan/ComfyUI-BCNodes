@@ -13,7 +13,7 @@
 - per node: each unlinked heavy output is a new 0-frame tensor of the full output's dtype and
   trailing shape, every other output equals the full run's, and where the output is a step of its
   own the step does not run (Image Resize's frames, Image Scale By Aspect Ratio's fits, BiRefNet's
-  composite and mask image, SeedVR2 Resize's two resizes, Skin Texture's texture, Detailer's sampling, ZiT Dual
+  composite and mask image, SeedVR2 Resize's two resizes, Skin Texture's texture, Detailer's sampling, Dual
   Sampler's decodes);
   Face Detailer computes both (its mask reads the detailed image) and drops the unlinked one at return.
 
@@ -38,7 +38,7 @@ HEAVY = {
     "BC_SkinTexture": ("image", "skin_mask"),
     "BC_Detailer": ("image", "mask"),
     "BC_FaceDetailer": ("image", "mask"),
-    "BC_ZiTDualSampler": ("first_image", "second_image"),
+    "BC_DualSampler": ("first_image", "second_image"),
 }
 
 
@@ -452,7 +452,7 @@ def test_face_detailer_drops_the_unlinked_output_at_return(bcnodes, common, monk
 
 
 class DecodeVAE:
-    """ZiT Dual Sampler's VAE: counts its decodes."""
+    """Dual Sampler's VAE: counts its decodes."""
 
     output_channels = 3
 
@@ -474,8 +474,8 @@ class DecodeVAE:
 
 
 @pytest.mark.parametrize("linked", [(), ("first_image",), ("second_image",), ("first_image", "second_image")])
-def test_zit_dual_sampler_decodes_only_the_linked_images(bcnodes, common, monkeypatch, linked):
-    cls, flow = bcnodes["zit_dual_sampler"].ZiTDualSampler, bcnodes["pipelines.zit_dual_sampler"]
+def test_dual_sampler_decodes_only_the_linked_images(bcnodes, common, monkeypatch, linked):
+    cls, flow = bcnodes["dual_sampler"].DualSampler, bcnodes["pipelines.dual_sampler"]
     sampling = bcnodes["libs.sampling"]
     monkeypatch.setattr(sampling, "ksampler", lambda model, seed, *a: {**a[-2], "samples": a[-2]["samples"] + 1})
     monkeypatch.setattr(sys.modules["comfy.utils"], "common_upscale",

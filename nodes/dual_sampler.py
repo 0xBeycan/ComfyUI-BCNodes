@@ -1,9 +1,10 @@
-"""BC_ZiTDualSampler (ZiT Dual Sampler)
+"""BC_DualSampler (Dual Sampler)
 
-Two sampling passes for Z-Image Turbo in one node: a first pass, the latent upscaled (core's latent upscale, a
-decode -> resize -> encode, or a blend of the two), and a second pass at a denoise with DyPE on its model only, its
-start sigma read from the second pass's own schedule. Outputs both decoded images and the second pass's latent. The
-flow is pipelines/zit_dual_sampler.py; DyPE is models/common/dype.py, as DyPE Patcher's.
+Two sampling passes in one node, for any model: a first pass, the latent upscaled (core's latent upscale, a
+decode -> resize -> encode, or a blend of the two), and a second pass at a denoise with DyPE on its model only (the
+model's own DyPE: Z-Image, Qwen-Image; dype disable for another model), its start sigma read from the second pass's
+own schedule. Outputs both decoded images and the second pass's latent. The defaults are Z-Image Turbo's. The flow is
+pipelines/dual_sampler.py; DyPE is models/common/dype.py, as DyPE Patcher's.
 """
 
 from .common import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
@@ -24,7 +25,7 @@ def pass_inputs(n, sampler_names, schedulers):
     }
 
 
-class ZiTDualSampler:
+class DualSampler:
     @classmethod
     def INPUT_TYPES(cls):
         import comfy.samplers
@@ -58,12 +59,15 @@ class ZiTDualSampler:
                 "second_seed": (["fixed", "increment"], {"default": "increment", "tooltip":
                                 "The second pass's seed: the seed itself, or seed + 1."}),
                 "dype": (list(MODES), {"default": "auto", "tooltip":
-                         "DyPE on the second pass only (DyPE Patcher's modes), its start sigma the first sigma of that "
-                         "pass's schedule. auto: only for a second latent whose longer side is over 1920 px (or "
-                         "DyPE Config's auto_threshold). disable: model_2 as it is."}),
+                         "DyPE on the second pass only (DyPE Patcher's modes; Z-Image and Qwen-Image), its start sigma "
+                         "the first sigma of that pass's schedule. auto: only for a second latent whose longer side is "
+                         "over the model's auto_threshold (1920 px for both; DyPE Config can set it). disable: model_2 "
+                         "as it is, for any model; any other mode on a model DyPE does not take stops the run before "
+                         "the first pass."}),
             },
             "optional": {
-                "dype_config": ("BC_DYPE_CONFIG", {"tooltip": "DyPE Config: the automatic DyPE values it changes."}),
+                "dype_config": ("BC_DYPE_CONFIG", {"tooltip": "DyPE Config: the automatic DyPE values it changes. Its model "
+                                "must be model_2's kind."}),
             },
             "hidden": dict(LINK_INPUTS),
         }
@@ -74,22 +78,23 @@ class ZiTDualSampler:
     HEAVY_OUTPUTS = ("first_image", "second_image")
     FUNCTION = "sample"
     CATEGORY = "BCNodes/sampling"
-    SEARCH_ALIASES = ["BCNodes", "zit dual sampler", "z-image turbo", "hires fix", "two pass", "ksampler", "dype",
-                      "upscale"]
-    DESCRIPTION = ("Z-Image Turbo's two-pass hires fix in one node: the first pass (denoise 1.0), the latent upscaled "
+    SEARCH_ALIASES = ["BCNodes", "dual sampler", "zit dual sampler", "z-image turbo", "qwen-image", "hires fix",
+                      "two pass", "ksampler", "dype", "upscale"]
+    DESCRIPTION = ("A two-pass hires fix in one node, for any model: the first pass (denoise 1.0), the latent upscaled "
                    "by scale_by to a multiple of 16 px (core's latent upscale, a decode -> resize -> encode, or "
-                   "blend_factor of the two), and the second pass at denoise_2 with DyPE on its model only (start "
-                   "sigma from that pass's schedule). The same as the core chain KSampler -> Upscale Latent By -> "
-                   "KSampler -> VAE Decode x2 at blend_factor 0. Outputs both images and the second latent.")
+                   "blend_factor of the two), and the second pass at denoise_2 with DyPE on its model only (Z-Image, "
+                   "Qwen-Image; start sigma from that pass's schedule; dype disable for other models). The same as the "
+                   "core chain KSampler -> Upscale Latent By -> KSampler -> VAE Decode x2 at blend_factor 0. Outputs "
+                   "both images and the second latent. The defaults are Z-Image Turbo's.")
 
     def sample(self, model_1, model_2, positive, negative, latent_image, vae, seed, steps_1, cfg_1, sampler_1,
                scheduler_1, steps_2, cfg_2, sampler_2, scheduler_2, denoise_2, upscale_method, scale_by, blend_factor,
                pixel_upscale_method, second_seed, dype, dype_config=None, prompt_graph=None, unique_id=None):
-        from ..pipelines.zit_dual_sampler import Pass, Settings, run
+        from ..pipelines.dual_sampler import Pass, Settings, run
 
         settings = Settings(seed, Pass(steps_1, cfg_1, sampler_1, scheduler_1, 1.0),
                             Pass(steps_2, cfg_2, sampler_2, scheduler_2, denoise_2), upscale_method, scale_by,
-                            blend_factor, pixel_upscale_method, second_seed, dype, dype_config or {})
+                            blend_factor, pixel_upscale_method, second_seed, dype, dype_config)
         wanted = heavy_wanted(type(self), prompt_graph, unique_id)
         return drop_unwanted(type(self), run(model_1, model_2, positive, negative, latent_image, vae, settings,
                                              want_first=wants(wanted, "first_image"),
@@ -97,9 +102,9 @@ class ZiTDualSampler:
 
 
 NODE_CLASS_MAPPINGS = {
-    "BC_ZiTDualSampler": ZiTDualSampler,
+    "BC_DualSampler": DualSampler,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "BC_ZiTDualSampler": "ZiT Dual Sampler",
+    "BC_DualSampler": "Dual Sampler",
 }

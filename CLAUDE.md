@@ -48,9 +48,10 @@ pipelines/detailer/           region (the crop around a region: sampled at crop_
                               Detailer: SAM 3 faces, the character, the size gate, the face and eye passes)
 pipelines/quality_gate.py     shot profiles, QualityCheck, verdict, report, badge
 pipelines/social_export.py    Social Media Export engine: plan, crop/pad, encode, report line
-pipelines/zit_dual_sampler.py ZiT Dual Sampler: first pass, the upscale (latent way, pixel way decode -> resize -> encode,
-                              core's Latent Blend of the two; 16 px sides), second pass with DyPE (start sigma: the first
-                              of its own schedule), the decodes wanted
+pipelines/dual_sampler.py     Dual Sampler (any model): DyPE on model_2 before any sampling (start sigma: the first of the
+                              second pass's own schedule), first pass, the upscale (latent way, pixel way decode -> resize
+                              -> encode, core's Latent Blend of the two; 16 px sides; a 5-D latent as it is), second pass,
+                              the decodes wanted
 pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop; Save Image With Caption's folder,
                               caption extension check, save loop
 pipelines/depth_anything.py   Depth Anything: output size (short side, or cover + centre crop), per-frame
@@ -91,9 +92,11 @@ models/common/                registry.py (families matting, depth, lm_family, l
                               entry is a loader returning `predict`, a vae entry load(path) -> (core VAE, note), a
                               latent_upscale entry upscale(samples, path) -> samples, a dype entry a model's DyPE adapter),
                               download.py (fetch_with_progress; model_file: a file in a ComfyUI model folder, downloaded
-                              there when missing), dype.py (DyPE on a model for DyPE Patcher and ZiT Dual Sampler: the
-                              adapter, the values, an APPLY_MODEL wrapper setting DyPE's embedder for one model call and
-                              putting the model's back; no object patch, the shift never touched)
+                              there when missing), dype.py (DyPE on a model for DyPE Patcher and Dual Sampler: the
+                              adapter, the values (each adapter's own, auto_threshold among them; DyPE Config's for its
+                              model only), a CALC_COND_BATCH wrapper setting DyPE's embedder for one sampling step on the
+                              diffusion model and on a ControlNet model with its own, and putting each back; no object
+                              patch, the shift never touched)
 models/common/lm/             the LM runtime the LM families share: catalog (the built-in models.yaml merged with the
                               user's), family and backend contracts, core_backend (the "core" LM backend: core's
                               text-encoder loader, LoRA loader and generate; the prompt tokenized here, with the
@@ -115,8 +118,12 @@ models/wan_vae/               "Wan 2.1" in the vae family (VAE Loader): core's V
                               into its channels (upscale 2x) switched to a subclass whose decodes unpack it (no cache:
                               core owns the VAE)
 models/z_image/               "Z-Image" in the dype family (core's ZImage config only): adapter (values, the embedder of one
-                              call), dype/ (the Z-Image rotary embedder, derived from ComfyUI-DyPE, Apache-2.0, LICENSE +
+                              step), dype/ (the Z-Image rotary embedder, derived from ComfyUI-DyPE, Apache-2.0, LICENSE +
                               NOTICE)
+models/qwen_image/            "Qwen-Image" in the dype family (core's QwenImage config only; 2.1 is not): adapter (values,
+                              the InstantX ControlNet's own embedder, the embedder of one step), dype/ (the Qwen-Image
+                              rotary embedder: each axis's scale from the latent, derived from ComfyUI-DyPE, Apache-2.0,
+                              LICENSE + NOTICE)
 models/wan_latent_upscale/    "Wan 2.1 2x" in the latent_upscale family (Latent Upscale): arch/ (vendored, MIT), loader (the
                               file the node picks from core's latent_upscale_models folder, single slot keyed by path, in
                               release_pack_models; nothing downloaded), inference
@@ -146,16 +153,19 @@ libs/sage_attention.py        Patch Sage Attention: SageAttention kernels as cor
                               kernel table from the official code, resolve + one test call, core's layouts, the calls
                               that run the original attention, nan_guard, the per-run counts); the node hangs it on a
                               model clone with ON_PRE_RUN / ON_CLEANUP callbacks
-libs/sampling.py              ksampler: one sampler run as core's common_ksampler (Detailer, ZiT Dual Sampler)
-libs/dype/                    DyPE's 1-D rotary frequency tables (vision_yarn, yarn, ntk), float64 as core's rope; derived
-                              from ComfyUI-DyPE, Apache-2.0, LICENSE + NOTICE
+libs/sampling.py              ksampler: one sampler run as core's common_ksampler (Detailer, Dual Sampler)
+libs/dype/                    DyPE's 1-D rotary frequency tables (vision_yarn, yarn, ntk; the decaying attention scale),
+                              float64 as core's rope, and embed.py (core's EmbedND layout with the ntk / pi / base tables,
+                              which each model's embedder subclasses); derived from ComfyUI-DyPE, Apache-2.0, LICENSE +
+                              NOTICE
 libs/detail_boost.py          Detail Boost: the sigma a model call is told (each mode's lowered sigma, where the call
                               sits in the run's schedule, the step range, the weight blend); the node hangs it on a
                               model clone as a PREDICT_NOISE wrapper
 web/js/preflight.js           PreFlight Outcome's record list: GET /bcnodes/preflight/records on creation / load, the
                               bcnodes.preflight.records event after Report logs; a saved value never rewritten
-web/js/edited_fields.js       a config node's hidden `edited` widget, fields marked on a user change and greyed until then
-                              (LM Config in lm.js, DyPE Config in dype.js)
+web/js/edited_fields.js       a config node's hidden `edited` widget, fields marked on a user change and greyed until then,
+                              the un-edited fields shown a set of automatic values (LM Config in lm.js, DyPE Config in
+                              dype.js: the selected model's)
 web/js/grow_inputs.js         growing input slots (<prefix>1, <prefix>2, ...: one empty after the last linked one):
                               Join Image Lists, Claude
 web/js/claude.js              Claude's image slots and its API key setting (a field of its own, posted to the

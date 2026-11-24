@@ -75,6 +75,13 @@ def vision_yarn(dim, theta, base_len, linear_scale, ntk_scale, k_t, device):
                   base_len, k_t, device)
 
 
+def attention_scale(coefficient, scale, t, start_sigma, exponent):
+    """DyPE's decaying attention scale 1 + coefficient ln(scale) t_norm^exponent: t_norm is 1 while t is above
+    start_sigma, t / start_sigma below it, so the scale falls from its full value to 1 at t 0."""
+    t_norm = 1.0 if t > start_sigma else t / start_sigma
+    return 1.0 + coefficient * math.log(scale) * t_norm ** exponent
+
+
 def yarn(dim, theta, base_len, max_len, k_t, device):
     """(table, attention scale) of YaRN stretching `base_len` positions to `max_len`, the ramps raised to k_t:
     the scale is 1 + 0.1 ln(s) / sqrt(s) for the stretch s = max_len / base_len (1 when s is 1 or less)."""

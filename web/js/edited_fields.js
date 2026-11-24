@@ -70,6 +70,24 @@ function markEdited(node, name, fields) {
 	if (!names.includes(name)) setEdited(node, [...names, name], fields);
 }
 
+// Un-edited fields take `values` ({field: value}: a config node's automatic values); a field `values` has no entry
+// for keeps its value. Set from code, so the field callbacks (which mark a field edited) are not called. A number
+// outside the widget's range is shown at the nearest end: ComfyUI refuses a prompt with a widget value out of range,
+// even on a field the backend leaves out (it still applies the automatic value).
+export function showValues(node, fields, values) {
+	const edited = editedNames(node);
+	for (const name of fields) {
+		const w = widget(node, name);
+		if (!w || edited.includes(name) || !(name in values)) continue;
+		const value = values[name];
+		if (w.type === "combo") w.value = String(value);
+		else if (typeof value === "number") w.value = Math.min(Math.max(value, w.options?.min ?? -Infinity), w.options?.max ?? Infinity);
+		else w.value = value;
+		see(w);
+	}
+	node.setDirtyCanvas?.(true, false);
+}
+
 // Node canvas: an un-edited field is drawn at the disabled look's alpha but keeps taking input (a
 // disabled widget takes none and hides its value). The Vue renderer never calls drawWidget for
 // these widget types; it draws its own components.

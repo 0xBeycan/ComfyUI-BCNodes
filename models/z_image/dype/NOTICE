@@ -9,7 +9,8 @@ DyPEBasePosEmbed) at commit 266405844738da9f16e8a072482320168a17c494 (2026-10-24
 ComfyUI-DyPE implements DyPE, Dynamic Position Extrapolation, by Noam Issachar, Guy Yariv and
 co-authors (https://github.com/guyyariv/DyPE).
 
-Changes made in ComfyUI-BCNodes (embedder.py):
+Changes made in ComfyUI-BCNodes (embedder.py, with the parts every model shares in
+libs/dype/embed.py):
 - Every frequency table is computed in float64 on a device that supports it (the CPU otherwise)
   and the rotations are returned in float32, as ComfyUI core's rope; the original computed them in
   bfloat16 on CUDA and float32 elsewhere.
@@ -21,8 +22,8 @@ Changes made in ComfyUI-BCNodes (embedder.py):
   leaves them as core places them.
 - The shift override of the original installer (src/patch_utils.py, a model_sampling replaced by a
   resolution-dependent ModelSamplingFlux) is not ported: the model's own shift is kept.
-- The embedder is built for one model call, with that call's scale, timestep and settings fixed,
-  and set on the model only for the duration of the call (models/common/dype.py); the original set
-  state on one embedder installed as an object patch.
-- The image scale is read from the latent of each model call (its longer side in pixels over
+- The embedder is built for one sampling step, with that step's scale, timestep and settings
+  fixed, and set on the model only for the duration of the step (models/common/dype.py); the
+  original set state on one embedder installed as an object patch.
+- The image scale is read from the latent of each sampling step (its longer side in pixels over
   base_resolution) in place of the width and height widgets of the original node.

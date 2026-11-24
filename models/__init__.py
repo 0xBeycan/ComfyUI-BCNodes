@@ -12,3 +12,4 @@ from . import qwen_lm  # noqa: F401  (registers the Qwen LM family; its common/l
 from . import wan_vae  # noqa: F401  (registers Wan 2.1 in the VAE family)
 from . import wan_latent_upscale  # noqa: F401  (registers Wan 2.1 2x in the latent upscale family)
 from . import z_image  # noqa: F401  (registers Z-Image in the dype family)
+from . import qwen_image  # noqa: F401  (registers Qwen-Image in the dype family)

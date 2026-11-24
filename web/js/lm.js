@@ -1,6 +1,6 @@
 import { app } from "../../../scripts/app.js";
 import { callJson } from "./bcnodes_api.js";
-import { after, afterChange, editedNames, installEditedFields, see, setEdited, widget } from "./edited_fields.js";
+import { after, afterChange, installEditedFields, see, setEdited, showValues, widget } from "./edited_fields.js";
 
 // LM nodes (Qwen LM, and any later family node), LM Loader and LM Config — the frontend half of nodes/lm.py.
 // The data comes from GET /bcnodes/lm/catalog, read once (again after a node-definition refresh).
@@ -199,21 +199,8 @@ function refreshDefaults(node, cat) {
 	if (!model) return;
 	const mode = model.thinking && widget(lm, "thinking")?.value ? "thinking_on" : "thinking_off";
 	const defaults = model.defaults?.[mode];
-	if (!defaults) return;
-	const edited = editedNames(node);
-	for (const name of FIELDS) {
-		const w = widget(node, name);
-		if (!w || edited.includes(name) || !(name in defaults)) continue;
-		const value = defaults[name];
-		// A number outside the widget's range (a user models.yaml may give temperature 0) is shown at
-		// the nearest end: ComfyUI refuses a prompt with a widget value out of range, even on a field
-		// the backend leaves out (it still applies the model's own default).
-		if (w.type === "combo") w.value = String(value);
-		else if (typeof value === "number") w.value = Math.min(Math.max(value, w.options?.min ?? -Infinity), w.options?.max ?? Infinity);
-		else w.value = value;
-		see(w);
-	}
-	node.setDirtyCanvas?.(true, false);
+	// A number outside the widget's range (a user models.yaml may give temperature 0) is shown at the nearest end.
+	if (defaults) showValues(node, FIELDS, defaults);
 }
 
 function resetToDefaults(node) {

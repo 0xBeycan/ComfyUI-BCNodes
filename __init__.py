@@ -41,9 +41,9 @@ Nodes:
     BC_PatchSageAttention        MODEL -> MODEL whose attention runs one SageAttention kernel, per model
     BC_DetailBoost               MODEL -> MODEL told a lower sigma in a step range: more fine detail
     BC_QwenImageShift            MODEL -> MODEL with the official Qwen-Image-2512 shift (per latent size), replaces ModelSamplingAuraFlow
-    BC_DyPEPatcher               MODEL -> MODEL with DyPE on its rotary positions (Z-Image), image size from the latent, shift kept
-    BC_DyPEConfig                DyPE Patcher's / ZiT Dual Sampler's automatic DyPE values, only the edited fields
-    BC_ZiTDualSampler            Z-Image Turbo two-pass hires fix: pass 1, latent / pixel upscale blend, pass 2 with DyPE
+    BC_DyPEPatcher               MODEL -> MODEL with DyPE on its rotary positions (Z-Image, Qwen-Image), image size from the latent, shift kept
+    BC_DyPEConfig                DyPE Patcher's / Dual Sampler's automatic DyPE values for one model, only the edited fields
+    BC_DualSampler               two-pass hires fix, any model: pass 1, latent / pixel upscale blend, pass 2 with DyPE
     BC_AnythingEverywhere        feeds unconnected inputs of a type at prompt time
     BC_FastGroupsBypasser        one bypass toggle per group
     BC_CondPipePack              positive / negative / cn_positive / cn_negative -> one BC_COND_PIPE link
@@ -88,7 +88,7 @@ from .nodes import (
     any_switch, birefnet, caption_audit, claude, cond_pipe, depth_anything, detail_boost, detailer, downloader, dype, everywhere, frequency_merge,
     image_comparer, image_quality_gate, image_scale, latent_upscale, lists, lm, logic, lora_key_fix, mask, math_expression, postfx,
     power_lora_loader, preflight, prompt_list, qwen_image_shift, sage_attention, save_image, save_image_with_caption, seed, seedvr2,
-    select_switch, show_text, skin_texture, social_media_export, vae_loader, zit_dual_sampler,
+    select_switch, show_text, skin_texture, social_media_export, vae_loader, dual_sampler,
 )
 from .nodes.common import register_link_stamp
 from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's routes and, when on, its sampler)
@@ -97,7 +97,7 @@ NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
                 lm, claude, image_comparer, power_lora_loader, lora_key_fix, vae_loader, latent_upscale, sage_attention, detail_boost, qwen_image_shift, dype,
-                zit_dual_sampler, everywhere,
+                dual_sampler, everywhere,
                 cond_pipe, seedvr2, postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture,
                 frequency_merge, detailer, preflight):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)
