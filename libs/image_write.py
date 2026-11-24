@@ -1,6 +1,7 @@
 """Image file writing for Save Image: the format list (the AVIF and JXL Pillow plugins join it
 when installed), the prompt / workflow metadata (PNG text chunks for PNG; EXIF `Make` /
-`ImageDescription` for WebP, AVIF, JXL, JPEG and JPEG 2000) and write_image, which turns the
+`ImageDescription` for WebP, AVIF, JXL, JPEG and TIFF; Pillow's JPEG 2000, GIF and BMP writers
+take neither) and write_image, which turns the
 quality into each format's encoder options. PIL is imported only inside png_info; a plugin
 module is imported only when a file of its type is written.
 """
@@ -79,6 +80,8 @@ def write_image(path, img, prompt, save_metadata, extra_pnginfo, quality):
         kwargs["quality"] = quality
         kwargs["optimize"] = OPTIMIZE
     elif ext == ".tiff":
+        if save_metadata:
+            kwargs["exif"] = exif_bytes(img, prompt, extra_pnginfo)
         kwargs["optimize"] = OPTIMIZE
     elif ext in (".png", ".gif"):
         if save_metadata:

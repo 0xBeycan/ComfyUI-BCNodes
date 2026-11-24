@@ -6,7 +6,8 @@ Saves an image batch under ComfyUI/output with folder and file names built
 from prompt widget values (`sampler_name`, `13.cfg`, `ckpt_path`, `%F`,
 `'fixed'`, `/subfolder`), a per-folder counter, an optional job JSON and the
 prompt + workflow embedded per format (PNG text chunks; EXIF `Make` /
-`ImageDescription` for WebP, AVIF, JXL, JPEG, JPEG 2000). With
+`ImageDescription` for WebP, AVIF, JXL, JPEG, TIFF; none for JPEG 2000,
+GIF, BMP). With
 `image_preview` on the images are listed in the queue / history gallery but
 never drawn under the node (web/js/save_image.js), so the node keeps
 whatever size it was given.
@@ -40,7 +41,7 @@ class SaveImage:
                 "save_job_data": (JOB_DATA_OPTIONS, {"default": "disabled", "tooltip": "Append an entry per job to jobs.json in the subfolder: prompt texts, basic data, sampler settings, loaded models"}),
                 "job_data_per_image": ("BOOLEAN", {"default": False, "tooltip": "One <image>.json per image instead of jobs.json"}),
                 "job_custom_text": ("STRING", {"default": "", "multiline": False, "tooltip": "Free text saved with the job data"}),
-                "save_metadata": ("BOOLEAN", {"default": True, "tooltip": "Embed prompt and workflow in the image (PNG text chunks, EXIF for the other formats)"}),
+                "save_metadata": ("BOOLEAN", {"default": True, "tooltip": "Embed prompt and workflow in the image (PNG text chunks; EXIF for WebP / AVIF / JXL / JPEG / TIFF, at most 64 KB in JPEG; none for JPEG 2000 / GIF / BMP)"}),
                 "counter_digits": ("INT", {"default": 4, "min": 0, "max": 8, "step": 1, "display": "slider", "tooltip": (
                     "Digits of the image counter: 3 gives image_001.png. Continues from the highest counter in the subfolder; 0 disables it")}),
                 "counter_position": (COUNTER_POSITIONS, {"default": "last", "tooltip": "image_001.png or 001_image.png"}),
@@ -71,8 +72,10 @@ class SaveImage:
         "`resolution`, strftime formats (`%F` = 2024-05-22, `%H-%M-%S`), `'fixed text'`, and `/sub`, "
         "`./sub` or `../sub` to step into a folder.\n"
         "\n"
-        "Prompt and workflow are embedded in every format except BMP: PNG text chunks, otherwise EXIF "
-        "`Make` (prompt) and `ImageDescription` (workflow). ComfyUI loads PNG and WebP back."
+        "Prompt and workflow are embedded as PNG text chunks, and as EXIF `Make` (prompt) and "
+        "`ImageDescription` (workflow) in WebP, AVIF, JXL, JPEG and TIFF; JPEG 2000, GIF and BMP get none. "
+        "JPEG's EXIF holds at most 64 KB: a larger prompt + workflow stops the save (turn save_metadata off "
+        "or save as PNG / WebP). ComfyUI loads PNG and WebP back."
     )
 
     def save_images(self, images, filename_prefix, filename_keys, foldername_prefix, foldername_keys, delimiter,

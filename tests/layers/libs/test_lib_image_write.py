@@ -1,6 +1,9 @@
 """libs/image_write.py write_image's PNG compression level: quality 0-60 gives level 0-6 (quality / 10),
 anything above gives 6; quality 0 is DEFAULT_QUALITY (90), so 6; Save Image With Caption's
-PNG_QUALITY (40) stays level 4."""
+PNG_QUALITY (40) stays level 4. A TIFF written with save_metadata reads back with the prompt in EXIF
+`Make` and the workflow in `ImageDescription`, a workflow larger than JPEG's 64 KB too."""
+
+import json
 
 import pytest
 
@@ -30,3 +33,15 @@ def test_png_level_follows_quality_up_to_six(image_write, quality, level):
 
 def test_caption_saves_keep_level_four(bcnodes, image_write):
     assert png_level(image_write, bcnodes["pipelines.save_image"].PNG_QUALITY) == 4
+
+
+def test_tiff_keeps_prompt_and_workflow(image_write, tmp_path):
+    from PIL import Image
+
+    prompt = {"1": {"class_type": "KSampler", "inputs": {"seed": 7}}}
+    workflow = {"nodes": [{"id": i, "widgets_values": ["word " * 200]} for i in range(100)]}  # ~100 KB
+    path = tmp_path / "out.tiff"
+    image_write.write_image(str(path), Image.new("RGB", (8, 8), (10, 20, 30)), prompt, True, {"workflow": workflow}, 90)
+    exif = Image.open(path).getexif()
+    assert exif[0x010F] == "Prompt: " + json.dumps(prompt)
+    assert exif[0x010E] == "Workflow: " + json.dumps(workflow)
