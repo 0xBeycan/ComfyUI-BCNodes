@@ -131,17 +131,19 @@ def _comfyui_free(clear):
 
 
 def release_pack_models():
-    """This pack's full-clear hook: drops its model slots (BiRefNet, Depth Anything V2 and 3, SAM 3) and
-    unloads every registered LM backend (models/common/registry.py LM_BACKEND: the LM nodes' model file
-    and LoRA clone); {model name: bytes of its weights}."""
+    """This pack's full-clear hook: drops its model slots (BiRefNet, Depth Anything V2 and 3, SAM 3, the Wan
+    2.1 latent upscaler) and unloads every registered LM backend (models/common/registry.py LM_BACKEND: the
+    LM nodes' model file and LoRA clone); {model name: bytes of its weights}."""
     from ...models.birefnet import loader as birefnet
     from ...models.common import registry
     from ...models.common.registry import LM_BACKEND
     from ...models.depth_anything_3 import loader as depth_anything_3
     from ...models.depth_anything_v2 import loader as depth_anything_v2
     from ...models.sam3 import loader as sam3
+    from ...models.wan_latent_upscale import loader as wan_latent_upscale
 
-    freed = {**birefnet.unload(), **depth_anything_v2.unload(), **depth_anything_3.unload(), **sam3.unload()}
+    freed = {**birefnet.unload(), **depth_anything_v2.unload(), **depth_anything_3.unload(), **sam3.unload(),
+             **wan_latent_upscale.unload()}
     for name in registry.names(LM_BACKEND):
         freed.update(registry.get(LM_BACKEND, name).unload())
     return freed

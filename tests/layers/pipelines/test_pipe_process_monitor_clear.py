@@ -185,18 +185,21 @@ def linear(n):
 def test_release_pack_models_drops_every_slot_and_counts_its_bytes(cl, bcnodes):
     birefnet, dav2 = bcnodes["models.birefnet.loader"], bcnodes["models.depth_anything_v2.loader"]
     da3, sam3 = bcnodes["models.depth_anything_3.loader"], bcnodes["models.sam3.loader"]
-    modules = [linear(n) for n in (100, 200, 300, 400, 500)]
+    upscaler = bcnodes["models.wan_latent_upscale.loader"]
+    modules = [linear(n) for n in (100, 200, 300, 400, 500, 600)]
     refs = [weakref.ref(m.weight) for m in modules]
     birefnet._Loaded.name, birefnet._Loaded.model = "BiRefNet-general", modules[0]
     dav2._Loaded.model = modules[1]
     da3._Loaded.name, da3._Loaded.patcher = "v3-small", types.SimpleNamespace(model=modules[2])  # a ModelPatcher
     sam3._Sam3.name, sam3._Sam3.model = "sam3.safetensors", types.SimpleNamespace(model=modules[3])
     sam3._Sam3.clip = types.SimpleNamespace(cond_stage_model=modules[4])  # comfy.sd.CLIP
+    upscaler._Loaded.path, upscaler._Loaded.model = "/models/latent_upscale_models/up.safetensors", modules[5]
     del modules
     assert cl.release_pack_models() == {"BiRefNet-general": 400, "Depth Anything V2 Small": 800, "v3-small": 1200,
-                                        "sam3.safetensors": 1600 + 2000}
+                                        "sam3.safetensors": 1600 + 2000, "up.safetensors": 2400}
     assert all(r() is None for r in refs)  # nothing else held them: freed at once
-    assert (birefnet._Loaded.model, dav2._Loaded.model, da3._Loaded.patcher, sam3._Sam3.model, sam3._Sam3.clip) == (None,) * 5
+    assert (birefnet._Loaded.model, dav2._Loaded.model, da3._Loaded.patcher, sam3._Sam3.model, sam3._Sam3.clip,
+            upscaler._Loaded.model) == (None,) * 6
     assert cl.release_pack_models() == {}  # idempotent
 
 

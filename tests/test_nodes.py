@@ -218,6 +218,10 @@ def main():
     check("VAELoader INPUT_TYPES with no VAE on disk: the VAE family's models, Wan 2.1 first",
           lambda: (vl_inputs["model"][0] == ["Wan 2.1"] and vl_inputs["model"][1]["default"] == "Wan 2.1"
                    and vl_inputs["vae_name"][0] == []) or _fail())
+    lu_inputs = m["latent_upscale"].LatentUpscale.INPUT_TYPES()["required"]
+    check("LatentUpscale INPUT_TYPES with no weights file on disk: the latent upscale family's models, Wan 2.1 2x first",
+          lambda: (lu_inputs["model"][0] == ["Wan 2.1 2x"] and lu_inputs["model"][1]["default"] == "Wan 2.1 2x"
+                   and lu_inputs["upscale_model_name"][0] == []) or _fail())
 
     # Patch Sage Attention: a stand-in patcher; ComfyUI's attention module (0.3.60+, wrap_attn) and
     # patcher_extension as stubs; sageattention reported missing whatever this Python has installed.

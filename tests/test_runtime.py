@@ -761,6 +761,7 @@ async def main():
 
     await lora_key_fix()
     await vae_loader()
+    await latent_upscale()
     await sage_attention()
     await detail_boost()
     await qwen_image_shift()
@@ -1091,6 +1092,89 @@ async def vae_loader():
     errors = [data.get("exception_message", "") for event, data in refused_server.events if event == "execution_error"]
     check("VAELoader: another model's file is refused naming it",
           refused is None and any(e.startswith("tiny_taesd.safetensors is not a Wan 2.1 VAE") for e in errors), f"{errors}")
+
+
+async def latent_upscale():
+    """Latent Upscale ("Wan 2.1 2x") through ComfyUI itself, on a seeded random LatentModel3d saved as a file the
+    node picks from a temp latent_upscale_models folder. A video-shaped Wan latent (1, 16, 2, 6, 8) and Empty SD3
+    Latent Image's (1, 16, 6, 8) come out doubled on height and width, equal to the network run directly, with
+    the latent's other fields kept."""
+    import importlib
+
+    import folder_paths
+    import torch
+    from safetensors.torch import save_file
+
+    loader = pack_module(".models.wan_latent_upscale.loader")
+    arch = importlib.import_module(loader.__name__.rsplit(".", 1)[0] + ".arch")  # imported on the first load
+    root = tempfile.mkdtemp(prefix="bcnodes_latent_upscale_")
+    folder_paths.add_model_folder_path("latent_upscale_models", root)
+    torch.manual_seed(0)
+    net = arch.LatentModel3d().eval()
+    save_file({key: t.contiguous() for key, t in net.state_dict().items()}, os.path.join(root, "tiny_upscaler.safetensors"))
+    kept = {}
+
+    class VideoLatent:
+        """A test-only node: a seeded noise Wan latent, 2 frames of 6 x 8."""
+        RETURN_TYPES = ("LATENT",)
+        FUNCTION = "make"
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {}}
+
+        def make(self):
+            return ({"samples": torch.randn(1, 16, 2, 6, 8, generator=torch.Generator().manual_seed(2)), "batch_index": [0]},)
+
+    class KeepLatent:
+        """A test-only output node: keeps the latent dict it gets under `key`."""
+        RETURN_TYPES = ()
+        FUNCTION = "keep"
+        OUTPUT_NODE = True
+        CATEGORY = "testing"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {"value": ("LATENT",), "key": ("STRING", {"default": ""})}}
+
+        def keep(self, value, key):
+            kept[key] = dict(value)
+            return {}
+
+    test_nodes = {"BCTest_VideoLatent": VideoLatent, "BCTest_KeepLatentDict": KeepLatent}
+    nodes.NODE_CLASS_MAPPINGS.update(test_nodes)
+    try:
+        out, _ = await run({
+            "1": N("BCTest_VideoLatent"),
+            "2": N("BC_LatentUpscale", samples=["1", 0], model="Wan 2.1 2x", upscale_model_name="tiny_upscaler.safetensors"),
+            "3": N("BCTest_KeepLatentDict", value=["2", 0], key="video"), "4": N("BCTest_KeepLatentDict", value=["1", 0], key="video_in"),
+            "5": N("EmptySD3LatentImage", width=64, height=48, batch_size=1),
+            "6": N("BC_LatentUpscale", samples=["5", 0], model="Wan 2.1 2x", upscale_model_name="tiny_upscaler.safetensors"),
+            "7": N("BCTest_KeepLatentDict", value=["6", 0], key="image"), "8": N("BCTest_KeepLatentDict", value=["5", 0], key="image_in"),
+        }, "latent-upscale")
+    finally:
+        for key in test_nodes:
+            del nodes.NODE_CLASS_MAPPINGS[key]
+        loader.unload()
+
+    check("LatentUpscale: the prompt validates and runs", out is not None)
+    if out is None:
+        return
+    with torch.no_grad():
+        video, image = kept["video"]["samples"], kept["image"]["samples"]
+        video_ref = net(kept["video_in"]["samples"])
+        image_ref = net(kept["image_in"]["samples"].unsqueeze(2)).squeeze(2)
+        # float32 rounding only: the executor's CPU convolutions differ from this call's in the last bits (4e-6 seen)
+        check("LatentUpscale: a video latent comes out doubled, the network's own output",
+              video.shape == (1, 16, 2, 12, 16) and torch.allclose(video, video_ref, rtol=0, atol=1e-5),
+              f"{video.shape} {video.dtype} {video_ref.dtype} max|diff| {(video - video_ref).abs().max()}")
+        check("LatentUpscale: an image latent (4D) comes out doubled, the network on its single frame",
+              image.shape == (1, 16, 12, 16) and torch.allclose(image, image_ref, rtol=0, atol=1e-5),
+              f"{image.shape} {image.dtype} max|diff| {(image - image_ref).abs().max()}")
+    check("LatentUpscale: the latent's other fields are kept",
+          kept["video"]["batch_index"] == [0] and {k for k in kept["image"] if k != "samples"} == {k for k in kept["image_in"] if k != "samples"},
+          f"{set(kept['image'])} {set(kept['image_in'])}")
 
 
 def tiny_wan(name):

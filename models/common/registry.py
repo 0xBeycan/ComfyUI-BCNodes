@@ -21,6 +21,10 @@ LM_BACKEND = "lm_backend"
 # model's special files need done to it; note says what was done ("" for the model's plain VAE).
 # A file that is not a VAE of the entry's model raises ValueError naming it.
 VAE = "vae"
+# A latent upscale entry is upscale(samples, path) -> samples: a latent tensor of the entry's model, larger on
+# height and width by the weights file at path, in the input's dtype on ComfyUI's intermediate device. A file
+# whose weights do not fit the entry's model raises ValueError naming it.
+LATENT_UPSCALE = "latent_upscale"
 
 _FAMILIES = {}
 
