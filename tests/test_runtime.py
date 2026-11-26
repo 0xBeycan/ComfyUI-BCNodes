@@ -1895,7 +1895,7 @@ def ksampler_node(model, latent, seed, denoise, positive=("2", 0), negative=("2"
 
 
 def dual_sampler_node(blend, dype="auto", positive=("2", 0), negative=("2", 0), **kw):
-    return N("BC_DualSampler", model_1=["1", 0], model_2=["1", 0], positive=list(positive), negative=list(negative),
+    return N("BC_DualSampler", model=["1", 0], model_2=["1", 0], positive=list(positive), negative=list(negative),
              latent_image=["4", 0], vae=["3", 0], seed=3, steps_1=2, cfg_1=1.0, sampler_1="dpmpp_sde", scheduler_1="beta",
              steps_2=2, cfg_2=1.0, sampler_2="dpmpp_sde", scheduler_2="beta", denoise_2=0.45, upscale_method="bislerp",
              scale_by=2.0, blend_factor=blend, pixel_upscale_method="lanczos", second_seed="increment", dype=dype, **kw)
@@ -2061,6 +2061,13 @@ async def dype_model(name, patcher, vae, attribute):
         check(f"Dual Sampler {name}: the second latent is 2048 x 128 px (x2, a multiple of 16), in the model's layout",
               latent is not None and tuple(latent.shape[-2:]) == (16, 256) and latent.ndim == (5 if vae.frames else 4),
               f"{None if latent is None else tuple(latent.shape)}")
+        kept.clear()
+        one_model = dual(0.5)
+        del one_model["5"]["inputs"]["model_2"]
+        out, _ = await run(one_model, f"dype-{name}-dual-one-model")
+        check(f"Dual Sampler {name}: model_2 not linked, model runs both passes (bit-identical to model_2 = model)",
+              out is not None and set(kept) == set(got) == {"first", "second", "latent"} and all(
+                  torch.equal(kept[k], got[k]) for k in got), f"{sorted(kept)}")
         kept.clear()
         out, _ = await run(dual(0.5, "disable"), f"dype-{name}-dual-off")
         check(f"Dual Sampler {name}: DyPE was on in the second pass (dype disable gives another second latent)",

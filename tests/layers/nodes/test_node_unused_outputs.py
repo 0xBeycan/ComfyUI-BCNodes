@@ -480,7 +480,7 @@ def test_dual_sampler_decodes_only_the_linked_images(bcnodes, common, monkeypatc
     monkeypatch.setattr(sampling, "ksampler", lambda model, seed, *a: {**a[-2], "samples": a[-2]["samples"] + 1})
     monkeypatch.setattr(sys.modules["comfy.utils"], "common_upscale",
                         lambda s, w, h, method, crop: torch.zeros(s.shape[0], s.shape[1], h, w), raising=False)
-    widgets = dict(model_1="m1", model_2="m2", positive=[], negative=[], latent_image={"samples": torch.zeros(1, 16, 4, 6)},
+    widgets = dict(model="m1", model_2="m2", positive=[], negative=[], latent_image={"samples": torch.zeros(1, 16, 4, 6)},
                    seed=0, steps_1=1, cfg_1=1.0, sampler_1="euler", scheduler_1="simple", steps_2=1, cfg_2=1.0,
                    sampler_2="euler", scheduler_2="simple", denoise_2=0.0, upscale_method="bislerp", scale_by=2.0,
                    blend_factor=0.0, pixel_upscale_method="lanczos", second_seed="fixed", dype="disable")

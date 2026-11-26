@@ -9,7 +9,7 @@
   fields leave it, typed; an unknown edited name is an error naming the fields;
 - DyPE Patcher: no model -> None; otherwise models/common/dype.patch with the mode, start sigma and config;
 - Dual Sampler: the pipeline gets the two passes (the first at denoise 1.0) and the settings as given, no DyPE Config
-  as None.
+  as None; model_2 as the second pass's model, or model when model_2 is not linked.
 """
 
 import sys
@@ -93,7 +93,7 @@ def test_dual_sampler_widgets(bcnodes, samplers):
     cls = bcnodes["dual_sampler"].DualSampler
     req = cls.INPUT_TYPES()
     assert list(req["required"]) == [
-        "model_1", "model_2", "positive", "negative", "latent_image", "vae", "seed",
+        "model", "positive", "negative", "latent_image", "vae", "seed",
         "steps_1", "cfg_1", "sampler_1", "scheduler_1", "steps_2", "cfg_2", "sampler_2", "scheduler_2", "denoise_2",
         "upscale_method", "scale_by", "blend_factor", "pixel_upscale_method", "second_seed", "dype"]
     defaults = {name: spec[1]["default"] for name, spec in req["required"].items() if len(spec) > 1 and "default" in spec[1]}
@@ -103,19 +103,21 @@ def test_dual_sampler_widgets(bcnodes, samplers):
                         "second_seed": "increment", "dype": "auto"}
     assert req["required"]["upscale_method"][0] == ["nearest-exact", "bilinear", "area", "bicubic", "bislerp"]
     assert req["required"]["pixel_upscale_method"][0] == ["lanczos", "bicubic"]
-    assert list(req["optional"]) == ["dype_config"] and req["hidden"] == {"prompt_graph": "PROMPT", "unique_id": "UNIQUE_ID"}
+    assert list(req["optional"]) == ["model_2", "dype_config"] and req["optional"]["model_2"][0] == "MODEL"
+    assert req["hidden"] == {"prompt_graph": "PROMPT", "unique_id": "UNIQUE_ID"}
     assert (cls.RETURN_TYPES, cls.RETURN_NAMES) == (("IMAGE", "IMAGE", "LATENT"), ("first_image", "second_image", "latent"))
 
 
-def test_dual_sampler_hands_the_settings_on(bcnodes, monkeypatch):
+@pytest.mark.parametrize("model_2, second", [({"model_2": "m2"}, "m2"), ({}, "m1")])
+def test_dual_sampler_hands_the_settings_on(bcnodes, monkeypatch, model_2, second):
     flow = bcnodes["pipelines.dual_sampler"]
     seen = []
     monkeypatch.setattr(flow, "run", lambda *a, **kw: seen.append((a, kw)) or ("first", "second", "latent"))
     out = bcnodes["dual_sampler"].DualSampler().sample(
-        "m1", "m2", "pos", "neg", "lat", "vae", 3, 9, 1.0, "dpmpp_sde", "beta", 7, 2.0, "euler", "simple", 0.4, "bislerp",
-        1.5, 0.25, "bicubic", "fixed", "enable")
+        "m1", "pos", "neg", "lat", "vae", 3, 9, 1.0, "dpmpp_sde", "beta", 7, 2.0, "euler", "simple", 0.4, "bislerp",
+        1.5, 0.25, "bicubic", "fixed", "enable", **model_2)
     assert out == ("first", "second", "latent")
     (args, kw), = seen
-    assert args[:6] == ("m1", "m2", "pos", "neg", "lat", "vae") and kw == {"want_first": True, "want_second": True}
+    assert args[:6] == ("m1", second, "pos", "neg", "lat", "vae") and kw == {"want_first": True, "want_second": True}
     assert args[6] == flow.Settings(3, flow.Pass(9, 1.0, "dpmpp_sde", "beta", 1.0), flow.Pass(7, 2.0, "euler", "simple", 0.4),
                                     "bislerp", 1.5, 0.25, "bicubic", "fixed", "enable", None)

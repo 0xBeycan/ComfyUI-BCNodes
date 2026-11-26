@@ -1,11 +1,11 @@
 """BC_DualSampler (Dual Sampler)
 
-Two sampling passes in one node, for any model: a first pass, the latent upscaled (core's latent upscale, a
-decode -> resize -> encode, or a blend of the two), and a second pass at a denoise with DyPE on its model only (the
-model's own DyPE: Z-Image, Qwen-Image; dype disable for another model), its start sigma the sigma of the second
-pass's first model call (the run's schedule, after a per-run shift such as Qwen Image Shift's dynamic one). Outputs
-both decoded images and the second pass's latent. The defaults are Z-Image Turbo's. The flow is
-pipelines/dual_sampler.py; DyPE is models/common/dype.py, as DyPE Patcher's.
+Two sampling passes in one node, for any model: a first pass with `model`, the latent upscaled (core's latent upscale,
+a decode -> resize -> encode, or a blend of the two), and a second pass at a denoise with `model_2` (`model` when it is
+not linked) and DyPE on that pass only (the model's own DyPE: Z-Image, Qwen-Image; dype disable for another model), its
+start sigma the sigma of the second pass's first model call (the run's schedule, after a per-run shift such as Qwen
+Image Shift's dynamic one). Outputs both decoded images and the second pass's latent. The defaults are Z-Image
+Turbo's. The flow is pipelines/dual_sampler.py; DyPE is models/common/dype.py, as DyPE Patcher's.
 """
 
 from .common import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
@@ -36,8 +36,8 @@ class DualSampler:
         sampler_names, schedulers = comfy.samplers.KSampler.SAMPLERS, comfy.samplers.KSampler.SCHEDULERS
         return {
             "required": {
-                "model_1": ("MODEL", {"tooltip": "The first pass's model (e.g. with a ControlNet model patch)."}),
-                "model_2": ("MODEL", {"tooltip": "The second pass's model; DyPE is put on a clone of it for that pass."}),
+                "model": ("MODEL", {"tooltip": "The first pass's model, and the second pass's too when model_2 is not "
+                          "linked."}),
                 "positive": ("CONDITIONING",),
                 "negative": ("CONDITIONING",),
                 "latent_image": ("LATENT", {"tooltip": "The first pass's latent (e.g. an empty latent)."}),
@@ -63,13 +63,17 @@ class DualSampler:
                          "DyPE on the second pass only (DyPE Patcher's modes; Z-Image and Qwen-Image), its start sigma "
                          "the sigma of that pass's first model call (after a shift the model applies per run, such as "
                          "Qwen Image Shift's dynamic one). auto: only for a second latent whose longer side is "
-                         "over the model's auto_threshold (1920 px for both; DyPE Config can set it). disable: model_2 "
-                         "as it is, for any model; any other mode on a model DyPE does not take stops the run before "
-                         "the first pass."}),
+                         "over the model's auto_threshold (1920 px for both; DyPE Config can set it). disable: the "
+                         "second pass's model as it is, for any model; any other mode on a model DyPE does not take "
+                         "stops the run before the first pass."}),
             },
             "optional": {
-                "dype_config": ("BC_DYPE_CONFIG", {"tooltip": "DyPE Config: the automatic DyPE values it changes. Its model "
-                                "must be model_2's kind."}),
+                "model_2": ("MODEL", {"tooltip": "Optional: the second pass's own model (e.g. other LoRAs or "
+                            "patches than model's). Not linked: model runs the second pass too. DyPE is put on a clone "
+                            "of the second pass's model, never on model's first pass."}),
+                "dype_config": ("BC_DYPE_CONFIG", {"tooltip": "DyPE Config: the automatic DyPE values it changes. Its "
+                                "model must be the second pass's model's kind (model_2, or model when model_2 is not "
+                                "linked)."}),
             },
             "hidden": dict(LINK_INPUTS),
         }
@@ -82,24 +86,26 @@ class DualSampler:
     CATEGORY = "BCNodes/sampling"
     SEARCH_ALIASES = ["BCNodes", "dual sampler", "zit dual sampler", "z-image turbo", "qwen-image", "hires fix",
                       "two pass", "ksampler", "dype", "upscale"]
-    DESCRIPTION = ("A two-pass hires fix in one node, for any model: the first pass (denoise 1.0), the latent upscaled "
-                   "by scale_by to a multiple of 16 px (core's latent upscale, a decode -> resize -> encode, or "
-                   "blend_factor of the two), and the second pass at denoise_2 with DyPE on its model only (Z-Image, "
-                   "Qwen-Image; start sigma: that pass's first model call's; dype disable for other models). The same "
-                   "as the core chain KSampler -> Upscale Latent By -> KSampler -> VAE Decode x2 at blend_factor 0. "
-                   "Outputs both images and the second latent. The defaults are Z-Image Turbo's.")
+    DESCRIPTION = ("A two-pass hires fix in one node, for any model: the first pass with model (denoise 1.0), the "
+                   "latent upscaled by scale_by to a multiple of 16 px (core's latent upscale, a decode -> resize -> "
+                   "encode, or blend_factor of the two), and the second pass at denoise_2 with model_2 (model when it "
+                   "is not linked) and DyPE on that pass only (Z-Image, Qwen-Image; start sigma: that pass's first "
+                   "model call's; dype disable for other models). The same as the core chain KSampler -> Upscale "
+                   "Latent By -> KSampler -> VAE Decode x2 at blend_factor 0. Outputs both images and the second "
+                   "latent. The defaults are Z-Image Turbo's.")
 
-    def sample(self, model_1, model_2, positive, negative, latent_image, vae, seed, steps_1, cfg_1, sampler_1,
-               scheduler_1, steps_2, cfg_2, sampler_2, scheduler_2, denoise_2, upscale_method, scale_by, blend_factor,
-               pixel_upscale_method, second_seed, dype, dype_config=None, prompt_graph=None, unique_id=None):
+    def sample(self, model, positive, negative, latent_image, vae, seed, steps_1, cfg_1, sampler_1, scheduler_1,
+               steps_2, cfg_2, sampler_2, scheduler_2, denoise_2, upscale_method, scale_by, blend_factor,
+               pixel_upscale_method, second_seed, dype, model_2=None, dype_config=None, prompt_graph=None,
+               unique_id=None):
         from ..pipelines.dual_sampler import Pass, Settings, run
 
         settings = Settings(seed, Pass(steps_1, cfg_1, sampler_1, scheduler_1, 1.0),
                             Pass(steps_2, cfg_2, sampler_2, scheduler_2, denoise_2), upscale_method, scale_by,
                             blend_factor, pixel_upscale_method, second_seed, dype, dype_config)
         wanted = heavy_wanted(type(self), prompt_graph, unique_id)
-        return drop_unwanted(type(self), run(model_1, model_2, positive, negative, latent_image, vae, settings,
-                                             want_first=wants(wanted, "first_image"),
+        return drop_unwanted(type(self), run(model, model if model_2 is None else model_2, positive, negative,
+                                             latent_image, vae, settings, want_first=wants(wanted, "first_image"),
                                              want_second=wants(wanted, "second_image")), wanted)
 
 
