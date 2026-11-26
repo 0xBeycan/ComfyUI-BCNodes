@@ -17,6 +17,14 @@ the scheduler at that shift; normal and sgm_uniform take their grid's end from t
 karras, exponential, kl_optimal and linear_quadratic give their shift-1 schedule shifted.
 shift_terminal: the wrapper stretches the run's schedule so its last nonzero sigma lands on `terminal`.
 
+A refine pass (dynamic mode): a run whose schedule starts below sigma 1 (denoise below 1, or a later start step)
+on new noise. Neither the denoise nor add_noise reaches the wrapper; core's empty noise (KSamplerAdvanced's
+add_noise off, SamplerCustomAdvanced's DisableNoise) is all zeros, and zero noise adds nothing to the latent, so
+nonzero noise is exactly "new noise added". The later part of a split run (no noise added) is no refine pass, so
+one generation keeps one shift. A refine pass above refine_threshold tokens takes mu at
+refine_threshold + refine_rate x (tokens - refine_threshold) tokens: mu is linear in the tokens, so that is
+mu(threshold) + refine_rate x (mu(tokens) - mu(threshold)), and rate 1 gives the latent's own mu, bit for bit.
+
 The wrapper runs before prepare_sampling, process_conds and sample_sigmas, so everything after it sees
 the new schedule. Core chains wrappers: the model's other wrappers stay; a Qwen Image Shift already on
 the model is replaced (its model_sampling would be overwritten anyway).
@@ -27,6 +35,8 @@ import math
 
 WRAPPER_KEY = "bcnodes_qwen_image_shift"
 PREFIX = "[BCNodes] Qwen Image Shift:"
+REFINE_THRESHOLD = 9600  # tokens: a 1024 x 1536 image upscaled 1.25x
+REFINE_RATE = 0.17       # 2x of 1024 x 1536 (24576 tokens): shift 3.0
 
 
 def flow_sampling(model, shift):
@@ -48,8 +58,8 @@ def flow_sampling(model, shift):
 class Shift:
     """The OUTER_SAMPLE wrapper: (executor, noise, latent_image, sampler, sigmas, denoise_mask, callback,
     disable_pbar, seed, latent_shapes=...), as CFGGuider.outer_sample; `dynamic` holds (multiplier,
-    base_seq_len, max_seq_len, base_shift, max_shift) or None (fixed), `terminal` the terminal sigma or
-    None (off)."""
+    base_seq_len, max_seq_len, base_shift, max_shift, refine_threshold, refine_rate) or None (fixed),
+    `terminal` the terminal sigma or None (off)."""
 
     def __init__(self, sampling, dynamic, terminal):
         self.sampling = sampling
@@ -68,12 +78,20 @@ class Shift:
         sigmas = args[3]
         shift = None
         if self.dynamic is not None:
-            multiplier, base_seq_len, max_seq_len, base_shift, max_shift = self.dynamic
+            multiplier, base_seq_len, max_seq_len, base_shift, max_shift, threshold, rate = self.dynamic
             height, width = kwargs["latent_shapes"][0][-2:]
             tokens = image_seq_len(height, width)
-            m = mu(tokens, base_seq_len, max_seq_len, base_shift, max_shift)
+            refine = float(sigmas[0]) < 1.0 and bool(args[0].any())
+            seq = threshold + rate * (tokens - threshold) if refine and tokens > threshold else tokens
+            m = mu(seq, base_seq_len, max_seq_len, base_shift, max_shift)
             shift = math.exp(m) * multiplier
-            logging.info("%s latent %dx%d, %d tokens, mu %.4f, shift %.4f", PREFIX, width, height, tokens, m, shift)
+            if not refine:
+                state = f"refine: no, tokens {tokens}"
+            elif tokens > threshold:
+                state = f"refine: yes, tokens {tokens}, threshold {threshold}, rate {rate:g}"
+            else:
+                state = f"refine: yes, tokens {tokens} <= threshold {threshold}"
+            logging.info("%s latent %dx%d, %s, mu %.4f, shift %.4f", PREFIX, width, height, state, m, shift)
             sigmas = time_snr_shift(shift, sigmas)
         if self.terminal is not None:
             if float(sigmas[-1]) != 0.0:
@@ -128,6 +146,19 @@ class QwenImageShift:
                 "max_shift": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 100.0, "step": 0.01, "tooltip":
                               "Dynamic mode: mu at max_seq_len tokens (official: 0.9)."}),
             },
+            # Added after the node's release, optional so an API-format prompt saved without them still validates.
+            "optional": {
+                "refine_threshold": ("INT", {"default": REFINE_THRESHOLD, "min": 0, "max": 1000000, "tooltip":
+                                     "Dynamic mode: a refine pass (denoise below 1 on new noise: a hires or "
+                                     "upscaled second pass) on a latent of more tokens than this gets a lower "
+                                     "shift (refine_rate). At or below it, and in a generation from noise, the "
+                                     "latent's own shift. 9600: 1024 x 1536 upscaled 1.25x."}),
+                "refine_rate": ("FLOAT", {"default": REFINE_RATE, "min": -1.0, "max": 2.0, "step": 0.01, "tooltip":
+                                "Dynamic mode, a refine pass above refine_threshold tokens: mu moves this part of "
+                                "the way from refine_threshold's mu to the latent's own. 1: the latent's own "
+                                "shift; 0: the threshold's shift; below 0: lower than the threshold's. 0.17: a 2x "
+                                "pass of 1024 x 1536 gets shift 3.0 (its own: 5.62)."}),
+            },
         }
 
     RETURN_TYPES = ("MODEL",)
@@ -138,11 +169,12 @@ class QwenImageShift:
     DESCRIPTION = ("The flow shift of the official Qwen-Image-2512 scheduler, in place of ModelSamplingAuraFlow, for "
                    "the stock KSampler and schedulers. dynamic: the shift follows each sampler run's latent size "
                    "(e^mu, mu on the line base_shift @ base_seq_len -> max_shift @ max_seq_len tokens), so one model "
-                   "gives each pass its own shift. fixed: `shift` for every run, as ModelSamplingAuraFlow. "
-                   "shift_terminal stretches each run's schedule to end at `terminal` before 0.")
+                   "gives each pass its own shift; a refine pass above refine_threshold tokens moves only "
+                   "refine_rate of the way from the threshold's mu to its own. fixed: `shift` for every run, as "
+                   "ModelSamplingAuraFlow. shift_terminal stretches each run's schedule to end at `terminal` before 0.")
 
     def patch(self, model, mode, shift, multiplier, shift_terminal, terminal, base_seq_len, max_seq_len,
-              base_shift, max_shift):
+              base_shift, max_shift, refine_threshold=REFINE_THRESHOLD, refine_rate=REFINE_RATE):
         # as the pack's other MODEL nodes: nothing to patch
         if model is None:
             return (model,)
@@ -151,7 +183,7 @@ class QwenImageShift:
             if max_seq_len == base_seq_len:
                 raise ValueError(f"{PREFIX} max_seq_len ({max_seq_len}) must differ from base_seq_len "
                                  f"({base_seq_len}): the two points of the shift line.")
-            dynamic = (multiplier, base_seq_len, max_seq_len, base_shift, max_shift)
+            dynamic = (multiplier, base_seq_len, max_seq_len, base_shift, max_shift, refine_threshold, refine_rate)
         from comfy.patcher_extension import WrappersMP
 
         patched = model.clone()

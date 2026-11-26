@@ -1541,7 +1541,10 @@ async def qwen_image_shift():
     model in two KSamplers (512x384 at 8 steps, then LatentUpscaleBy 1.25 at 4 steps, denoise 0.5):
     each run's schedule is diffusers' for its size (pass 2: the tail of its 8-step schedule), the model is
     called at it, model_sampling has the run's shift during the run and 1 after, one console line per run.
-    The references are diffusers' own (tests/_diffusers_sigmas.py)."""
+    The references are diffusers' own (tests/_diffusers_sigmas.py). Refine passes, refine_threshold 500 so the
+    512x384 latent (768 tokens) is above it: a KSampler at denoise 1 keeps diffusers' schedule, the next one at
+    denoise 0.5 (new noise) has mu at 500 + 0.17 x (768 - 500) tokens; a KSamplerAdvanced split at step 4 of 8
+    (add_noise off in the later part) keeps the latent's own shift in both parts."""
     import comfy.samplers
     import torch
     from comfy.patcher_extension import WrappersMP
@@ -1660,6 +1663,28 @@ async def qwen_image_shift():
         two_pass["10"] = N("BCTest_KeepLatent", samples=["9", 0])
         dyn_latents, dyn_calls, dyn_lines = await sample(two_pass, "qwen-shift-dynamic")
         dyn_models = list(models)
+
+        def refine_shift(shift_terminal):
+            return N("BC_QwenImageShift", model=["1", 0], mode="dynamic", shift=3.0, multiplier=1.0,
+                     shift_terminal=shift_terminal, terminal=0.02, base_seq_len=256, max_seq_len=8192, base_shift=0.5,
+                     max_shift=0.9, refine_threshold=500, refine_rate=0.17)
+
+        refine = one_pass(refine_shift(True))
+        refine["9"] = N("KSampler", model=["3", 0], seed=1, steps=4, cfg=1.0, sampler_name="euler", scheduler="simple",
+                        positive=["4", 0], negative=["4", 0], latent_image=["6", 0], denoise=0.5)
+        refine["10"] = N("BCTest_KeepLatent", samples=["9", 0])
+        _, ref_calls, ref_lines = await sample(refine, "qwen-shift-refine")
+
+        def advanced(latent, add_noise, start, end, leftover):
+            return N("KSamplerAdvanced", model=["3", 0], add_noise=add_noise, noise_seed=0, steps=8, cfg=1.0,
+                     sampler_name="euler", scheduler="simple", positive=["4", 0], negative=["4", 0], latent_image=latent,
+                     start_at_step=start, end_at_step=end, return_with_leftover_noise=leftover)
+
+        split = one_pass(refine_shift(False))
+        split["6"] = advanced(["5", 0], "enable", 0, 4, "enable")
+        split["9"] = advanced(["6", 0], "disable", 4, 10000, "disable")
+        split["10"] = N("BCTest_KeepLatent", samples=["9", 0])
+        _, split_calls, split_lines = await sample(split, "qwen-shift-split")
     finally:
         for key in ("BCTest_WanCond", "BCTest_KeepLatent", "BCTest_RecordRun"):
             del nodes.NODE_CLASS_MAPPINGS[key]
@@ -1692,10 +1717,52 @@ async def qwen_image_shift():
           and all(math.isclose(s, math.exp(mu2), rel_tol=1e-12) for _, _, s in second)
           and len(dyn_models) == 1 and dyn_models[0].get_model_object("model_sampling").shift == 1.0,
           f"{[s for _, _, s in dyn_calls]} {math.exp(mu1)} {math.exp(mu2)}")
-    check("QwenImageShift: dynamic: one console line per run with its size, tokens, mu and shift",
-          dyn_lines == [f"[BCNodes] Qwen Image Shift: latent 64x48, {seq1} tokens, mu {mu1:.4f}, shift {math.exp(mu1):.4f}",
-                        f"[BCNodes] Qwen Image Shift: latent 80x60, {seq2} tokens, mu {mu2:.4f}, shift {math.exp(mu2):.4f}"],
+    check("QwenImageShift: dynamic: one console line per run with its size, refine state, tokens, mu and shift",
+          dyn_lines == [f"[BCNodes] Qwen Image Shift: latent 64x48, refine: no, tokens {seq1}, mu {mu1:.4f}, "
+                        f"shift {math.exp(mu1):.4f}",
+                        f"[BCNodes] Qwen Image Shift: latent 80x60, refine: yes, tokens {seq2} <= threshold 9600, "
+                        f"mu {mu2:.4f}, shift {math.exp(mu2):.4f}"],
           f"{dyn_lines}")
+
+    def line_mu(tokens):
+        return 0.5 + (0.9 - 0.5) * (tokens - 256) / (8192 - 256)
+
+    def shifted(shift, t, terminal):
+        """The flow shift of the shift-1 grid t (ending in 0), then the stretch to `terminal` (or None)."""
+        out = [shift * x / (1 + (shift - 1) * x) for x in t]
+        if terminal is None:
+            return out
+        factor = (1 - out[-2]) / (1 - terminal)
+        return [1 - (1 - x) / factor for x in out[:-1]] + [0.0]
+
+    t8 = [1 - i / 8 for i in range(8)] + [0.0]
+    mu_r = line_mu(500 + 0.17 * (seq1 - 500))
+    refine_ref = shifted(math.exp(mu_r), t8[-5:], 0.02)
+    first, second = ref_calls[:8], ref_calls[8:]
+    check("QwenImageShift: refine_threshold 500: denoise 1 (768 tokens) keeps diffusers' schedule and its own shift",
+          len(first) == 8 and all(close(s, ref1) and math.isclose(shift, math.exp(mu1), rel_tol=1e-12)
+                                  for _, s, shift in first), f"{first and first[0]} {ref1}")
+    check("QwenImageShift: refine_threshold 500: denoise 0.5 on new noise is a refine pass, mu at 500 + 0.17 x "
+          "(768 - 500) tokens, the model called at its schedule",
+          len(second) == 4 and all(close(s, refine_ref) and math.isclose(shift, math.exp(mu_r), rel_tol=1e-12)
+                                   for _, s, shift in second)
+          and all(math.isclose(sigma, refine_ref[i], abs_tol=ATOL) for i, (sigma, _, _) in enumerate(second)),
+          f"{second and second[0]} {refine_ref} {math.exp(mu_r)}")
+    check("QwenImageShift: refine pass console lines",
+          ref_lines == [f"[BCNodes] Qwen Image Shift: latent 64x48, refine: no, tokens {seq1}, mu {mu1:.4f}, "
+                        f"shift {math.exp(mu1):.4f}",
+                        f"[BCNodes] Qwen Image Shift: latent 64x48, refine: yes, tokens {seq1}, threshold 500, rate 0.17, "
+                        f"mu {mu_r:.4f}, shift {math.exp(mu_r):.4f}"], f"{ref_lines}")
+    own = shifted(math.exp(mu1), t8, None)
+    head, tail = split_calls[:4], split_calls[4:]
+    check("QwenImageShift: KSamplerAdvanced split at step 4 of 8 (add_noise off later): no refine pass, both parts "
+          "at the latent's own shift and schedule",
+          len(head) == 4 and len(tail) == 4
+          and all(close(s, own[:5]) and math.isclose(shift, math.exp(mu1), rel_tol=1e-12) for _, s, shift in head)
+          and all(close(s, own[4:]) and math.isclose(shift, math.exp(mu1), rel_tol=1e-12) for _, s, shift in tail)
+          and split_lines == [f"[BCNodes] Qwen Image Shift: latent 64x48, refine: no, tokens {seq1}, mu {mu1:.4f}, "
+                              f"shift {math.exp(mu1):.4f}"] * 2,
+          f"{head and head[0]} {tail and tail[0]} {own} {split_lines}")
 
 
 def tiny_zimage(kind="ZImage"):
@@ -1848,7 +1915,8 @@ async def dype_run_start():
     """Dual Sampler's DyPE start sigma under Qwen Image Shift, on tiny Qwen-Image: a 1024 x 1536 px first pass, the
     second at 2048 x 3072 px (dype auto). The second pass is stopped at its first model call (the model is not run at
     that size); there the start sigma DyPE uses must equal the sigma that call is given. dynamic (shift_terminal on):
-    the run's own first sigma (the shift from the second pass's latent, the terminal stretch), which core's KSampler
+    the run's own first sigma (the second pass is a refine pass: the shift at refine_rate 0.17 from refine_threshold's
+    mu toward the second pass's latent's, then the terminal stretch), which core's KSampler
     schedule outside the run (shift 1, no stretch) does not give: the start sigma was read from that schedule before.
     fixed, shift 3, shift_terminal off: the same sigma as that schedule's first, as before. fixed with shift_terminal on:
     the run's stretched first sigma (that schedule does not give it either)."""
@@ -1873,8 +1941,9 @@ async def dype_run_start():
         for label, mode, terminal in (("dynamic", "dynamic", True), ("fixed 3, no terminal", "fixed", False),
                                       ("fixed 3, terminal", "fixed", True)):
             shifted = shift.patch(qwen, mode, 3.0, 1.0, terminal, 0.02, 256, 8192, 0.5, 0.9)[0]
-            before = float(comfy.samplers.KSampler(shifted, steps=2, device="cpu", sampler="dpmpp_sde", scheduler="beta",
-                                                   denoise=0.45).sigmas[0])  # how the start sigma was read before
+            grid = comfy.samplers.KSampler(shifted, steps=2, device="cpu", sampler="dpmpp_sde", scheduler="beta",
+                                           denoise=0.45).sigmas.tolist()
+            before = grid[0]  # how the start sigma was read before
             seen.clear()
             kept = {}
             base = dype_test_nodes(shifted, torch.zeros(1, 8, 32), StandInVAE(frames=True), kept)
@@ -1886,7 +1955,19 @@ async def dype_run_start():
             finally:
                 drop_test_nodes()
             ok = "call" in seen and seen["start"] == seen["call"]
-            if mode == "dynamic" or terminal:
+            if mode == "dynamic":
+                # a refine pass (denoise 0.45 on new noise) of 24576 tokens: refine_rate 0.17 from 9600 tokens' mu
+                firsts = {}
+                for rate in (0.17, 1.0):
+                    s = math.exp(0.5 + 0.4 * (9600 + rate * (24576 - 9600) - 256) / 7936)
+                    t = [s * x / (1 + (s - 1) * x) for x in grid]
+                    firsts[rate] = 1 - (1 - t[0]) / ((1 - t[-2]) / (1 - 0.02))
+                check(f"Dual Sampler under Qwen Image Shift {label}: the start sigma at 2048 x 3072 is the second pass's "
+                      "first model call's, the refine pass's shift (refine_rate 0.17, not the latent's own), not the "
+                      "schedule core's KSampler gives outside the run",
+                      ok and seen["call"] != before and abs(seen["call"] - firsts[0.17]) < 1e-6
+                      and abs(seen["call"] - firsts[1.0]) > 1e-3, f"{seen} {firsts} schedule outside the run {before}")
+            elif terminal:
                 check(f"Dual Sampler under Qwen Image Shift {label}: the start sigma at 2048 x 3072 is the second pass's "
                       "first model call's, not the schedule core's KSampler gives outside the run",
                       ok and seen["call"] != before, f"{seen} schedule outside the run {before}")
