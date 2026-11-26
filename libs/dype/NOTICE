@@ -24,8 +24,8 @@ Changes made in ComfyUI-BCNodes (rope.py):
   is one function (attention_scale) with the model's coefficient c (Z-Image 0.05, Qwen-Image 0.1).
 
 Changes made in ComfyUI-BCNodes (embed.py):
-- One embedder module per sampling step, with the step's scale, timestep and settings fixed, in
-  place of the original's state set on a shared embedder; the models' embedders (models/<model>/dype/)
+- One embedder module per call size of a sampling step, with that scale, the step's timestep and
+  the settings fixed, in place of the original's state set on a shared embedder; the models' embedders (models/<model>/dype/)
   subclass it with their Vision YaRN and YaRN tables.
 - The rotations are built in ComfyUI core's EmbedND layout from float64 tables on a device that
   supports it (the CPU otherwise) and returned in float32, as core's rope; the original computed

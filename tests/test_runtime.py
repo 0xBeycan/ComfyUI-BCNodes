@@ -2000,14 +2000,63 @@ def drop_dead_models():
     mm.current_loaded_models[:] = [m for m in mm.current_loaded_models if not m.is_dead()]
 
 
+class RopeLog:
+    """Which rotary embedder computes inside a module's forward: while on, core's EmbedND.forward logs "core" and the
+    pack's DyPE embedder (libs/dype/embed.py, every model's) "dype". watch(module) records, for each forward of
+    `module`, (the latent's width in cells, the set of kinds computed during it)."""
+
+    def __init__(self):
+        import importlib
+
+        import comfy.ldm.flux.layers
+
+        pkg = nodes.NODE_CLASS_MAPPINGS["BC_DyPEPatcher"].__module__.rsplit(".", 2)[0]
+        self.classes = {"core": comfy.ldm.flux.layers.EmbedND, "dype": importlib.import_module(f"{pkg}.libs.dype.embed").DyPEEmbedND}
+        self.held = {kind: cls.forward for kind, cls in self.classes.items()}
+        self.open = []    # the kind lists of the forwards in progress
+        self.calls = []   # (module label, width in cells, kinds)
+        self.hooks = []
+
+    def __enter__(self):
+        for kind, cls in self.classes.items():
+            def logged(this, *args, _forward=self.held[kind], _kind=kind, **kwargs):
+                for kinds in self.open:
+                    kinds.add(_kind)
+                return _forward(this, *args, **kwargs)
+            cls.forward = logged
+        return self
+
+    def __exit__(self, *exc):
+        for kind, cls in self.classes.items():
+            cls.forward = self.held[kind]
+        for hook in self.hooks:
+            hook.remove()
+
+    def watch(self, module, label):
+        def enter(m, args, kwargs):
+            x = kwargs.get("x", args[0] if args else None)
+            self.open.append(set())
+            self.calls.append((label, None if x is None else int(x.shape[-1]), self.open[-1]))
+
+        def leave(m, args, output):
+            self.open.pop()
+
+        self.hooks += [module.register_forward_pre_hook(enter, with_kwargs=True), module.register_forward_hook(leave, always_call=True)]
+
+    def of(self, label):
+        return [(width, kinds) for name, width, kinds in self.calls if name == label]
+
+
 async def dype_controlnets():
-    """ControlNets with DyPE on (DyPE Patcher enable, a 2048 x 64 px latent) inside ComfyUI, each recording the rotary
-    embedder its control model computes with: on tiny Qwen-Image core's Fun ControlNet (QwenFunControlNet: the
+    """ControlNets with DyPE on (DyPE Patcher enable, a 2048 x 64 px latent) inside ComfyUI, each checked by the rotary
+    embedder that computes during it (RopeLog): on tiny Qwen-Image core's Fun ControlNet (QwenFunControlNet: the
     diffusion model's embedder, through Apply ControlNet with the stand-in VAE), the InstantX ControlNet (its own
     embedder) and DiffSynth's block-wise model patch (QwenImageDiffsynthControlnet: inside the model); on tiny Z-Image
-    DiffSynth's Fun ControlNet model patch (ZImageFunControlnet: the model's rotations). Each sees DyPE's embedder in
-    every step, core's EmbedND without DyPE (auto on a 1920 px latent), and the embedders are back after the run. Dual
-    Sampler with the Fun ControlNet: core's in the first pass (1024 px), DyPE's in the second (2048 px).
+    DiffSynth's Fun ControlNet model patch (ZImageFunControlnet: the model's rotations). Each computes with DyPE's
+    embedder in every step, with core's EmbedND without DyPE (auto on a 1920 px latent), and the embedders are core's
+    after the run. Dual Sampler with the Fun ControlNet: core's in the first pass (1024 px), DyPE's in the second
+    (2048 px). An area-conditioned crop (Conditioning Set Area, 1024 of the 2048 px on Z-Image, enable): its model
+    calls compute with core's (not larger than base_resolution), the full latent's with DyPE's.
 
     Before each run the loaded-model entries core's own is_dead() calls dead are dropped: an earlier run's chained
     clones (DiffSynth's, then DyPE's on it) are freed together, so core cannot switch their entry to a parent, and
@@ -2025,20 +2074,18 @@ async def dype_controlnets():
 
     ops, cpu = comfy.ops.disable_weight_init, torch.device("cpu")
     image = torch.rand(1, 64, 512, 3, generator=torch.Generator().manual_seed(2))
-    seen = []
 
-    def qwen_control(kind):
+    def qwen_control(kind, log):
         if kind == "fun":
             model = seeded(comfy.ldm.qwen_image.controlnet.QwenImageFunControlNetModel(
                 control_in_features=132, inner_dim=128, num_attention_heads=1, attention_head_dim=128, num_control_blocks=1,
                 main_model_double=1, injection_layers=(0,), dtype=torch.float32, device=cpu, operations=ops), 3)
-            model.register_forward_pre_hook(lambda m, args, kwargs: seen.append(type(kwargs["base_model"].pe_embedder).__name__),
-                                            with_kwargs=True)
+            log.watch(model, "control")
             return comfy.controlnet.QwenFunControlNet(model, compression_ratio=1, latent_format=comfy.latent_formats.Wan21(),
                                                       concat_mask=False, load_device=cpu, manual_cast_dtype=None, extra_conds=[])
         model = seeded(comfy.ldm.qwen_image.controlnet.QwenImageControlNetModel(
             extra_condition_channels=0, dtype=torch.float32, device=cpu, operations=ops, **QWEN_UNET), 4)
-        model.register_forward_pre_hook(lambda m, args, kwargs: seen.append(type(m.pe_embedder).__name__), with_kwargs=True)
+        log.watch(model, "control")
         return comfy.controlnet.ControlNet(model, compression_ratio=1, latent_format=comfy.latent_formats.Wan21(), concat_mask=False,
                                            load_device=cpu, manual_cast_dtype=None, extra_conds=[])
 
@@ -2046,7 +2093,6 @@ async def dype_controlnets():
         """One KSampler run of `patcher` under DyPE Patcher (mode) with the ControlNet `apply` puts on: "cn" core's
         Apply ControlNet on the conditioning, "qwen" / "zimage" core's DiffSynth node on the model."""
         drop_dead_models()
-        seen.clear()
         kept = {}
         base = dype_test_nodes(patcher, torch.zeros(1, 8, 32), vae, kept, control=control, patch=patch, image=image)
         try:
@@ -2074,58 +2120,94 @@ async def dype_controlnets():
         finally:
             drop_test_nodes()
 
+    def kinds_of(calls):
+        return sorted({kind for _, kinds in calls for kind in kinds}) if calls else None
+
     qwen = tiny_qwen_image()
     for kind, what in (("fun", "Fun ControlNet (the diffusion model's embedder)"), ("instantx", "InstantX ControlNet (its own embedder)")):
-        control = qwen_control(kind)
-        for width, mode, want in ((2048, "enable", "DyPERope"), (1920, "auto", "EmbedND")):
-            ran = await sample(f"dype-qwen-{kind}-{width}", qwen, StandInVAE(frames=True), width, mode, "cn", control=control)
-            check(f"DyPE Qwen-Image {what}: on a {width} px latent ({mode}) it computes with {want}", ran and seen and
-                  set(seen) == {want}, f"ran {ran} seen {sorted(set(seen))} x{len(seen)}")
-        held = type(control.control_model.pe_embedder).__name__ if kind == "instantx" else type(qwen.model.diffusion_model.pe_embedder).__name__
-        check(f"DyPE Qwen-Image {what}: the embedder is core's after the runs", held == "EmbedND", held)
+        for width, mode, want in ((2048, "enable", ["dype"]), (1920, "auto", ["core"])):
+            with RopeLog() as log:
+                control = qwen_control(kind, log)
+                ran = await sample(f"dype-qwen-{kind}-{width}", qwen, StandInVAE(frames=True), width, mode, "cn", control=control)
+            got = kinds_of(log.of("control"))
+            check(f"DyPE Qwen-Image {what}: on a {width} px latent ({mode}) it computes with {want[0]}", ran and got == want,
+                  f"ran {ran} computed {got} in {len(log.of('control'))} calls")
+        held = control.control_model.pe_embedder if kind == "instantx" else qwen.model.diffusion_model.pe_embedder
+        check(f"DyPE Qwen-Image {what}: the embedder is core's after the runs", type(held).__name__ == "EmbedND",
+              type(held).__name__)
 
     blockwise = seeded(QwenImageBlockWiseControlNet(num_layers=1, in_dim=64, additional_in_dim=0, dim=128, device=cpu,
                                                     dtype=torch.float32, operations=ops), 5)
     held_block = blockwise.control_block
-    blockwise.control_block = lambda img, cond, block_id: (seen.append(type(qwen.model.diffusion_model.pe_embedder).__name__),
-                                                            held_block(img, cond, block_id))[1]
+    patched_calls = []
+    blockwise.control_block = lambda img, cond, block_id: (patched_calls.append(1), held_block(img, cond, block_id))[1]
     patch = comfy.model_patcher.CoreModelPatcher(blockwise, load_device=cpu, offload_device=cpu)
-    for width, mode, want in ((2048, "enable", "DyPERope"), (1920, "auto", "EmbedND")):
-        ran = await sample(f"dype-qwen-diffsynth-{width}", qwen, StandInVAE(frames=True), width, mode, "qwen", patch=patch)
-        check(f"DyPE Qwen-Image DiffSynth ControlNet: on a {width} px latent ({mode}) it runs with {want} on the model",
-              ran and seen and set(seen) == {want}, f"ran {ran} seen {sorted(set(seen))} x{len(seen)}")
+    for width, mode, want in ((2048, "enable", ["dype"]), (1920, "auto", ["core"])):
+        patched_calls.clear()
+        with RopeLog() as log:
+            log.watch(qwen.model.diffusion_model, "model")
+            ran = await sample(f"dype-qwen-diffsynth-{width}", qwen, StandInVAE(frames=True), width, mode, "qwen", patch=patch)
+        got = kinds_of(log.of("model"))
+        check(f"DyPE Qwen-Image DiffSynth ControlNet: on a {width} px latent ({mode}) the model it runs in computes with "
+              f"{want[0]}", ran and patched_calls and got == want, f"ran {ran} patch calls {len(patched_calls)} computed {got}")
 
     zimage = tiny_zimage()
     fun = seeded(comfy.ldm.lumina.controlnet.ZImage_Control(dim=256, n_heads=2, n_kv_heads=2, multiple_of=32,
                                                              ffn_dim_multiplier=8.0 / 3.0, norm_eps=1e-5, qk_norm=True,
                                                              n_control_layers=1, control_in_dim=16, dtype=torch.float32,
                                                              device=cpu, operations=ops), 6)
-    fun.register_forward_pre_hook(lambda m, args: seen.append(type(zimage.model.diffusion_model.rope_embedder).__name__))
     patch = comfy.model_patcher.CoreModelPatcher(fun, load_device=cpu, offload_device=cpu)
-    for width, mode, want in ((2048, "enable", "DyPERope"), (1920, "auto", "EmbedND")):
-        ran = await sample(f"dype-zimage-diffsynth-{width}", zimage, StandInVAE(frames=False), width, mode, "zimage", patch=patch)
-        check(f"DyPE Z-Image DiffSynth Fun ControlNet: on a {width} px latent ({mode}) it runs with {want} on the model",
-              ran and seen and set(seen) == {want}, f"ran {ran} seen {sorted(set(seen))} x{len(seen)}")
+    for width, mode, want in ((2048, "enable", ["dype"]), (1920, "auto", ["core"])):
+        with RopeLog() as log:
+            log.watch(zimage.model.diffusion_model, "model")
+            log.watch(fun, "control")
+            ran = await sample(f"dype-zimage-diffsynth-{width}", zimage, StandInVAE(frames=False), width, mode, "zimage", patch=patch)
+        got = kinds_of(log.of("model"))
+        check(f"DyPE Z-Image DiffSynth Fun ControlNet: on a {width} px latent ({mode}) the model it runs in computes with "
+              f"{want[0]}", ran and log.of("control") and got == want, f"ran {ran} control calls {len(log.of('control'))} "
+              f"computed {got}")
 
-    control = qwen_control("fun")
     drop_dead_models()
-    seen.clear()
     kept = {}
-    base = dype_test_nodes(qwen, torch.zeros(1, 8, 32), StandInVAE(frames=True), kept, control=control, image=image)
+    with RopeLog() as log:
+        control = qwen_control("fun", log)
+        base = dype_test_nodes(qwen, torch.zeros(1, 8, 32), StandInVAE(frames=True), kept, control=control, image=image)
+        try:
+            prompt = {**base, "i": N("BCTest_DImage"), "BCc": N("BCTest_DControl"),
+                      "a": N("ControlNetApplyAdvanced", positive=["2", 0], negative=["2", 0], control_net=["BCc", 0], image=["i", 0],
+                             strength=1.0, start_percent=0.0, end_percent=1.0, vae=["3", 0]),
+                      "4": N("EmptySD3LatentImage", width=1024, height=64, batch_size=1),
+                      "5": dual_sampler_node(0.0, "auto", positive=("a", 0), negative=("a", 1)),
+                      "k": N("BCTest_DKeep", tag="latent", latent=["5", 2])}
+            out, _ = await run(prompt, "dype-qwen-fun-dual")
+        finally:
+            drop_test_nodes()
+    by_width = {}
+    for width, kinds in log.of("control"):
+        by_width.setdefault(width, set()).update(kinds)
+    check("Dual Sampler Qwen-Image Fun ControlNet: core's embedder in the first pass (1024 px), DyPE's in the second "
+          "(2048 px)", out is not None and by_width == {128: {"core"}, 256: {"dype"}}, f"{by_width}")
+
+    drop_dead_models()
+    kept = {}
+    base = dype_test_nodes(zimage, torch.randn(1, 8, 32, generator=torch.Generator().manual_seed(1)), StandInVAE(frames=False), kept)
     try:
-        prompt = {**base, "i": N("BCTest_DImage"), "BCc": N("BCTest_DControl"),
-                  "a": N("ControlNetApplyAdvanced", positive=["2", 0], negative=["2", 0], control_net=["BCc", 0], image=["i", 0],
-                         strength=1.0, start_percent=0.0, end_percent=1.0, vae=["3", 0]),
-                  "4": N("EmptySD3LatentImage", width=1024, height=64, batch_size=1),
-                  "5": dual_sampler_node(0.0, "auto", positive=("a", 0), negative=("a", 1)),
-                  "k": N("BCTest_DKeep", tag="latent", latent=["5", 2])}
-        out, _ = await run(prompt, "dype-qwen-fun-dual")
-        check("Dual Sampler Qwen-Image Fun ControlNet: core's embedder in the first pass, DyPE's in the second",
-              out is not None and seen and "EmbedND" in seen and seen[-1] == "DyPERope"
-              and seen.index("DyPERope") == seen.count("EmbedND") and set(seen) == {"EmbedND", "DyPERope"},
-              f"{seen}")
+        prompt = {**base, "s": N("ConditioningSetArea", conditioning=["2", 0], width=1024, height=64, x=0, y=0, strength=1.0),
+                  "c": N("ConditioningCombine", conditioning_1=["2", 0], conditioning_2=["s", 0]),
+                  "4": N("EmptySD3LatentImage", width=2048, height=64, batch_size=1),
+                  "5": N("BC_DyPEPatcher", model=["1", 0], mode="enable", dype_start_sigma=1.0),
+                  "6": ksampler_node(["5", 0], ["4", 0], 3, 1.0, ["c", 0], ["2", 0]),
+                  "k": N("BCTest_DKeep", tag="latent", latent=["6", 0])}
+        with RopeLog() as log:
+            log.watch(zimage.model.diffusion_model, "model")
+            out, _ = await run(prompt, "dype-zimage-area")
     finally:
         drop_test_nodes()
+    by_width = {}
+    for width, kinds in log.of("model"):
+        by_width.setdefault(width, set()).update(kinds)
+    check("DyPE Z-Image area conditioning: the 1024 px crop's model calls compute with core's embedder, the 2048 px "
+          "latent's with DyPE's", out is not None and by_width == {128: {"core"}, 256: {"dype"}}, f"{by_width}")
 
 
 def detailer_zimage_patch():

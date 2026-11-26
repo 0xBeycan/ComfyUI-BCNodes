@@ -94,9 +94,11 @@ models/common/                registry.py (families matting, depth, lm_family, l
                               download.py (fetch_with_progress; model_file: a file in a ComfyUI model folder, downloaded
                               there when missing), dype.py (DyPE on a model for DyPE Patcher and Dual Sampler: the
                               adapter, the values (each adapter's own, auto_threshold among them; DyPE Config's for its
-                              model only), a CALC_COND_BATCH wrapper setting DyPE's embedder for one sampling step on the
-                              diffusion model and on a ControlNet model with its own, and putting each back; no object
-                              patch, the shift never touched)
+                              model only), a CALC_COND_BATCH wrapper setting a step embedder for one sampling step on the
+                              diffusion model and on a ControlNet model with its own, and putting each back; each call
+                              sized from its own input (an APPLY_MODEL wrapper: the model's latent; a control model's
+                              forward hook: its x), so an area crop runs at its size; no object patch, the shift never
+                              touched)
 models/common/lm/             the LM runtime the LM families share: catalog (the built-in models.yaml merged with the
                               user's), family and backend contracts, core_backend (the "core" LM backend: core's
                               text-encoder loader, LoRA loader and generate; the prompt tokenized here, with the
@@ -121,7 +123,7 @@ models/z_image/               "Z-Image" in the dype family (core's ZImage config
                               step), dype/ (the Z-Image rotary embedder, derived from ComfyUI-DyPE, Apache-2.0, LICENSE +
                               NOTICE)
 models/qwen_image/            "Qwen-Image" in the dype family (core's QwenImage config only; 2.1 is not): adapter (values,
-                              the InstantX ControlNet's own embedder, the embedder of one step), dype/ (the Qwen-Image
+                              the InstantX ControlNet's own embedder, the embedder of one call), dype/ (the Qwen-Image
                               rotary embedder: each axis's scale from the latent, derived from ComfyUI-DyPE, Apache-2.0,
                               LICENSE + NOTICE)
 models/wan_latent_upscale/    "Wan 2.1 2x" in the latent_upscale family (Latent Upscale): arch/ (vendored, MIT), loader (the

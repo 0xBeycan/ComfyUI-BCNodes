@@ -12,7 +12,7 @@ co-authors (https://github.com/guyyariv/DyPE).
 
 Changes made in ComfyUI-BCNodes (embedder.py):
 - The scale of each image axis is the latent's side in pixels over base_resolution, read from the
-  latent of each sampling step. The original read it from the span of every position id given to
+  latent of each call (an area crop's own). The original read it from the span of every position id given to
   the embedder. On ComfyUI core's Qwen-Image those ids hold the caption tokens too, placed after the
   image's positions on all three axes, so the original's scale grew with the prompt's length (at
   1328 x 1328 px with 100 caption tokens it extrapolated at 2.19x the base resolution); and its span
@@ -28,6 +28,7 @@ Changes made in ComfyUI-BCNodes (embedder.py):
   (libs/dype/embed.py).
 - The shift override of the original installer (src/patch_utils.py, a model_sampling replaced by a
   resolution-dependent ModelSamplingFlux) is not ported: the model's own shift is kept.
-- The embedder is built for one sampling step, with that step's scale, timestep and settings fixed,
-  and set on the model (and on an InstantX ControlNet's model) only for the duration of the step
-  (models/common/dype.py); the original set state on one embedder installed as an object patch.
+- The embedder is built for one call size of a sampling step, with that scale, the step's
+  timestep and the settings fixed, and set on the model (and on an InstantX ControlNet's model) only
+  for the duration of the step (models/common/dype.py); the original set state on one embedder
+  installed as an object patch.

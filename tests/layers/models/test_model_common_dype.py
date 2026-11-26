@@ -5,15 +5,20 @@
   yarn has it, off otherwise) and dype_exponent from the scale, each replaced by a DyPE Config field it holds;
   start_sigma clamped to [0.001, 1]; the console names yarn_alt_scaling as on only for a model whose yarn has it;
 - patch: disable returns the model itself; a model no adapter takes is an error naming the supported models, and so
-  is a DyPE Config set for another model; a clone carries one CALC_COND_BATCH wrapper under its key (a second patch
-  replaces the first's), the model's other wrappers and its object patches (model_sampling: the shift) untouched;
-- the wrapper, around one sampling step (core's calc_cond_batch: the ControlNets' get_control, then the model): auto
-  at or below the adapter's auto_threshold, and any mode at or below base_resolution, run the step with the own
-  embedders and the arguments unchanged; above, the step runs with the adapter's embedder (the latent's size in px,
-  the scale, the sigma over sigma_max clamped to [0, 1], the exponent, the settings) on the diffusion model, on each
-  multi-GPU clone's, and on every ControlNet model of the step's conditioning (its chain, its multi-GPU copies) that
-  carries its own embedder, each once; ControlNet models without one are left alone; every embedder is back after
-  the step, also when it raises.
+  is a DyPE Config set for another model; a clone carries one CALC_COND_BATCH wrapper and one APPLY_MODEL wrapper
+  under its key (a second patch replaces the first's), the model's other wrappers and its object patches
+  (model_sampling: the shift) untouched;
+- the window, one sampling step (core's calc_cond_batch: the ControlNets' get_control, then the model): auto at or
+  below the adapter's auto_threshold, and any mode at or below base_resolution, run the step with the modules' own
+  embedders and the arguments unchanged; above, the diffusion model (each multi-GPU clone's too) and every ControlNet
+  model of the step's conditioning (its chain, its multi-GPU copies) that carries its own embedder compute, each call,
+  with the adapter's embedder for the size of that call (the step's sigma over sigma_max clamped to [0, 1], the
+  exponent, the settings) or with their own when DyPE leaves that size alone: a model call sized from its latent (the
+  APPLY_MODEL wrapper), a ControlNet call from its control model's `x`, anything else from the step's latent; an
+  area crop smaller than the latent therefore runs at the crop's size, a ControlNet reading the diffusion model's
+  embedder (Qwen-Image's Fun) at its own input's; ControlNet models without an embedder of their own keep it; every
+  embedder is back and every hook removed after the step, also when it raises; the APPLY_MODEL wrapper outside a step
+  runs the call as it is.
 
 The registry is the pack's, with a test adapter registered first; the patcher is a stand-in with ModelPatcher's
 clone semantics for wrappers and object patches.
@@ -27,6 +32,7 @@ import torch
 
 KEY = "bcnodes_dype"
 CALC = "calc_cond_batch"
+APPLY = "apply_model"
 
 
 class Adapter:
@@ -42,9 +48,10 @@ class Adapter:
     def own_embedder(self, control_model):
         return getattr(control_model, "own", False)
 
-    def embedder(self, module, s, height, width, scale, t, dype_exponent):
-        return ("embedder", module.name, s.method, height, width, scale, t, s.start_sigma, s.dype_scale, dype_exponent,
-                s.yarn_alt_scaling)
+    def embedder(self, module, rope, s, height, width, scale, t, dype_exponent):
+        assert rope.name == module.name  # the module's own embedder
+        return lambda ids: ("embedder", module.name, s.method, height, width, scale, t, s.start_sigma, s.dype_scale,
+                            dype_exponent, s.yarn_alt_scaling)
 
 
 class Patcher:
@@ -71,7 +78,7 @@ class Patcher:
 @pytest.fixture
 def dype(bcnodes, monkeypatch, comfy_stubs):
     extension = types.ModuleType("comfy.patcher_extension")
-    extension.WrappersMP = types.SimpleNamespace(CALC_COND_BATCH=CALC)
+    extension.WrappersMP = types.SimpleNamespace(CALC_COND_BATCH=CALC, APPLY_MODEL=APPLY)
     monkeypatch.setitem(sys.modules, "comfy.patcher_extension", extension)
     models = types.ModuleType("comfy.supported_models")  # what the pack's adapters check a model against
     models.ZImage = type("ZImage", (), {})
@@ -137,19 +144,32 @@ def test_patch(dype):
                                          "to Test"):
         dype.patch(model, "auto", 1.0, config("Qwen-Image"))
     out = dype.patch(model, "auto", 0.7, config(method="ntk"))
-    assert out is not model and model.wrappers[CALC] == {"another": ["theirs"]}
+    assert out is not model and model.wrappers[CALC] == {"another": ["theirs"]} and APPLY not in model.wrappers
     (w,) = out.wrappers[CALC][KEY]
+    assert out.wrappers[APPLY][KEY] == [w.apply_model]
     assert out.wrappers[CALC]["another"] == ["theirs"] and out.object_patches == {"model_sampling": "the shift node's"}
     assert w.settings.method == "ntk" and w.settings.start_sigma == 0.7
     again = dype.patch(out, "enable", 1.0, None)
     (w2,) = again.wrappers[CALC][KEY]
     assert w2 is not w and w2.settings.mode == "enable" and w2.settings.method == "vision_yarn"
+    assert again.wrappers[APPLY][KEY] == [w2.apply_model]
     with pytest.raises(ValueError, match="unknown method 'nope'"):
         dype.patch(model, "auto", 1.0, config(method="nope"))
 
 
-def module(name, **kw):
-    return types.SimpleNamespace(name=name, rope_embedder="own", **kw)
+class Own(torch.nn.Module):
+    """A module's own rotary embedder (core's EmbedND)."""
+
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+
+    def forward(self, ids):
+        return ("own", self.name)
+
+
+def module(name):
+    return types.SimpleNamespace(name=name, rope_embedder=Own(name))
 
 
 def base_model(name="dm"):
@@ -157,87 +177,149 @@ def base_model(name="dm"):
     return types.SimpleNamespace(diffusion_model=module(name), model_sampling=types.SimpleNamespace(sigma_max=torch.tensor(1.0)))
 
 
+class ControlModel(torch.nn.Module):
+    """A ControlNet's control model: its forward (given `x` as core's ControlNet gives it) returns what the rotary
+    embedder it reads computes: its own (own) or the diffusion model's it is given as base_model (the Fun ControlNet)."""
+
+    def __init__(self, name, own):
+        super().__init__()
+        self.name = name
+        self.own = own
+        self.rope_embedder = Own(name)
+
+    def forward(self, x=None, base_model=None):
+        return (self.rope_embedder if self.own else base_model.rope_embedder)(None)
+
+
 def control(name, own, previous=None, clones=()):
-    """A ControlBase: its control model (own: carries its own embedder), its chain and its multi-GPU copies."""
-    return types.SimpleNamespace(control_model=module(name, own=own), previous_controlnet=previous,
+    """A ControlBase: its control model, its chain and its multi-GPU copies."""
+    return types.SimpleNamespace(control_model=ControlModel(name, own), previous_controlnet=previous,
                                  multigpu_clones={f"cuda:{i}": c for i, c in enumerate(clones)})
 
 
+def latent(height, width):
+    """A latent of height x width px (8 px cells)."""
+    return torch.zeros(1, 16, height // 8, width // 8)
+
+
 class Step:
-    """core's _calc_cond_batch: records the embedder of each module it is given at the time it runs."""
+    """core's _calc_cond_batch: runs `calls` in order, each ("model", x): a model call through the APPLY_MODEL wrapper
+    (the model computing with its diffusion model's embedder), ("control", control, x): its control model's forward,
+    or ("other", module): a module's embedder called outside both; -> what each computed."""
 
-    def __init__(self, watched, fail=False):
-        self.watched = watched
+    def __init__(self, wrapper, calls, fail=False):
+        self.wrapper = wrapper
+        self.calls = calls
         self.fail = fail
-        self.calls = []
+        self.args = None
 
-    def __call__(self, *args):
-        self.calls.append((args, {m.name: m.rope_embedder for m in self.watched}))
+    def __call__(self, model, conds, x_in, timestep, options):
+        self.args = (model, conds, x_in, timestep, options)
+        out = []
+        for call in self.calls:
+            if call[0] == "model":
+                out.append(self.wrapper.apply_model(lambda x, t: model.diffusion_model.rope_embedder(None), call[1], timestep))
+            elif call[0] == "control":
+                out.append(call[1].control_model(x=call[2], base_model=model.diffusion_model))
+            else:
+                out.append(call[1].rope_embedder(None))
         if self.fail:
             raise RuntimeError("the step failed")
-        return "out"
+        return out
 
 
-def step(dype, mode, height, width, sigma=0.5, cfg=None, conds=None, model=None, options=None, watched=(), fail=False):
-    """-> {module name: the embedder it ran with} for one step, every embedder checked back after it."""
+def step(dype, mode, size, calls=None, sigma=0.5, cfg=None, conds=None, model=None, options=None, watched=(), fail=False):
+    """One step of a `size` (height, width) px latent -> what each call computed (`calls`: by default one model call at
+    the latent's size); every embedder checked back after it."""
     (w,) = dype.patch(Patcher(), mode, 0.7, cfg).wrappers[CALC][KEY]
     model = model or base_model()
-    watched = [model.diffusion_model, *watched]
-    ex = Step(watched, fail)
-    x, t = torch.zeros(1, 16, height, width), torch.tensor([sigma, sigma], dtype=torch.float64)
+    x_in = latent(*size)
+    ex = Step(w, calls if calls is not None else [("model", x_in)], fail)
+    t = torch.tensor([sigma, sigma], dtype=torch.float64)
     conds = conds if conds is not None else [[{"model_conds": {}}], None]
     options = options if options is not None else {"transformer_options": {}}
-    assert w(ex, model, conds, x, t, options) == "out"
-    (args, seen), = ex.calls
-    assert args[0] is model and args[1] is conds and args[2] is x and args[3] is t and args[4] is options
-    assert all(m.rope_embedder == "own" for m in watched)  # put back
-    return seen
+    held = [(m, m.rope_embedder) for m in (model.diffusion_model, *watched)]
+    out = w(ex, model, conds, x_in, t, options)
+    assert ex.args[0] is model and ex.args[1] is conds and ex.args[2] is x_in and ex.args[3] is t and ex.args[4] is options
+    assert all(m.rope_embedder is rope for m, rope in held)  # put back
+    return out
+
+
+def on(name, height, width, scale, sigma=0.5, exponent=1.0, method="vision_yarn", alt=False):
+    return ("embedder", name, method, height, width, scale, sigma, 0.7, 2.0, exponent, alt)
 
 
 def test_auto_leaves_a_latent_at_or_below_the_threshold_alone(dype):
-    assert step(dype, "auto", 160, 200)["dm"] == "own"   # 1280 x 1600 px: the adapter's auto_threshold
-    assert step(dype, "auto", 128, 192)["dm"] == "own"   # 1024 x 1536 px
-    assert step(dype, "auto", 192, 288, cfg=config(auto_threshold=2304))["dm"] == "own"
-    assert step(dype, "enable", 128, 128)["dm"] == "own"  # 1024 px: not larger than base_resolution
+    assert step(dype, "auto", (1280, 1600)) == [("own", "dm")]   # the adapter's auto_threshold
+    assert step(dype, "auto", (1024, 1536)) == [("own", "dm")]
+    assert step(dype, "auto", (1536, 2304), cfg=config(auto_threshold=2304)) == [("own", "dm")]
+    assert step(dype, "enable", (1024, 1024)) == [("own", "dm")]  # not larger than base_resolution
 
 
-def test_above_it_the_step_runs_with_the_adapters_embedder(dype):
-    # 2048 x 3072 px: scale 3, exponent 1.0
-    assert step(dype, "auto", 256, 384, sigma=0.6)["dm"] == (
-        "embedder", "dm", "vision_yarn", 2048, 3072, 3.0, 0.6, 0.7, 2.0, 1.0, False)
-    # 1600 x 1608 px: just over the adapter's auto_threshold; a sigma over sigma_max clamped
-    assert step(dype, "auto", 200, 201, sigma=1.4)["dm"][3:7] == (1600, 1608, 1608 / 1024, 1.0)
-    assert step(dype, "enable", 160, 160, cfg=config(dype_exponent=3.0, base_resolution=512, yarn_alt_scaling=True))["dm"] == (
-        "embedder", "dm", "vision_yarn", 1280, 1280, 2.5, 0.5, 0.7, 2.0, 3.0, True)
-    seen = step(dype, "enable", 512, 128)  # 4096 px: exponent 2.0
-    assert seen["dm"][5] == 4.0 and seen["dm"][9] == 2.0
+def test_above_it_a_call_computes_with_the_adapters_embedder(dype):
+    assert step(dype, "auto", (2048, 3072), sigma=0.6) == [on("dm", 2048, 3072, 3.0, 0.6)]  # scale 3, exponent 1.0
+    # just over the adapter's auto_threshold; a sigma over sigma_max clamped
+    assert step(dype, "auto", (1600, 1608), sigma=1.4) == [on("dm", 1600, 1608, 1608 / 1024, 1.0, 0.5)]
+    assert step(dype, "enable", (1280, 1280), cfg=config(dype_exponent=3.0, base_resolution=512, yarn_alt_scaling=True)) == [
+        on("dm", 1280, 1280, 2.5, exponent=3.0, alt=True)]
+    assert step(dype, "enable", (4096, 1024)) == [on("dm", 4096, 1024, 4.0, exponent=2.0)]
 
 
-def test_a_controlnet_with_its_own_embedder_takes_dypes_in_the_same_step(dype):
-    plain = control("plain", own=False)
+def test_each_call_is_sized_from_its_own_input(dype):
+    full = latent(2048, 2048)
+    calls = [("model", full), ("model", latent(1024, 2048)), ("model", latent(1024, 1024)), ("other", None)]
+    model = base_model()
+    calls[3] = ("other", model.diffusion_model)  # a call nothing sizes: the step's latent
+    assert step(dype, "enable", (2048, 2048), calls, model=model) == [
+        on("dm", 2048, 2048, 2.0), on("dm", 1024, 2048, 2.0), ("own", "dm"), on("dm", 2048, 2048, 2.0)]
+    # auto: an area crop at or under the adapter's auto_threshold (1600 px) runs with the model's own embedder
+    assert step(dype, "auto", (2048, 2048), [("model", latent(1024, 1600)), ("model", full)]) == [
+        ("own", "dm"), on("dm", 2048, 2048, 2.0)]
+
+
+def test_a_controlnet_computes_at_its_own_inputs_size(dype):
+    plain = control("plain", own=False)   # reads the diffusion model's embedder (the Fun ControlNet)
     copy = control("copy", own=True)
     chained = control("chained", own=True, previous=plain, clones=[copy])
     first = control("first", own=True, previous=chained)
     conds = [[{"control": first}, {"control": first}], [{"control": chained}], None]  # one control in several conds
-    seen = step(dype, "enable", 256, 256, conds=conds, watched=[m.control_model for m in (first, chained, plain, copy)])
-    assert {name: e[1] if isinstance(e, tuple) else e for name, e in seen.items()} == {
-        "dm": "dm", "first": "first", "chained": "chained", "plain": "own", "copy": "copy"}
-    below = step(dype, "auto", 128, 128, conds=conds, watched=[first.control_model])
-    assert below == {"dm": "own", "first": "own"}
+    crop = latent(1024, 2048)
+    calls = [("control", first, latent(2048, 2048)), ("control", plain, crop), ("control", chained, crop),
+             ("control", copy, latent(1024, 1024)), ("model", crop)]
+    watched = [c.control_model for c in (first, chained, plain, copy)]
+    assert step(dype, "enable", (2048, 2048), calls, conds=conds, watched=watched) == [
+        on("first", 2048, 2048, 2.0), on("dm", 1024, 2048, 2.0), on("chained", 1024, 2048, 2.0), ("own", "copy"),
+        on("dm", 1024, 2048, 2.0)]
+    assert plain.control_model.rope_embedder.name == "plain" and isinstance(plain.control_model.rope_embedder, Own)
+    assert all(not c.control_model._forward_pre_hooks and not c.control_model._forward_hooks for c in (first, chained, plain, copy))
+    assert step(dype, "auto", (1536, 1536), [("control", first, latent(1536, 1536))], conds=conds) == [("own", "first")]
+
+
+def test_a_control_model_given_no_x_keeps_the_size_it_is_called_in(dype):
+    first = control("first", own=True)
+    assert step(dype, "enable", (2048, 2048), [("control", first, None)], conds=[[{"control": first}]],
+                watched=[first.control_model]) == [on("first", 2048, 2048, 2.0)]
 
 
 def test_each_multi_gpu_clone_takes_it_once(dype):
     model = base_model()
     other = base_model("dm1")
     options = {"multigpu_clones": {"cuda:0": types.SimpleNamespace(model=model), "cuda:1": types.SimpleNamespace(model=other)}}
-    seen = step(dype, "enable", 256, 256, model=model, options=options, watched=[other.diffusion_model])
-    assert seen["dm"][1] == "dm" and seen["dm1"][1] == "dm1"
+    assert step(dype, "enable", (2048, 2048), [("model", latent(2048, 2048)), ("other", other.diffusion_model)], model=model,
+                options=options, watched=[other.diffusion_model]) == [on("dm", 2048, 2048, 2.0), on("dm1", 2048, 2048, 2.0)]
     w = dype.patch(Patcher(), "enable", 1.0, None).wrappers[CALC][KEY][0]
-    assert w.modules(model, [], options) == [model.diffusion_model, other.diffusion_model]
+    assert w.modules(model, [], options) == ([model.diffusion_model, other.diffusion_model], [])
 
 
-def test_every_embedder_is_back_after_a_failed_step(dype):
+def test_every_embedder_is_back_and_every_hook_gone_after_a_failed_step(dype):
     model, first = base_model(), control("first", own=True)
     with pytest.raises(RuntimeError, match="the step failed"):
-        step(dype, "enable", 256, 256, conds=[[{"control": first}]], model=model, watched=[first.control_model], fail=True)
-    assert model.diffusion_model.rope_embedder == "own" and first.control_model.rope_embedder == "own"
+        step(dype, "enable", (2048, 2048), [("control", first, latent(2048, 2048))], conds=[[{"control": first}]],
+             model=model, watched=[first.control_model], fail=True)
+    assert isinstance(model.diffusion_model.rope_embedder, Own) and isinstance(first.control_model.rope_embedder, Own)
+    assert not first.control_model._forward_pre_hooks and not first.control_model._forward_hooks
+
+
+def test_the_model_call_outside_a_step_runs_as_it_is(dype):
+    (w,) = dype.patch(Patcher(), "enable", 1.0, None).wrappers[CALC][KEY]
+    assert w.apply_model(lambda x, t, *a, **k: (x, t, a, k), "x", "t", 1, extra=2) == ("x", "t", (1,), {"extra": 2})

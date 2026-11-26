@@ -27,7 +27,7 @@ VAE = "vae"
 LATENT_UPSCALE = "latent_upscale"
 # A DyPE entry is a model's DyPE adapter (models.common.dype.Adapter): which ModelPatchers it takes (matches), their
 # DyPE values (defaults, auto_threshold among them), the latent's px per cell, the diffusion model's rotary embedder
-# attribute, which ControlNet models carry their own (own_embedder), and the embedder of one sampling step.
+# attribute, which ControlNet models carry their own (own_embedder), and the embedder of one call.
 # models/common/dype.py picks the first entry that takes the model; its name is DyPE Config's model.
 DYPE = "dype"
 

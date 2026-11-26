@@ -188,11 +188,11 @@ def test_the_instantx_controlnet_carries_its_own_embedder(adapter):
 
 def test_the_adapter_reads_the_modules_own_rope(adapter, bcnodes, mm):
     rope = types.SimpleNamespace(theta=THETA, axes_dim=list(AXES))
-    module = types.SimpleNamespace(pe_embedder=rope, patch_size=2)
+    module = types.SimpleNamespace(pe_embedder="a step's embedder", patch_size=2)
     s = bcnodes["models.common.dype"].Settings(mode="enable", method="yarn", base_resolution=1328, dype_scale=1.5,
                                                dype_exponent=None, auto_threshold=1920, yarn_alt_scaling=True,
                                                start_sigma=0.6)
-    e = adapter.embedder(module, s, 928, 2656, 2.0, 0.5, 1.0)
+    e = adapter.embedder(module, rope, s, 928, 2656, 2.0, 0.5, 1.0)
     assert (e.theta, list(e.axes_dim), e.base_len, e.method, e.scales, e.scale, e.t, e.yarn_alt_scaling) == (
         THETA, list(AXES), 83, "yarn", (1.0, 2.0), 2.0, 0.5, True)
     assert e.k_t == 1.5 * 0.5 and e.mscale == pytest.approx(1 + 0.1 * math.log(2.0) * (0.5 / 0.6))

@@ -10,8 +10,8 @@
 # - the coordinate resize (_resize_rope_grid) is left out: core's Z-Image image positions step by 1 on both
 #   image axes, where it returns them unchanged (Z-Image Omni's SigLIP tokens step by about 8: the original
 #   would draw those toward steps of 1 as the run goes on, this port leaves them where core puts them);
-# - the scale, the timestep and the settings are fixed per sampling step (a new embedder for each step, made by
-#   the wrapper in models/common/dype.py) in place of state set on a shared embedder.
+# - the scale, the timestep and the settings are fixed per call size and step (an embedder for each, made by the
+#   wrapper in models/common/dype.py) in place of state set on a shared embedder.
 
 from ....libs.dype import rope
 from ....libs.dype.embed import DyPEEmbedND

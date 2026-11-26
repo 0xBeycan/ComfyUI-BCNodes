@@ -1,5 +1,5 @@
 """Qwen-Image's DyPE adapter (registered as "Qwen-Image" in the dype family): which models it takes, their values
-and the embedder of one step. The model is core's: comfy.supported_models.QwenImage (Qwen-Image and 2512; core's
+and the embedder of one call. The model is core's: comfy.supported_models.QwenImage (Qwen-Image and 2512; core's
 config holds the Edit and Layered checkpoints too, which it cannot tell from them), its rotary embedder at
 diffusion_model.pe_embedder (EmbedND), 2x2 patches of the Qwen VAE's latent at 8 px per cell. Qwen-Image 2.1, Krea-2
 and Mage are other model configs and are not taken.
@@ -29,10 +29,9 @@ class QwenImageDyPE:
 
         return isinstance(control_model, QwenImageControlNetModel)
 
-    def embedder(self, module, settings, height, width, scale, t, dype_exponent):
-        """The rotary embedder of one step of `module` (core's QwenImageTransformer2DModel or its InstantX
-        ControlNet), from the embedder it holds."""
-        rope = getattr(module, self.attribute)
+    def embedder(self, module, rope, settings, height, width, scale, t, dype_exponent):
+        """The rotary embedder of one call of `module` (core's QwenImageTransformer2DModel or its InstantX
+        ControlNet), from `rope`, its own (core's EmbedND)."""
         base = settings.base_resolution
         # YaRN's original length: base_resolution in tokens (the original: base_resolution // 8 // 2)
         base_len = base // (self.latent_scale * module.patch_size)

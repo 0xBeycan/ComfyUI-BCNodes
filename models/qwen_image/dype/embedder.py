@@ -5,14 +5,14 @@
 # _calc_yarn_components with and without yarn_alt_scaling, _get_mscale). The layout, the time axis and the
 # ntk / pi / base tables every model shares are libs/dype/embed.py. Changed (NOTICE in this directory lists every
 # change):
-# - the scale of each image axis is the latent's side over base_resolution, from the step's latent; the original
+# - the scale of each image axis is the latent's side over base_resolution, from the latent of the call; the original
 #   read it from the span of every position id it is given, which on core's Qwen-Image holds the caption tokens
 #   too (placed after the image's positions on all three axes), so its scale grew with the prompt's length;
 # - every table is float64 on a device that has it, the output float32, as core's rope (the original:
 #   bfloat16 on CUDA);
 # - yarn takes its table at the positions core gives, where the original looked it up from 0 at the lowest
 #   position (clamped to its length): the same rotation between any two tokens of an axis, RoPE being relative;
-# - the scale, the timestep and the settings are fixed per step (a new embedder for each step, made by the
+# - the scale, the timestep and the settings are fixed per call size and step (an embedder for each, made by the
 #   wrapper in models/common/dype.py) in place of state set on a shared embedder.
 
 import math

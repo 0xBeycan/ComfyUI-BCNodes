@@ -108,8 +108,8 @@ ComfyUI-BCNodes/
       registry.py          model families (matting, depth) and the LM families and backends (lm_family,
                            lm_backend): register / names / get
       dype.py              DyPE on a model: the adapter a model is taken by (the dype family), the values, the
-                           CALC_COND_BATCH wrapper that sets DyPE's embedder for one sampling step (the model's and a
-                           ControlNet's)
+                           CALC_COND_BATCH wrapper that sets a step embedder for one sampling step (the model's and a
+                           ControlNet's), each call sized from its own input (APPLY_MODEL wrapper, control-model hook)
       download.py          weight download with console progress; model_file (a file in a ComfyUI model folder)
       lm/                  the LM runtime the LM families share; registers the core backend
         catalog.py         the models.yaml schema, the built-in file merged with the user's, errors naming file + entry
@@ -148,10 +148,10 @@ ComfyUI-BCNodes/
       chat.py              the official chat templates (qwen3.5, qwen3.8, qwen3-vl), their checks, the output split
       images.py            the official image processor's sizing (smart_resize) and bicubic resize
     z_image/               Z-Image (core's ZImage), registered as Z-Image in the dype family
-      adapter.py           which models, the DyPE values, the embedder of one step
+      adapter.py           which models, the DyPE values, the embedder of one call
       dype/                DyPE's Z-Image rotary embedder (Apache-2.0, derived from ComfyUI-DyPE; LICENSE, NOTICE)
     qwen_image/            Qwen-Image (core's QwenImage), registered as Qwen-Image in the dype family
-      adapter.py           which models, the DyPE values, the InstantX ControlNet's own embedder, the embedder of one step
+      adapter.py           which models, the DyPE values, the InstantX ControlNet's own embedder, the embedder of one call
       dype/                DyPE's Qwen-Image rotary embedder (Apache-2.0, derived from ComfyUI-DyPE; LICENSE, NOTICE)
   libs/                    model-independent helpers
     image.py               IMAGE frame <-> PIL, fit into a target size, a frame's long side capped (thumbnail)

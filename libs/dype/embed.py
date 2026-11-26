@@ -3,7 +3,7 @@
 # Derived from ComfyUI-DyPE (https://github.com/wildminder/ComfyUI-DyPE at 2664058): src/base.py
 # (DyPEBasePosEmbed: the NTK branch, the dynamic PI branch) and the rotation layout of src/models/zimage.py and
 # src/models/qwen.py. Changed (NOTICE in this directory lists every change): every table float64 on a device that
-# has it, the output float32, as core's rope; the scale, timestep and settings fixed per sampling step.
+# has it, the output float32, as core's rope; the scale, timestep and settings fixed per call size and step.
 
 import torch
 
@@ -14,7 +14,7 @@ class DyPEEmbedND(torch.nn.Module):
     """Core's EmbedND (comfy/ldm/flux/layers.py) with DyPE on the two image axes: called with the position ids
     (B, N, 3) (the time / sequence axis, then rows and columns), returns the rotations (B, 1, N, sum(axes_dim) / 2,
     2, 2) in core's layout, float32 on the ids' device; the tables float64 on a device that has it (the CPU
-    otherwise), as core's rope. Built for one sampling step.
+    otherwise), as core's rope. Built for one call size of one sampling step.
 
     A model's embedder subclasses it with its vision_yarn and yarn tables (yarn_table); ntk, pi and base are the
     same for every model (the original's base class). theta, axes_dim: the model's (its embedder's); scale: the

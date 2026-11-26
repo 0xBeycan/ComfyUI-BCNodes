@@ -22,8 +22,9 @@ libs/dype/embed.py):
   leaves them as core places them.
 - The shift override of the original installer (src/patch_utils.py, a model_sampling replaced by a
   resolution-dependent ModelSamplingFlux) is not ported: the model's own shift is kept.
-- The embedder is built for one sampling step, with that step's scale, timestep and settings
-  fixed, and set on the model only for the duration of the step (models/common/dype.py); the
-  original set state on one embedder installed as an object patch.
-- The image scale is read from the latent of each sampling step (its longer side in pixels over
-  base_resolution) in place of the width and height widgets of the original node.
+- The embedder is built for one call size of a sampling step, with that scale, the step's
+  timestep and the settings fixed, and set on the model only for the duration of the step
+  (models/common/dype.py); the original set state on one embedder installed as an object patch.
+- The image scale is read from the latent of each call (its longer side in pixels over
+  base_resolution: an area crop's own) in place of the width and height widgets of the original
+  node.

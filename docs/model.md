@@ -227,14 +227,16 @@ Below this sigma DyPE's attention scale decays. Set it to the first sigma of the
 
 ### How it is applied
 
-The clone carries a `CALC_COND_BATCH` wrapper (ComfyUI's patcher wrappers) around each sampling step: core's `calc_cond_batch` runs the step's ControlNets (`get_control`) and then the model, so both see the same positions. At each step the wrapper reads the latent's size and the step's sigma; when DyPE is on for that size it sets DyPE's embedder for that step only, on the diffusion model (and on each multi-GPU clone's) and on every ControlNet model of the step's conditioning that carries an embedder of its own, and puts each model's own embedder back when the step returns (or fails). Nothing stays on a model between steps: another clone of the same model (a first pass without DyPE, the next run) always runs with the model's own embedder. The step's latent sets the size for every call of the step, a Conditioning (Set Area) crop's call too. A second DyPE Patcher (or Dual Sampler's DyPE) replaces the first's; the model's other wrappers stay. The console says once per latent size whether DyPE is on, with the scale and values.
+The clone carries a `CALC_COND_BATCH` wrapper (ComfyUI's patcher wrappers) around each sampling step: core's `calc_cond_batch` runs the step's ControlNets (`get_control`) and then the model, so both see the same positions. When DyPE is on for the step's latent, the wrapper sets a step embedder for that step only, on the diffusion model (and on each multi-GPU clone's) and on every ControlNet model of the step's conditioning that carries an embedder of its own, and puts each model's own embedder back when the step returns (or fails). Nothing stays on a model between steps: another clone of the same model (a first pass without DyPE, the next run) always runs with the model's own embedder.
+
+Each call of the step is sized from its own input, as the original sizes each forward from the positions it is given: a model call from its latent (an `APPLY_MODEL` wrapper the clone also carries), a ControlNet from the input its control model is given (a forward hook, removed with the step). So a Conditioning (Set Area) crop runs, model and ControlNet, at the crop's size: a 1024 px crop of a 2048 px Z-Image latent computes with the model's own embedder (not larger than `base_resolution`), the full latent with DyPE's. The step embedder computes with DyPE's embedder for that size and the step's sigma, or with the model's own where DyPE leaves the size alone. A second DyPE Patcher (or Dual Sampler's DyPE) replaces the first's; the model's other wrappers stay. The console says once per size whether DyPE is on, with the scale and values.
 
 ControlNets:
 
 | ControlNet | Its positions |
 | --- | --- |
 | Qwen-Image Fun ControlNet (core's `QwenFunControlNet`, Apply ControlNet) | the diffusion model's embedder: DyPE's in the step |
-| Qwen-Image InstantX ControlNet (core's `QwenImageControlNetModel`, Apply ControlNet) | its own embedder, replaced with DyPE's for the step |
+| Qwen-Image InstantX ControlNet (core's `QwenImageControlNetModel`, Apply ControlNet) | its own embedder, replaced with the step embedder |
 | DiffSynth model patches (Qwen-Image's block-wise ControlNet, Z-Image's Fun ControlNet) | run inside the model: DyPE's |
 
 The rotary tables are computed in float64 and given in float32, as ComfyUI core computes each model's own. The original node computes them in bfloat16 on CUDA, so its output is not bit-identical to this one's.
