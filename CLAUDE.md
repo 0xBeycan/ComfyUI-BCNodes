@@ -447,6 +447,6 @@ reopen them:
 
 ## Git
 
-The owner's global `CLAUDE.md` (user-level Claude Code instructions) governs git: no commits on
-his branch, work on `local-*` worker branches, never push. Several sessions edit this repo:
-claim files before editing.
+The owner's global `CLAUDE.md` (user-level Claude Code instructions) governs git: work and commit
+on the checked-out branch, no new branches or worktrees unless the owner asks, push only when the
+owner says so. Several sessions edit this repo: claim files before editing.
