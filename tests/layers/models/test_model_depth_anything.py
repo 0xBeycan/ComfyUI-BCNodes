@@ -176,5 +176,5 @@ def test_weights_download_url(weights_dir, arch, loader, bcnodes, monkeypatch):
     monkeypatch.setattr(torch, "load", lambda *a, **k: {"w": torch.ones(1)}, raising=True)
     monkeypatch.setattr(arch, "DepthAnythingV2", _Tiny, raising=True)
     loader.load()
-    assert fetched == [("https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/main/depth_anything_v2_vits.pth",
+    assert fetched == [("https://huggingface.co/beycanai/Depth-Anything/resolve/main/depth_anything_v2_vits.pth",
                         str(weights_dir / "depth_anything_v2_vits.pth"), "depth_anything_v2_vits.pth")]

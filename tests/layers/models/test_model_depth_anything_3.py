@@ -1,8 +1,8 @@
 """Depth Anything 3 over ComfyUI core, with core's loader, preprocessing and net replaced by
 stand-ins (no weights, no downloads):
 
-  - weights: a file in models/geometry_estimation is used as is; without it the Comfy-Org
-    repackage URL is fetched into that folder, one file per v3 model;
+  - weights: a file in models/geometry_estimation is used as is; without it the
+    beycanai/Depth-Anything URL is fetched into that folder, one file per v3 model;
   - loader: core's comfy.sd.load_diffusion_model on that file, one load for two calls, and a
     switch to another model drops the first;
   - predictor: the model is loaded onto the GPU once; per frame core's preprocess_image gets the
@@ -26,8 +26,7 @@ import torch
 import torch.nn.functional as F
 
 PKG = "models.depth_anything_3"
-SMALL_URL = ("https://huggingface.co/Comfy-Org/Depth-Anything-3/resolve/main/geometry_estimation/"
-             "depth_anything_3_small.safetensors")
+SMALL_URL = "https://huggingface.co/beycanai/Depth-Anything/resolve/main/depth_anything_3_small.safetensors"
 
 
 @pytest.fixture

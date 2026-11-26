@@ -56,6 +56,6 @@ The BiRefNet architecture lives in [`models/birefnet/arch/`](../models/birefnet/
 | `BiRefNet_lite-matting` | swin_v1_t | 1024 |
 | `Lucida` | swin_v1_l | 1024 |
 
-Weights are fetched from Hugging Face on the node's first run — never at import — into `ComfyUI/models/background_removal/<name>.safetensors` (ComfyUI's own folder for its core BiRefNet nodes, so the weights are shared), through the pack's own downloader (resumable). The model stays loaded between runs and is swapped when a different one is selected. fp16 on CUDA, fp32 elsewhere.
+Weights are fetched from [`beycanai/BiRefNet`](https://huggingface.co/beycanai/BiRefNet) (unchanged copies of the authors' checkpoints) on the node's first run — never at import — into `ComfyUI/models/background_removal/<name>.safetensors` (ComfyUI's own folder for its core BiRefNet nodes, so the weights are shared), through the pack's own downloader (resumable). The model stays loaded between runs and is swapped when a different one is selected. fp16 on CUDA, fp32 elsewhere.
 
 Licenses: the BiRefNet and Swin Transformer code is MIT (see [`models/birefnet/arch/LICENSE`](../models/birefnet/arch/LICENSE)); the checkpoints are published under MIT by their authors.

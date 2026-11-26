@@ -110,8 +110,9 @@ models/birefnet/              checkpoints (registered under MATTING), weights, l
 models/depth_anything_v2/     Depth Anything V2 Small: weights, loader, inference, arch/ (vendored, Apache-2.0); registered
                               as v2-small in the depth family
 models/depth_anything_3/      Depth Anything 3 over core (comfy.ldm.depth_anything_3, nothing vendored): weights
-                              (Comfy-Org/Depth-Anything-3 into models/geometry_estimation), loader, inference; registered
-                              as v3-small, v3-base, v3-mono-large, v3-metric-large in the depth family
+                              (beycanai/Depth-Anything, unchanged copies of Comfy-Org/Depth-Anything-3, into
+                              models/geometry_estimation), loader, inference; registered as v3-small, v3-base,
+                              v3-mono-large, v3-metric-large in the depth family
 models/seedvr2/               VAE adapter (tile_for: the auto tile, rows and columns apart), tiling (the tile plan per
                               axis), frame-shape rules; dit (the sampler's
                               VRAM law and safety margin, from measurements) (no registry)

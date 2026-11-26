@@ -130,7 +130,7 @@ ComfyUI-BCNodes/
       arch/                DPT head + DINOv2 ViT-S architecture (see LICENSE in the folder)
     depth_anything_3/      Depth Anything 3 over ComfyUI core, registered as v3-small, v3-base, v3-mono-large,
                            v3-metric-large in the depth family (no code vendored)
-      weights.py           Comfy-Org/Depth-Anything-3 files into ComfyUI/models/geometry_estimation
+      weights.py           beycanai/Depth-Anything files into ComfyUI/models/geometry_estimation
       loader.py            one model at a time, core's loader; unload() for the full clear
       inference.py         core's preprocess and forward, sky, inverse depth, percentile clip
     seedvr2/               adapters over ComfyUI's SeedVR2 VAE

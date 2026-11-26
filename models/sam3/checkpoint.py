@@ -3,7 +3,8 @@ file (the default is downloaded into models/checkpoints when missing). folder_pa
 imported inside the functions."""
 
 DEFAULT_SAM3 = "sam3.1_multiplex_fp16.safetensors"
-DEFAULT_SAM3_URL = "https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors"
+# an unchanged copy of Comfy-Org/sam3.1's file
+DEFAULT_SAM3_URL = "https://huggingface.co/beycanai/utility-models/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors"
 
 
 def choices():

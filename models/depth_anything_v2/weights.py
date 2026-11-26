@@ -1,8 +1,9 @@
 """Where the Depth Anything V2 Small weights live (core's geometry_estimation folder, where the
-Depth Anything 3 weights live too) and their download from the authors' Hugging Face repo."""
+Depth Anything 3 weights live too) and their download from beycanai/Depth-Anything, an unchanged
+copy of the authors' file (depth-anything/Depth-Anything-V2-Small)."""
 
 FOLDER_KEY = "geometry_estimation"
-REPO = "depth-anything/Depth-Anything-V2-Small"
+REPO = "beycanai/Depth-Anything"
 FILENAME = "depth_anything_v2_vits.pth"
 
 

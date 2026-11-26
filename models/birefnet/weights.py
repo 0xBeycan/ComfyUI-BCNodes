@@ -1,14 +1,12 @@
 """Where the BiRefNet weights live (ComfyUI's background_removal folder) and their download
-from the checkpoint's Hugging Face repo."""
-
-from ..common import registry
-from ..common.registry import MATTING
+from beycanai/BiRefNet, which holds every checkpoint as <name>.safetensors."""
 
 FOLDER_KEY = "background_removal"
+REPO = "beycanai/BiRefNet"
 
 
 def weights_path(name):
     from ..common.download import model_file
 
-    ckpt = registry.get(MATTING, name)
-    return model_file(FOLDER_KEY, f"{name}.safetensors", f"https://huggingface.co/{ckpt.repo}/resolve/main/{ckpt.file}")
+    filename = f"{name}.safetensors"
+    return model_file(FOLDER_KEY, filename, f"https://huggingface.co/{REPO}/resolve/main/{filename}")
