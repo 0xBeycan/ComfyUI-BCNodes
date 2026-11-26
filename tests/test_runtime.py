@@ -1835,12 +1835,66 @@ def dual_sampler_node(blend, dype="auto", positive=("2", 0), negative=("2", 0), 
 
 
 async def dype_models():
-    """The DyPE sections: each model DyPE takes (dype_model), a model it does not (dype_unsupported) and the
-    ControlNets (dype_controlnets)."""
+    """The DyPE sections: each model DyPE takes (dype_model), a model it does not (dype_unsupported), the
+    ControlNets (dype_controlnets) and Dual Sampler's start sigma under a per-run shift (dype_run_start)."""
     await dype_model("Z-Image", tiny_zimage(), StandInVAE(frames=False), "rope_embedder")
     await dype_model("Qwen-Image", tiny_qwen_image(), StandInVAE(frames=True), "pe_embedder")
     await dype_unsupported()
     await dype_controlnets()
+    await dype_run_start()
+
+
+async def dype_run_start():
+    """Dual Sampler's DyPE start sigma under Qwen Image Shift, on tiny Qwen-Image: a 1024 x 1536 px first pass, the
+    second at 2048 x 3072 px (dype auto). The second pass is stopped at its first model call (the model is not run at
+    that size); there the start sigma DyPE uses must equal the sigma that call is given. dynamic (shift_terminal on):
+    the run's own first sigma (the shift from the second pass's latent, the terminal stretch), which core's KSampler
+    schedule outside the run (shift 1, no stretch) does not give: the start sigma was read from that schedule before.
+    fixed, shift 3, shift_terminal off: the same sigma as that schedule's first, as before. fixed with shift_terminal on:
+    the run's stretched first sigma (that schedule does not give it either)."""
+    import comfy.samplers
+    import torch
+
+    class Stop(Exception):
+        pass
+
+    qwen = tiny_qwen_image()
+    seen = {}
+
+    def stop_at_the_second_pass(module, args, kwargs):
+        if args[0].shape[-1] * 8 == 2048:
+            seen["call"] = float(args[1].flatten()[0])          # the call's timestep: its sigma (Qwen's multiplier 1)
+            seen["start"] = module.pe_embedder.wrapper.step[2].start_sigma  # the DyPE window's Settings for the step
+            raise Stop("stopped at the second pass's first model call")
+
+    hook = qwen.model.diffusion_model.register_forward_pre_hook(stop_at_the_second_pass, with_kwargs=True)
+    shift = nodes.NODE_CLASS_MAPPINGS["BC_QwenImageShift"]()
+    try:
+        for label, mode, terminal in (("dynamic", "dynamic", True), ("fixed 3, no terminal", "fixed", False),
+                                      ("fixed 3, terminal", "fixed", True)):
+            shifted = shift.patch(qwen, mode, 3.0, 1.0, terminal, 0.02, 256, 8192, 0.5, 0.9)[0]
+            before = float(comfy.samplers.KSampler(shifted, steps=2, device="cpu", sampler="dpmpp_sde", scheduler="beta",
+                                                   denoise=0.45).sigmas[0])  # how the start sigma was read before
+            seen.clear()
+            kept = {}
+            base = dype_test_nodes(shifted, torch.zeros(1, 8, 32), StandInVAE(frames=True), kept)
+            try:
+                drop_dead_models()
+                await run({**base, "4": N("EmptySD3LatentImage", width=1024, height=1536, batch_size=1),
+                           "5": dual_sampler_node(0.0, "auto"), "k": N("BCTest_DKeep", tag="latent", latent=["5", 2])},
+                          f"dype-run-start-{mode}-{terminal}")
+            finally:
+                drop_test_nodes()
+            ok = "call" in seen and seen["start"] == seen["call"]
+            if mode == "dynamic" or terminal:
+                check(f"Dual Sampler under Qwen Image Shift {label}: the start sigma at 2048 x 3072 is the second pass's "
+                      "first model call's, not the schedule core's KSampler gives outside the run",
+                      ok and seen["call"] != before, f"{seen} schedule outside the run {before}")
+            else:
+                check(f"Dual Sampler under Qwen Image Shift {label}: the start sigma at 2048 x 3072 is the second pass's "
+                      "first model call's, the same as before", ok and seen["call"] == before, f"{seen} before {before}")
+    finally:
+        hook.remove()
 
 
 async def dype_model(name, patcher, vae, attribute):

@@ -29,7 +29,7 @@ Config's edited or linked field when one is given; a DyPE Config set for another
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Protocol, TypedDict
 
 import torch
@@ -68,7 +68,7 @@ class Settings:
     dype_scale: float                 # DyPE's lambda_s
     dype_exponent: Optional[float]    # DyPE's lambda_t; None: from the scale
     auto_threshold: int               # px
-    start_sigma: float                # in [0.001, 1]
+    start_sigma: Optional[float]      # in [0.001, 1]; None: the sigma of each run's first model call
     yarn_alt_scaling: bool = False    # yarn: each image axis stretched to its own length (a model whose defaults have it)
 
 
@@ -111,11 +111,16 @@ def adapter(model):
                      "DyPE mode to disable for it.")
 
 
+def clamp_start(start_sigma):
+    """A start sigma clamped to [0.001, 1], as the original."""
+    return max(0.001, min(1.0, float(start_sigma)))
+
+
 def settings(entry, mode, start_sigma, values):
     """The Settings of `entry`'s model for `mode`, with DyPE Config's values (ConfigValues) over the automatic ones.
-    start_sigma is clamped to [0.001, 1], as the original."""
+    start_sigma is clamped (clamp_start); None stays None: each run's first sigma."""
     merged = {**entry.defaults, "dype_exponent": None, **(values or {})}
-    return Settings(mode=mode, start_sigma=max(0.001, min(1.0, float(start_sigma))), **merged)
+    return Settings(mode=mode, start_sigma=None if start_sigma is None else clamp_start(start_sigma), **merged)
 
 
 class Wrapper:
@@ -127,7 +132,8 @@ class Wrapper:
         self.adapter = entry
         self.settings = settings
         self.reported = set()            # the (height, width) already logged
-        self.step = None                 # (sigma over sigma_max, the step's latent size): inside the window
+        self.step = None                 # (sigma over sigma_max, the step's latent size, its Settings): in the window
+        self.run = None                  # (the run's sample_sigmas, its start sigma): start_sigma None
 
     def size(self, x):
         """(height, width) px of a latent."""
@@ -157,11 +163,19 @@ class Wrapper:
             self.report(height, width, None, None)
             return executor(model, conds, x_in, timestep, model_options)
         sigma = min(max(float(timestep.flatten()[0]) / float(model.model_sampling.sigma_max), 0.0), 1.0)
+        s = self.settings
+        if s.start_sigma is None:
+            # the sigma of the run's first model call, once the run's own schedule is applied (a shift its wrappers
+            # set per run, such as Qwen Image Shift's dynamic one, included); a run is known by its sample_sigmas
+            run = model_options["transformer_options"]["sample_sigmas"]
+            if self.run is None or self.run[0] is not run:
+                self.run = (run, clamp_start(timestep.flatten()[0]))
+            s = replace(s, start_sigma=self.run[1])
         attribute = self.adapter.attribute
         modules, control_models = self.modules(model, conds, model_options)
         held = [(module, getattr(module, attribute)) for module in modules]
         hooks = []
-        outer, self.step = self.step, (sigma, (height, width))
+        outer, self.step = self.step, (sigma, (height, width), s)
         self.sizes().clear()
         try:
             for module, rope in held:
@@ -223,12 +237,12 @@ class Wrapper:
                     found.setdefault(id(control_model), control_model)
         return list(found.values()), list(control_models.values())
 
-    def report(self, height, width, scale, dype_exponent):
-        """One console line per call size: whether DyPE is on for it and with what."""
+    def report(self, height, width, scale, dype_exponent, s=None):
+        """One console line per call size: whether DyPE is on for it and with what (`s`: the step's Settings)."""
         if (height, width) in self.reported:
             return
         self.reported.add((height, width))
-        s = self.settings
+        s = s or self.settings
         if scale is None:
             why = (f"longer side not over auto_threshold {s.auto_threshold} px (auto)"
                    if s.mode == "auto" and max(height, width) <= s.auto_threshold
@@ -241,8 +255,9 @@ class Wrapper:
             method += (" (yarn_alt_scaling)" if "yarn_alt_scaling" in self.adapter.defaults
                        else f" (yarn_alt_scaling not used: {self.adapter.name}'s yarn has no such option)")
         logging.info("%s %s %dx%d px: on, scale %.3f of %d px, %s, dype_scale %g, dype_exponent %g (%s), start sigma "
-                     "%.4f", PREFIX, self.adapter.name, width, height, scale, s.base_resolution, method, s.dype_scale,
-                     dype_exponent, source, s.start_sigma)
+                     "%.4f%s", PREFIX, self.adapter.name, width, height, scale, s.base_resolution, method,
+                     s.dype_scale, dype_exponent, source, s.start_sigma,
+                     " (the run's first)" if self.settings.start_sigma is None else "")
 
 
 class StepEmbedder(torch.nn.Module):
@@ -267,9 +282,9 @@ class StepEmbedder(torch.nn.Module):
             return rope(ids)
         embedder = self.built.get((height, width))
         if embedder is None:
-            s = w.settings
+            s = w.step[2]
             dype_exponent = exponent(scale) if s.dype_exponent is None else s.dype_exponent
-            w.report(height, width, scale, dype_exponent)
+            w.report(height, width, scale, dype_exponent, s)
             embedder = w.adapter.embedder(module, rope, s, height, width, scale, w.step[0], dype_exponent)
             self.built[(height, width)] = embedder
         return embedder(ids)
@@ -277,8 +292,9 @@ class StepEmbedder(torch.nn.Module):
 
 def patch(model, mode, start_sigma, config=None):
     """`model` (a ModelPatcher) itself for mode disable; otherwise a clone carrying DyPE (one DyPE: an earlier one on
-    the model is replaced). `config`: DyPE Config's value (Config) or None. ValueError for a model no adapter takes
-    and for a DyPE Config set for another model."""
+    the model is replaced). `start_sigma`: the sigma below which the attention scale decays, or None for the sigma of
+    each run's first model call. `config`: DyPE Config's value (Config) or None. ValueError for a model no adapter
+    takes and for a DyPE Config set for another model."""
     if mode == "disable":
         return model
     if mode not in MODES:

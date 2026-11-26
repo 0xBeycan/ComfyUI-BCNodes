@@ -18,7 +18,8 @@
   area crop smaller than the latent therefore runs at the crop's size, a ControlNet reading the diffusion model's
   embedder (Qwen-Image's Fun) at its own input's; ControlNet models without an embedder of their own keep it; every
   embedder is back and every hook removed after the step, also when it raises; the APPLY_MODEL wrapper outside a step
-  runs the call as it is.
+  runs the call as it is; a start sigma of None is the sigma of each run's first model call (a run known by its
+  sample_sigmas), kept for the run's later steps and read again for the next run.
 
 The registry is the pack's, with a test adapter registered first; the patcher is a stand-in with ModelPatcher's
 clone semantics for wrappers and object patches.
@@ -323,3 +324,19 @@ def test_every_embedder_is_back_and_every_hook_gone_after_a_failed_step(dype):
 def test_the_model_call_outside_a_step_runs_as_it_is(dype):
     (w,) = dype.patch(Patcher(), "enable", 1.0, None).wrappers[CALC][KEY]
     assert w.apply_model(lambda x, t, *a, **k: (x, t, a, k), "x", "t", 1, extra=2) == ("x", "t", (1,), {"extra": 2})
+
+
+def test_no_start_sigma_takes_each_runs_first(dype):
+    (w,) = dype.patch(Patcher(), "enable", None, None).wrappers[CALC][KEY]
+    assert w.settings.start_sigma is None
+    model, x_in = base_model(), latent(2048, 2048)
+
+    def one(sigma, run):
+        ex = Step(w, [("model", x_in)])
+        return w(ex, model, [[{}]], x_in, torch.tensor([sigma]), {"transformer_options": {"sample_sigmas": run}})[0]
+
+    first, second = torch.tensor([0.83, 0.5, 0.0]), torch.tensor([0.83, 0.5, 0.0])
+    assert one(0.83, first)[7] == pytest.approx(0.83) and one(0.5, first)[7] == pytest.approx(0.83)  # the run's first
+    assert one(0.62, second)[7] == pytest.approx(0.62)  # another run (an equal tensor, another object): read again
+    assert one(1.4, torch.tensor([1.4]))[7] == 1.0      # clamped to [0.001, 1]
+    assert w.settings.start_sigma is None

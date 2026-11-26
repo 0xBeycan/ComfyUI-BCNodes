@@ -2,8 +2,9 @@
 
 Two sampling passes in one node, for any model: a first pass, the latent upscaled (core's latent upscale, a
 decode -> resize -> encode, or a blend of the two), and a second pass at a denoise with DyPE on its model only (the
-model's own DyPE: Z-Image, Qwen-Image; dype disable for another model), its start sigma read from the second pass's
-own schedule. Outputs both decoded images and the second pass's latent. The defaults are Z-Image Turbo's. The flow is
+model's own DyPE: Z-Image, Qwen-Image; dype disable for another model), its start sigma the sigma of the second
+pass's first model call (the run's schedule, after a per-run shift such as Qwen Image Shift's dynamic one). Outputs
+both decoded images and the second pass's latent. The defaults are Z-Image Turbo's. The flow is
 pipelines/dual_sampler.py; DyPE is models/common/dype.py, as DyPE Patcher's.
 """
 
@@ -60,7 +61,8 @@ class DualSampler:
                                 "The second pass's seed: the seed itself, or seed + 1."}),
                 "dype": (list(MODES), {"default": "auto", "tooltip":
                          "DyPE on the second pass only (DyPE Patcher's modes; Z-Image and Qwen-Image), its start sigma "
-                         "the first sigma of that pass's schedule. auto: only for a second latent whose longer side is "
+                         "the sigma of that pass's first model call (after a shift the model applies per run, such as "
+                         "Qwen Image Shift's dynamic one). auto: only for a second latent whose longer side is "
                          "over the model's auto_threshold (1920 px for both; DyPE Config can set it). disable: model_2 "
                          "as it is, for any model; any other mode on a model DyPE does not take stops the run before "
                          "the first pass."}),
@@ -83,9 +85,9 @@ class DualSampler:
     DESCRIPTION = ("A two-pass hires fix in one node, for any model: the first pass (denoise 1.0), the latent upscaled "
                    "by scale_by to a multiple of 16 px (core's latent upscale, a decode -> resize -> encode, or "
                    "blend_factor of the two), and the second pass at denoise_2 with DyPE on its model only (Z-Image, "
-                   "Qwen-Image; start sigma from that pass's schedule; dype disable for other models). The same as the "
-                   "core chain KSampler -> Upscale Latent By -> KSampler -> VAE Decode x2 at blend_factor 0. Outputs "
-                   "both images and the second latent. The defaults are Z-Image Turbo's.")
+                   "Qwen-Image; start sigma: that pass's first model call's; dype disable for other models). The same "
+                   "as the core chain KSampler -> Upscale Latent By -> KSampler -> VAE Decode x2 at blend_factor 0. "
+                   "Outputs both images and the second latent. The defaults are Z-Image Turbo's.")
 
     def sample(self, model_1, model_2, positive, negative, latent_image, vae, seed, steps_1, cfg_1, sampler_1,
                scheduler_1, steps_2, cfg_2, sampler_2, scheduler_2, denoise_2, upscale_method, scale_by, blend_factor,

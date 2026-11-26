@@ -223,7 +223,7 @@ The models are ComfyUI core's configs `ZImage` and `QwenImage`. Core's `QwenImag
 
 ### `dype_start_sigma`
 
-Below this sigma DyPE's attention scale decays. Set it to the first sigma of the sampler run the model goes into: 1.0 for a full run from noise; for a second pass at a denoise below 1, the first value of that run's own schedule (it depends on the steps, the scheduler, the denoise and the shift: 9 steps, `beta`, denoise 0.45 at shift 3 start at 0.6944). Dual Sampler reads it from its second pass's schedule itself. A value outside [0.001, 1] is clamped.
+Below this sigma DyPE's attention scale decays. Set it to the first sigma of the sampler run the model goes into: 1.0 for a full run from noise; for a second pass at a denoise below 1, the first value of that run's own schedule (it depends on the steps, the scheduler, the denoise and the shift: 9 steps, `beta`, denoise 0.45 at shift 3 start at 0.6944). Dual Sampler takes it from its second pass's first model call: the sigma as the run gets it, after a shift the model applies per run (Qwen Image Shift's dynamic shift and its `shift_terminal` stretch), which a schedule computed before the run does not include. A value outside [0.001, 1] is clamped.
 
 ### How it is applied
 

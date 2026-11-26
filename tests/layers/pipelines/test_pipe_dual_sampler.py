@@ -2,9 +2,9 @@
 
 - the upscaled size: each side times scale_by, rounded to the nearest multiple of 16 px (2 cells of 8 px; one cell
   of a 16 or 32 px VAE);
-- DyPE first: model_2 patched (the mode, the config and the first sigma of the second pass's own schedule: core's
-  KSampler at model_2, steps_2, sampler_2, scheduler_2, denoise_2) before the first pass, so a model DyPE does not
-  take stops the run before any sampling; at denoise 0 no DyPE;
+- DyPE first: model_2 patched (the mode, the config, and no start sigma: DyPE reads the second pass's first model
+  call's) before the first pass, so a model DyPE does not take stops the run before any sampling; no schedule is
+  computed before the run; at denoise 0 no DyPE;
 - the first pass: model_1 at denoise 1.0 with the seed, on the latent given;
 - the second pass: model_2's DyPE clone, the seed itself or the next one (the last seed's next is 0);
 - blend_factor 0: core's Upscale Latent By (common_upscale, no crop) alone, no decode or encode before the second
@@ -56,7 +56,7 @@ class VAE:
 
 @pytest.fixture
 def flow(bcnodes, monkeypatch, comfy_stubs):
-    seen = {"passes": [], "upscales": [], "schedules": [], "patches": [], "resizes": [], "order": []}
+    seen = {"passes": [], "upscales": [], "patches": [], "resizes": [], "order": []}
 
     def ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise=1.0):
         seen["order"].append("pass")
@@ -67,11 +67,6 @@ def flow(bcnodes, monkeypatch, comfy_stubs):
     def common_upscale(samples, width, height, method, crop):
         seen["upscales"].append((width, height, method, crop))
         return torch.full((*samples.shape[:-2], height, width), 10.0)
-
-    class KSampler:
-        def __init__(self, model, steps, device, sampler=None, scheduler=None, denoise=None, model_options={}):
-            seen["schedules"].append((model, steps, sampler, scheduler, denoise))
-            self.sigmas = torch.tensor([0.6944, 0.5, 0.0])
 
     def patch(model, mode, start_sigma, config):
         seen["order"].append("dype")
@@ -86,10 +81,6 @@ def flow(bcnodes, monkeypatch, comfy_stubs):
 
     monkeypatch.setattr(bcnodes["libs.sampling"], "ksampler", ksampler)
     monkeypatch.setattr(sys.modules["comfy.utils"], "common_upscale", common_upscale, raising=False)
-    samplers = types.ModuleType("comfy.samplers")
-    samplers.KSampler = KSampler
-    monkeypatch.setitem(sys.modules, "comfy.samplers", samplers)
-    monkeypatch.setattr(sys.modules["comfy"], "samplers", samplers, raising=False)
     monkeypatch.setattr(bcnodes["models.common.dype"], "patch", patch)
     monkeypatch.setattr(bcnodes["libs.resize"], "resize_image", resize_image)
     return bcnodes["pipelines.dual_sampler"], seen
@@ -126,8 +117,7 @@ def test_blend_zero_is_the_core_chain(flow):
     assert (one["model"], one["seed"], one["steps"], one["cfg"], one["sampler"], one["scheduler"], one["denoise"]) == (
         "m1", 5, 9, 1.0, "dpmpp_sde", "beta", 1.0)
     assert seen["upscales"] == [(384, 256, "bislerp", "disabled")] and not seen["resizes"] and not vae.encoded
-    assert seen["schedules"] == [("m2", 8, "euler", "simple", 0.45)]
-    assert seen["patches"] == [("m2", "auto", pytest.approx(0.6944), CONFIG)]
+    assert seen["patches"] == [("m2", "auto", None, CONFIG)]
     assert seen["order"] == ["dype", "pass", "pass"]  # DyPE before any sampling
     assert (two["model"], two["seed"], two["steps"], two["cfg"], two["sampler"], two["scheduler"], two["denoise"]) == (
         ("dype", "m2"), 6, 8, 1.5, "euler", "simple", 0.45)

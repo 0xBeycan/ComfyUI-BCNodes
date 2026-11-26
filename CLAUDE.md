@@ -48,8 +48,8 @@ pipelines/detailer/           region (the crop around a region: sampled at crop_
                               Detailer: SAM 3 faces, the character, the size gate, the face and eye passes)
 pipelines/quality_gate.py     shot profiles, QualityCheck, verdict, report, badge
 pipelines/social_export.py    Social Media Export engine: plan, crop/pad, encode, report line
-pipelines/dual_sampler.py     Dual Sampler (any model): DyPE on model_2 before any sampling (start sigma: the first of the
-                              second pass's own schedule), first pass, the upscale (latent way, pixel way decode -> resize
+pipelines/dual_sampler.py     Dual Sampler (any model): DyPE on model_2 before any sampling (start sigma: the second pass's
+                              first model call's, read by DyPE in the run), first pass, the upscale (latent way, pixel way decode -> resize
                               -> encode, core's Latent Blend of the two; 16 px sides; a 5-D latent as it is), second pass,
                               the decodes wanted
 pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop; Save Image With Caption's folder,

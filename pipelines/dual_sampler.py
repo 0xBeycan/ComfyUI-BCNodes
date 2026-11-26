@@ -4,8 +4,9 @@ at disable the second pass runs model_2 as it is.
 
 - DyPE first: models/common/dype.patch puts it on a clone of model_2 for the second pass (with DyPE Config's
   values), before any sampling, so a model DyPE does not take (or a DyPE Config of another model) stops the run
-  before the first pass. Its start sigma is the first sigma of the second pass's own schedule (core's KSampler at
-  model_2, steps, sampler, scheduler and denoise: the schedule the run gets). Not at denoise 0: no second pass runs.
+  before the first pass. Its start sigma is the sigma of the second pass's first model call, read by DyPE in the run:
+  the schedule as the run gets it, after a shift the model's wrappers apply per run (Qwen Image Shift's dynamic one,
+  from that pass's latent size). Not at denoise 0: no second pass runs.
 - First pass: core's KSampler (libs/sampling.ksampler) with model_1 at denoise 1.0.
 - Upscale to the first latent's size times scale_by, each side rounded to the nearest multiple of 16 px, at least one
   latent cell (the VAE's px per cell from vae.spacial_compression_encode()). Two ways, mixed by blend_factor (the
@@ -61,15 +62,6 @@ def upscaled_size(height, width, scale_by, cell):
     return tuple(max(step, round(side * scale_by / step) * step) for side in (height, width))
 
 
-def first_sigma(model, p):
-    """The first sigma of the run core's KSampler makes for `model` with the pass `p`: its own schedule (the
-    model's model_sampling, the scheduler, the sampler's discarded penultimate sigma, the denoise's last steps)."""
-    import comfy.samplers
-
-    return float(comfy.samplers.KSampler(model, steps=p.steps, device="cpu", sampler=p.sampler_name,
-                                         scheduler=p.scheduler, denoise=p.denoise).sigmas[0])
-
-
 def decode(vae, latent):
     """core's VAE Decode of a LATENT dict: (B, H, W, C), a video VAE's frames joined into the batch."""
     samples = latent["samples"]
@@ -115,7 +107,7 @@ def run(model_1, model_2, positive, negative, latent, vae, s, want_first=True, w
     from ..models.common import dype
 
     if s.second.denoise > 0:
-        model_2 = dype.patch(model_2, s.dype, first_sigma(model_2, s.second), s.dype_config)
+        model_2 = dype.patch(model_2, s.dype, None, s.dype_config)  # start sigma: the second pass's first
 
     first = ksampler(model_1, s.seed, s.first.steps, s.first.cfg, s.first.sampler_name, s.first.scheduler, positive,
                      negative, latent, 1.0)
