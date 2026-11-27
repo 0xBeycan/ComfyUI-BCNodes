@@ -1,7 +1,9 @@
-"""libs/detail_boost.py: every mode's lowered sigma at one point, hard's closed forms (flow and other
-models), eta 0 leaving every mode at the call's sigma, the cap for a flow model and the formulas with no
-real answer; where a call sits in the run (schedule points, calls between them, half-precision sigmas,
-outside the run); and the step range, the run's first call and the weight blend.
+"""libs/detail_boost.py: every mode's lowered sigma at one point of a flow model and of another model
+(sigma_max 14.6146: s and p divided by it, hard_var's base and vpsde on the sigmas as they are), hard's
+closed forms (flow and other models), eta 0 leaving every mode at the call's sigma, the cap for a flow
+model and the formulas with no real answer; where a call sits in the run (schedule points, calls between
+them, half-precision sigmas, outside the run); and the step range, the run's first call and the weight
+blend.
 """
 
 import math
@@ -35,6 +37,41 @@ def test_every_mode_has_a_value(db):
     assert set(AT_04_AFTER_05) == set(db.MODES)
     for mode, expected in AT_04_AFTER_05.items():
         assert db.lowered_sigma(mode, 0.4, 0.5, 0.5, True, 1.0) == pytest.approx(expected, rel=1e-12), mode
+
+
+# Another model's (sigma_max 14.6146) call at sigma 3 after the schedule point 6, eta 0.5: s 0.2053, p 0.4105.
+AT_3_AFTER_6_OTHER = {
+    "hard": 2.598076211353316,
+    "soft": 1.984313483298443,
+    "softer": 2.985377821916005,
+    "soft-linear": 3.0,  # ratio 1.10 puts the amount over sigma: no real answer off flow
+    "sinusoidal": 2.950633572803542,
+    "eps": 2.9881253301737716,
+    "exp": 2.1213203435596424,
+    "lorentzian": 2.615525923070826,
+    "hard_var": 2.8722813232646622,  # a late step: s <= (sqrt(1 + 4p) - 1) / 2 = 0.3127
+    "er4": 2.9181161195771304,
+    "vpsde": 14.25,
+}
+
+
+def test_every_mode_on_another_model(db):
+    assert set(AT_3_AFTER_6_OTHER) == set(db.MODES)
+    for mode, expected in AT_3_AFTER_6_OTHER.items():
+        assert db.lowered_sigma(mode, 3.0, 6.0, 0.5, False, 14.6146) == pytest.approx(expected, rel=1e-12), mode
+
+
+def test_hard_var_and_vpsde_take_the_sigmas_as_they_are(db):
+    # hard_var's amount is eta * sqrt(sigma_prev - sigma), not sqrt(p - s) of the sigmas over sigma_max
+    assert db.lowered_sigma("hard_var", 3.0, 6.0, 0.5, False, 14.6146) == pytest.approx(
+        math.sqrt(3.0 ** 2 - 0.5 ** 2 * (6.0 - 3.0 + 1e-10)), rel=1e-12)
+    # vpsde: sigma - eta / 4 * sigma_prev (1 - sigma_prev) (sigma_prev - sigma); a sigma_prev over 1 raises it
+    assert db.lowered_sigma("vpsde", 3.0, 6.0, 0.5, False, 14.6146) == pytest.approx(
+        3.0 - 0.5 / 4 * 6.0 * (1 - 6.0) * (6.0 - 3.0), rel=1e-12)
+    # neither amount depends on sigma_max (at 20 the call is still a late step for hard_var: 0.15 <= 0.2416)
+    for mode in ("hard_var", "vpsde"):
+        assert (db.lowered_sigma(mode, 3.0, 6.0, 0.5, False, 14.6146)
+                == db.lowered_sigma(mode, 3.0, 6.0, 0.5, False, 20.0)), mode
 
 
 def test_hard_flow_scales_noise_to_signal(db):

@@ -7,7 +7,8 @@ longer side is `size` px, sampled, shrunk back and pasted through the region's o
 - Sampling: the model with core's Differential Diffusion (a clone), core's inpaint conditioning of the
   crop with the region's mask, softened at its edge, as the noise mask, every ControlNet's hint cut to the
   crop (conditioning.py: those in the conditioning, and Z-Image's Fun ControlNet on a clone of the model per
-  region). One sampling at `denoise`; at 0 it does not run.
+  region). One sampling at `denoise`; at 0 no region is detailed (run): nothing is encoded, sampled, decoded or
+  pasted, and no region is marked.
 - The paste: the decoded crop shrunk back, its colour matched to the image's in the mask's edge band
   (libs/color.match_band), Laplacian-pyramid blended under the mask softened inward (libs/blend), and
   only the pixels inside the mask taken: every other pixel keeps its exact value.
@@ -96,9 +97,8 @@ def _sample(base, region, crop, model, s, image_width, image_height):
     negative = crop_conditioning(s.negative, crop, image_width, image_height, done)
     positive, negative, latent = inpaint(positive, negative, s.vae, pixels, noise_mask)
     model = crop_model(model, crop, image_width, image_height)
-    if s.denoise > 0:
-        latent = ksampler(model, s.seed, s.steps, s.cfg, s.sampler_name, s.scheduler, positive, negative,
-                          {"samples": latent, "noise_mask": noise_mask}, s.denoise)["samples"]
+    latent = ksampler(model, s.seed, s.steps, s.cfg, s.sampler_name, s.scheduler, positive, negative,
+                      {"samples": latent, "noise_mask": noise_mask}, s.denoise)["samples"]
     images = s.vae.decode(latent)
     image = images.reshape(-1, *images.shape[-3:])[:1]  # a video VAE decodes (B, T, H, W, C)
     return _resize(image[..., :3].movedim(-1, 1).float().cpu(), base.shape[-2], base.shape[-1])[0]
@@ -133,13 +133,14 @@ def mark(changed, located):
 def run(image, masks, model, s, max_size, want_image=True):
     """BC_Detailer: (image with every region detailed, the pixels changed). Each mask of `masks` is one
     region, detailed in batch order on every frame of `image`, each on the frame the previous ones left; a
-    region whose longer side is over `max_size` px is left as it is, as is one s.size px or more (locate).
-    Frames one at a time into outputs of the image's dtype when that is half precision, float32 otherwise.
-    `want_image` False: nothing is sampled, the image is [0, H, W, 3] (the mask does not read it)."""
+    region whose longer side is over `max_size` px is left as it is, as is one s.size px or more (locate), and
+    every region at s.denoise 0 (it would redraw nothing). Frames one at a time into outputs of the image's
+    dtype when that is half precision, float32 otherwise. `want_image` False: nothing is sampled, the image is
+    [0, H, W, 3] (the mask does not read it)."""
     b, h, w, c = image.shape
     count = masks.reshape(-1, *masks.shape[-2:]).shape[0]
     regions = []
-    for n in range(count):
+    for n in range(count if s.denoise > 0 else 0):
         hard = fit_mask_frame(masks, n, h, w, count) > 0.5
         box = bounds(hard)
         located = None if box is None or max(box[2] - box[0], box[3] - box[1]) > max_size else locate(hard, s)

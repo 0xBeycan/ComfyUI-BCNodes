@@ -152,9 +152,9 @@ def request_params(request, sources):
               "output_config": {"effort": request.effort}}
     if request.system_prompt.strip() and config.cache_system_prompt:
         # The system prompt is the request's only part that repeats between runs (images and prompt change), so
-        # the breakpoint goes on it: a later run within the cache's 5 minutes reads it at about a tenth of the
-        # input price (the first writes it at 1.25x). Below the model's minimum cacheable length (512 tokens on
-        # Opus 5.5) the API caches nothing and charges nothing extra.
+        # the breakpoint goes on it: a later run within the cache's 5 minutes reads it, billed below the input
+        # price (the first writes it, billed above it; https://www.anthropic.com/pricing). Below the model's minimum
+        # cacheable length (512 tokens on Opus 5.5) the API caches nothing and charges nothing extra.
         params["system"] = [{"type": "text", "text": request.system_prompt, "cache_control": {"type": "ephemeral"}}]
     elif request.system_prompt.strip():
         params["system"] = request.system_prompt

@@ -1,5 +1,7 @@
 # Model
 
+The model nodes patch a model between its loader (and its LoRA loaders) and the sampler. Each of them but DyPE Config returns a patched clone and leaves the input model unchanged. [Patch Sage Attention](#bc_patchsageattention--patch-sage-attention) runs this model's attention, and no other's, on one SageAttention kernel. [Detail Boost](#bc_detailboost--detail-boost) tells the model a lower noise level than the sampler's in a range of steps, so it keeps more fine detail. [Qwen Image Shift](#bc_qwenimageshift--qwen-image-shift) gives a Qwen-Image model the official Qwen-Image-2512 flow shift. [Dual Sampling Shift](#bc_dualsamplingshift--dual-sampling-shift) gives a flow model one shift for a run from full noise and another for a refine pass. [DyPE Patcher](#bc_dypepatcher--dype-patcher) puts DyPE on the rotary positions of a Z-Image or Qwen-Image model, against the scene repeating itself above the training resolution; [DyPE Config](#bc_dypeconfig--dype-config) sets its values for DyPE Patcher and Dual Sampler.
+
 ## `BC_PatchSageAttention` — Patch Sage Attention
 
 `model` (`MODEL`) + `mode` + `qk_quant` + `nan_guard` + `log_level` → `MODEL`: a clone of the model whose attention runs one SageAttention kernel. The input model is never changed.
@@ -17,12 +19,12 @@ Every model that calls ComfyUI's attention entry points takes the patch: Qwen-Im
 | `disabled` | none: the clone, unpatched, for an A/B in the same workflow | any |
 | `auto` (default) | `sageattn_qk_int8_pv_fp16_cuda`: INT8 Q·K, fp16 P·V accumulated in fp32 | sm_80, sm_86, sm_89, sm_90, sm_100, sm_120, sm_121: Ampere, Ada, Hopper, Blackwell (RTX 3090, 4090, 5090, RTX PRO Blackwell, A100, H100, B200) |
 | `sageattn_qk_int8_pv_fp16_cuda` | the same kernel as `auto` | the same |
-| `sageattn_qk_int8_pv_fp16_triton` | INT8 Q·K, fp16 P·V, in Triton | sm_80 to sm_100; not sm_120 / sm_121, where the official code calls the Triton kernel unusable |
-| `sageattn_qk_int8_pv_fp8_cuda` | INT8 Q·K, fp8 P·V accumulated in fp32 into an fp32 buffer (SageAttention2) | sm_89 and newer |
-| `sageattn_qk_int8_pv_fp8_cuda++` | INT8 Q·K, fp8 P·V accumulated in fp16 into the fp32 buffer (SageAttention2++: what the global flag runs on Ada and Blackwell) | sm_89 and newer |
+| `sageattn_qk_int8_pv_fp16_triton` | INT8 Q·K, fp16 P·V, in Triton | sm_80, sm_86, sm_89, sm_90, sm_100; not sm_120 / sm_121, where the official code calls the Triton kernel unusable |
+| `sageattn_qk_int8_pv_fp8_cuda` | INT8 Q·K, fp8 P·V accumulated in fp32 into an fp32 buffer (SageAttention2) | sm_89, sm_90, sm_100, sm_120, sm_121 |
+| `sageattn_qk_int8_pv_fp8_cuda++` | INT8 Q·K, fp8 P·V accumulated in fp16 into the fp32 buffer (SageAttention2++: what the global flag runs on Ada and Blackwell) | sm_89, sm_90, sm_100, sm_120, sm_121 |
 | `sageattn3 (experimental)` | SageAttention3, FP4, from the separate `sageattn3` package | sm_100, sm_120, sm_121 |
 
-`auto` is conservative: it takes the most accurate kernel and nothing else, and never falls through to Triton, fp8 P·V or SageAttention3. Those trade accuracy for speed and are reported to give black images or lose detail and identity with Qwen-Image and Wan, where the output matters more than the time saved. A GPU with no compute capability in `auto`'s row (Turing and older) keeps ComfyUI's attention.
+`auto` is conservative: it takes the most accurate kernel and nothing else, and never falls through to Triton, fp8 P·V or SageAttention3. Those trade accuracy for speed and are reported to give black images or lose detail and identity with Qwen-Image and Wan, where the output matters more than the time saved. Each kernel runs only on the compute capabilities of its row, taken from the official code: on any other GPU (Turing and older, or a capability not listed) the model keeps ComfyUI's attention and the console says which capabilities the kernel runs on.
 
 The kernels get the official arguments (thu-ml/SageAttention 2.2.0): `smooth_k` on (K's mean over the tokens is taken out before quantization, which softmax does not see; ComfyUI's own sage path turns it off), and `qk_quant_gran` from `qk_quant` (below). `sageattn3` runs with its default `per_block_mean`.
 
@@ -86,7 +88,9 @@ On (default): every kernel output is checked with `torch.isfinite`, and a call w
 
 ### Install
 
-SageAttention 2.2.x built for the torch and CUDA ComfyUI runs on: `pip install sageattention==2.2.0 --no-build-isolation` (it compiles against the installed torch, so the CUDA toolkit has to be there), a prebuilt wheel made for exactly that torch, CUDA and Python, or a build from [the source](https://github.com/thu-ml/SageAttention) (`python setup.py install`). Blackwell needs CUDA 12.8 or newer. Not the plain `pip install sageattention`: that is 1.0.6, which the node refuses. The `sageattn3 (experimental)` mode needs the `sageattn3` package too, built from the same repository's `sageattention3_blackwell/` (Python 3.13+, torch 2.8+, CUDA 12.8+). It is not in this pack's `requirements.txt`.
+SageAttention 2.2.x built for the torch and CUDA ComfyUI runs on: a prebuilt wheel made for exactly that torch, CUDA and Python, or a build from [the source](https://github.com/thu-ml/SageAttention) (`python setup.py install`; it compiles against the installed torch, so the CUDA toolkit has to be there). Blackwell needs CUDA 12.8 or newer. Not the plain `pip install sageattention`: that is a 1.x release (1.0.6), which the node refuses. The `sageattn3 (experimental)` mode needs the `sageattn3` package too, built from the same repository's `sageattention3_blackwell/` (Python 3.13+, torch 2.8+, CUDA 12.8+). Neither package is in this pack's `requirements.txt`.
+
+The `per_thread` quantization (which `qk_quant` `auto` tries first) and the `sageattn_qk_int8_pv_fp16_triton` kernel are Triton kernels, so both need Triton in ComfyUI's Python. The pack imports neither Triton nor SageAttention when it loads: the node imports `sageattention` when it runs, before patching. An import that fails is reported as `sageattention <version> has no usable <function> (<the error>)`, and the model keeps ComfyUI's attention. With `qk_quant` `auto`, a `per_thread` test call that fails moves to `per_warp` (the `qk_quant` table).
 
 ### A/B test
 
@@ -97,6 +101,16 @@ To measure the kernels themselves on a GPU (accuracy against torch SDPA at Qwen-
 ## `BC_DetailBoost` — Detail Boost
 
 `model` (`MODEL`) + `weight` + `mode` + `eta` + `start_step` + `end_step` → `MODEL`: a clone of the model that is told a lower noise level than the sampler's in a range of steps. The input model is never changed.
+
+| Widget | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `weight` | 1.0 | −10 to 10, step 0.01 | the blend toward the lowered sigma (`weight` and `eta` below); 0: the model is not patched |
+| `mode` | `hard` | the 11 modes below | how much noise the model is told is gone |
+| `eta` | 0.5 | 0 to 10, step 0.01 | the mode's strength; 0: the model is not patched |
+| `start_step` | 3 | 0 to 10000 | the first step boosted, counted from 0 in each sampler run |
+| `end_step` | 10 | −1 to 10000 | the step the boost stops at, not boosted itself; −1: to the end of the run |
+
+An `end_step` at or below `start_step` (other than −1) stops the node with an error.
 
 ### What it does
 
@@ -125,21 +139,21 @@ From `eta` 1 on, `hard` is capped: the ratio is multiplied by 0.014, and the mod
 
 ### Modes
 
-Each mode takes noise out of the call's sigma: an amount of ratio × base, the base being the call's sigma unless the table says otherwise. On a flow model the noise that is left is renormalised by the signal (x = (1 − sigma) x0 + sigma noise); on any other model the sigma itself is what is left. `s` is the call's sigma and `p` the schedule sigma before it, both divided by the model's sigma_max (1 on a flow model).
+Each mode takes noise out of the call's sigma: an amount of ratio × base, the base being the call's sigma unless the table says otherwise. On a flow model the noise that is left is renormalised by the signal (x = (1 − sigma) x0 + sigma noise); on any other model the sigma itself is what is left. `sigma` is the call's sigma and `sigma_prev` the schedule sigma before it, as the sampler has them; `s` and `p` are the two divided by the model's sigma_max (1 on a flow model, 14.6 on SD 1.x and SDXL). `hard_var`'s base and `vpsde` take `sigma` and `sigma_prev` as they are.
 
 | `mode` | Ratio | Where it acts |
 | --- | --- | --- |
 | `hard` (default) | eta | every boosted step alike |
 | `soft` | eta (1 + s / p) | about twice `hard` |
 | `softer` | 1 − √(1 − eta² (p² − s²) / p²) | grows with the step's size |
-| `soft-linear` | 1 − eta (s − p) | above 1 on a falling schedule, so capped: `hard`'s result below `eta` 1 |
+| `soft-linear` | 1 − eta (s − p) | above 1 on a falling schedule: on a flow model capped, `hard`'s result below `eta` 1; on another model no effect |
 | `sinusoidal` | eta sin²(π s) | strongest at s 0.5, the middle steps; nothing near 0 and 1 |
 | `eps` | eta (s / p) √(p² − s²) | grows with the step's size |
 | `exp` | √(1 − (s / p)^(2 eta)) | grows with the step's size and `eta` |
 | `lorentzian` | eta, of the base sigma_max · s / √(s² + 1) | weaker at high sigma |
-| `hard_var` | eta, of the base √(p − s) | only the late steps, where s ≤ (√(1 + 4p) − 1) / 2 |
+| `hard_var` | eta, of the base √(sigma_prev − sigma) | only the late steps, where s ≤ (√(1 + 4p) − 1) / 2 |
 | `er4` | √(s² − p² (n(s) / n(p))²) / s, with n(v) = v (e^(v^eta) + 10) | `eta` is an exponent |
-| `vpsde` | none: the model is told s − eta / 4 · p (1 − p)(p − s) | a flow-model formula; a small cut |
+| `vpsde` | none: the model is told sigma − eta / 4 · sigma_prev (1 − sigma_prev)(sigma_prev − sigma) | a flow-model formula, a small cut there; on another model a `sigma_prev` over 1 raises the sigma |
 
 On a flow model an amount at or over the call's sigma is capped to eta × sigma (0.9999 × sigma from `eta` 1 on). A formula with no real answer (a negative square root, an amount over the sigma of another model) leaves the call's sigma as it is.
 
@@ -154,6 +168,22 @@ The node puts a `PREDICT_NOISE` wrapper on the clone (ComfyUI's patcher wrappers
 ## `BC_QwenImageShift` — Qwen Image Shift
 
 `model` (`MODEL`) + `mode` + `shift` + `multiplier` + `shift_terminal` + `terminal` + `base_seq_len` + `max_seq_len` + `base_shift` + `max_shift` + `refine_threshold` + `refine_rate` → `MODEL`: a clone with the flow shift of the official Qwen-Image-2512 scheduler, for the stock KSampler and schedulers. Use it in place of ModelSamplingAuraFlow. The input model is never changed.
+
+| Widget | Default | Range | Used by |
+| --- | --- | --- | --- |
+| `mode` | `dynamic` | `dynamic`, `fixed` | every run (`mode` below) |
+| `shift` | 3.0 | 0 to 100, step 0.01 | `fixed` mode |
+| `multiplier` | 1.0 | 0.01 to 100, step 0.01 | `dynamic` mode: the shift is e^mu × `multiplier` |
+| `shift_terminal` | on | | every run (`shift_terminal` below) |
+| `terminal` | 0.02 | 0.001 to 0.999, step 0.001 | `shift_terminal` on: the last sigma before 0 |
+| `base_seq_len` | 256 | 1 to 1000000 | `dynamic` mode: the tokens that get `base_shift` |
+| `max_seq_len` | 8192 | 1 to 1000000 | `dynamic` mode: the tokens that get `max_shift` |
+| `base_shift` | 0.5 | 0 to 100, step 0.01 | `dynamic` mode: mu at `base_seq_len` |
+| `max_shift` | 0.9 | 0 to 100, step 0.01 | `dynamic` mode: mu at `max_seq_len` |
+| `refine_threshold` | 9600 | 0 to 1000000 | `dynamic` mode, refine passes (below) |
+| `refine_rate` | 0.17 | −1 to 2, step 0.01 | `dynamic` mode, refine passes (below) |
+
+`refine_threshold` and `refine_rate` are optional inputs, so a prompt saved before they were added runs with their defaults. In `dynamic` mode a `max_seq_len` equal to `base_seq_len` stops the node with an error: the two points of the shift line must differ.
 
 ### What it does
 
@@ -171,7 +201,7 @@ The official pipeline (diffusers' QwenImagePipeline with FlowMatchEulerDiscreteS
 - `dynamic` (default): each sampler run takes its shift from the latent it gets, e^mu × `multiplier`. One patched model gives each pass its own shift: in a two-pass workflow the 1.25x upscaled second pass gets a larger one (a refine pass above `refine_threshold` tokens: see below). The console prints each run's latent size, refine state, tokens, mu and shift.
 - `fixed`: `shift` for every run. With `shift_terminal` off the model is exactly ModelSamplingAuraFlow at that shift (every scheduler gives the same sigmas). Qwen-Image-Lightning was distilled with shift 3 and no terminal: `fixed`, 3, `shift_terminal` off.
 
-`multiplier`, `base_seq_len`, `max_seq_len`, `base_shift`, `max_shift`, `refine_threshold` and `refine_rate` are used in `dynamic` mode only; the five line values' defaults are the official config (256, 8192, 0.5, 0.9).
+`multiplier`, `base_seq_len`, `max_seq_len`, `base_shift`, `max_shift`, `refine_threshold` and `refine_rate` are used in `dynamic` mode only; the four line values' defaults are the official config (256, 8192, 0.5, 0.9).
 
 ### Refine passes (`refine_threshold`, `refine_rate`)
 
@@ -211,6 +241,49 @@ On (default, as the official config): each run's schedule is stretched so its la
 ### Other patches
 
 The node replaces the model's `model_sampling`, as ModelSamplingAuraFlow does, and puts an `OUTER_SAMPLE` wrapper on the clone in `dynamic` mode or with `shift_terminal` on (fixed mode without it needs none). ComfyUI chains wrappers, so the model's other wrappers stay; a second Qwen Image Shift replaces the first one's. A node after it that replaces `model_sampling` again (ModelSamplingAuraFlow, ModelSamplingSD3) would have the shift applied twice: the run stops with an error saying to keep one of the two.
+
+## `BC_DualSamplingShift` — Dual Sampling Shift
+
+`model` (`MODEL`) + `shift_1` + `shift_2` → `MODEL`: a clone of a flow model with two shifts, `shift_1` for a sampler run from full noise and `shift_2` for a refine pass. Use it in place of ModelSamplingAuraFlow or ModelSamplingSD3. The input model is never changed.
+
+| Widget | Default | Range | Used by |
+| --- | --- | --- | --- |
+| `shift_1` | 3.0 | 0 to 100, step 0.01 | a run from full noise (denoise 1), and the later part of a split run |
+| `shift_2` | 3.0 | 0 to 100, step 0.01 | a refine pass: a run on new noise that starts below full noise |
+
+### What it does
+
+The clone's `model_sampling` is a new object of the model's own `model_sampling` class (its prediction type kept) at `shift_1`, with the model's multiplier and noise scale, built as ModelSamplingSD3 builds it. A run from full noise is handed to the sampler unchanged: with every scheduler its sigmas are exactly ModelSamplingAuraFlow's at `shift_1` (multiplier 1: Z-Image, Qwen-Image after ModelSamplingAuraFlow) or ModelSamplingSD3's (multiplier 1000: Wan, SD3).
+
+A sampler builds its sigmas before any model patch sees the run, so a refine pass gets `shift_1`'s sigmas too. An `OUTER_SAMPLE` wrapper (ComfyUI's patcher wrappers) maps them to `shift_2` when the run starts. It takes t of each sigma from `shift_1` (the inverse of sigma = shift_1 · t / (1 + (shift_1 − 1) · t)), then applies the same formula at `shift_2`. During the run `model_sampling` is at `shift_2`, so ControlNet and conditioning step ranges follow it. After the run it is back at `shift_1`, also when the run fails.
+
+### Refine passes
+
+A refine pass is a run on new noise whose schedule starts below full noise: denoise below 1 or a later start step. Examples are a hires or latent-upscaled second pass, Dual Sampler's second pass and a detailer's crop. Qwen Image Shift uses the same rule.
+
+The later part of a split run is no refine pass. KSamplerAdvanced with `add_noise` off (or SamplerCustomAdvanced with DisableNoise) gives the run all-zero noise, so one generation split in two keeps `shift_1`. A later part with `add_noise` on adds new noise and is a refine pass. Neither the denoise nor `add_noise` reaches the node; it reads both from the run (its first sigma, its noise).
+
+Full noise: `model_sampling`'s top sigma at `shift_1` is 1 only to float32 rounding (0.99999988 at 1.18, for example). `normal`, `sgm_uniform` and `karras` compute their first sigma from it and land slightly on either side. So a run starts below full noise when its first sigma is below the midpoint of `model_sampling`'s two highest sigmas, about half a timestep below the top.
+
+### Schedulers
+
+| Scheduler | Run from full noise | Refine pass |
+| --- | --- | --- |
+| `simple`, `beta` | exactly ModelSamplingAuraFlow / ModelSamplingSD3 at `shift_1` | the scheduler at `shift_2`, to float32 rounding (the map goes through t) |
+| `ddim_uniform` | never starts at full noise (its first timestep is below the top: 0.952 at 20 steps), so its runs on new noise are refine passes and take `shift_2` | the scheduler at `shift_2`, to float32 rounding |
+| `normal`, `sgm_uniform` | exactly ModelSamplingAuraFlow / ModelSamplingSD3 at `shift_1` | `shift_1`'s grid, mapped: its end comes from `shift_1`, so the steps differ from the scheduler at `shift_2`, most near the end |
+| `karras`, `exponential`, `kl_optimal` | exactly ModelSamplingAuraFlow / ModelSamplingSD3 at `shift_1` | the scheduler's `shift_1` curve, mapped: not the curve these schedulers give at `shift_2` |
+| `linear_quadratic` | exactly ModelSamplingAuraFlow / ModelSamplingSD3 at `shift_1`, which ignore the shift for it | mapped here; with ModelSamplingAuraFlow it ignores the shift |
+
+### Models
+
+The node takes flow models with one shift, whose `model_sampling` is core's ModelSamplingDiscreteFlow: Z-Image, Wan, SD3, or any model after ModelSamplingAuraFlow / ModelSamplingSD3. Qwen-Image and Flux load with ModelSamplingFlux: put ModelSamplingAuraFlow before the node (its shift is replaced by `shift_1`). Any other model stops with an error: EPS or v-prediction models, and audio-video models (ModelSamplingAV, whose audio has a second shift).
+
+### Other patches
+
+Qwen Image Shift and this node both set the model's shift. A Qwen Image Shift before it with a wrapper (dynamic mode, or `shift_terminal` on) is an error saying to keep one of the two. One in fixed mode with `shift_terminal` off carries no wrapper; its `model_sampling` is replaced, as ModelSamplingAuraFlow's is.
+
+A node after it that replaces `model_sampling` again (Qwen Image Shift, ModelSamplingAuraFlow, ModelSamplingSD3) stops the run with an error saying to keep one of the two. ComfyUI chains wrappers, so the model's other wrappers stay; a second Dual Sampling Shift replaces the first one's.
 
 ## `BC_DyPEPatcher` — DyPE Patcher
 
@@ -273,4 +346,19 @@ The time / caption axis keeps core's rotary table. On Qwen-Image the caption tok
 
 ## `BC_DyPEConfig` — DyPE Config
 
-`model` + `method` + `base_resolution` + `dype_scale` + `dype_exponent` + `auto_threshold` + `yarn_alt_scaling` → `BC_DYPE_CONFIG`, for DyPE Patcher's and Dual Sampler's optional `dype_config`. `model` (Z-Image or Qwen-Image) is the model kind the values are for: the fields you have not changed show that model's automatic values (the table above), and selecting another model shows its values. Only the fields you change on the node, or feed by a link, are applied; every other field keeps the model's automatic value. Un-changed fields are drawn greyed on the classic canvas (the Vue renderer has no greyed look that still takes input). The node's menu item *Reset to automatic values* clears the changes and shows the selected model's values. A DyPE Config whose `model` is not the patched model's kind stops the run with an error naming both. A changed `dype_exponent` replaces the per-scale choice with that value at every size. `yarn_alt_scaling` acts on Qwen-Image's `yarn` only. The shift is not a DyPE value and cannot be set here.
+`model` + `method` + `base_resolution` + `dype_scale` + `dype_exponent` + `auto_threshold` + `yarn_alt_scaling` + `edited` (hidden) → `dype_config` (`BC_DYPE_CONFIG`), for DyPE Patcher's and Dual Sampler's optional `dype_config`. Only the fields you change on the node, or feed by a link, are applied; every other field keeps the automatic value of the model selected in `model` (the table in DyPE Patcher).
+
+| Widget | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `model` | `Z-Image` | `Z-Image`, `Qwen-Image` | the model kind the values are for; always applied |
+| `method` | `vision_yarn` | `vision_yarn`, `yarn`, `ntk`, `pi`, `base` | the rotary method ([Methods](#methods)) |
+| `base_resolution` | 1024 | 256 to 4096, step 16 | the model's training resolution, px |
+| `dype_scale` | 2.0 | 0 to 8, step 0.1 | DyPE's magnitude (λs) |
+| `dype_exponent` | 1.0 | 0 to 1000, step 0.1 | how fast DyPE's effect decays over the run (λt); changed, it replaces the per-scale choice with that value at every size |
+| `auto_threshold` | 1920 | 0 to 16384, step 16 | `auto` mode: DyPE for a latent whose longer side is over this, px |
+| `yarn_alt_scaling` | off | | Qwen-Image's `yarn` only: each image axis stretched to its own length |
+| `edited` | empty | hidden | the fields changed on this node, comma-separated |
+
+**What is applied.** The `dype_config` output holds `model` and the fields named in `edited`, then every other field whose input is fed by a link. The node reads the links from the prompt it runs in (ComfyUI's hidden `PROMPT` and `UNIQUE_ID` inputs), so a linked field is always applied, whatever `edited` says; a call without a prompt (code calling the node directly, a node made by another node's expansion) applies `edited` alone. The frontend keeps `edited`: a change you make to a field's value adds it (a value the frontend sets itself does not). The node's menu item *Reset to automatic values* clears `edited`. Through the API, set `edited` yourself, e.g. `"base_resolution, dype_exponent"`: names are trimmed, empty ones skipped, a repeated one counted once, and an unknown name is an error that lists the fields. A DyPE Config whose `model` is not the patched model's kind stops the run with an error naming both. The shift is not a DyPE value and cannot be set here.
+
+**What is shown.** The fields not in `edited` show the selected model's automatic values: when you select another `model` and on *Reset to automatic values*, never on load (a saved workflow's values come back as saved). `dype_exponent` has no single automatic value, since it follows each latent's scale (2.0, 1.0 or 0.5), so un-changed it shows its widget default, 1.0, while the run uses the value for the latent's scale. On the classic canvas the un-changed fields are drawn greyed and still take input; the Vue node renderer has no greyed look that still takes input, so there they look like changed fields.

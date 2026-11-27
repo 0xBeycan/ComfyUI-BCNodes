@@ -12,8 +12,9 @@ the mode's ratio times a base sigma (the call's own, unless the mode says otherw
 noise-to-signal ratio sigma / (1 - sigma) shrinks by sqrt(1 - (up / sigma)^2); for any other model the
 sigma itself does. `weight` blends: the model is told sigma + weight * (lowered - sigma).
 
-Modes, with s the call's sigma and p the schedule sigma before it, both divided by the model's
-sigma_max (1 for a flow model); the ratio applies to s unless a base is given:
+Modes, with sigma the call's sigma and sigma_prev the schedule sigma before it, and s and p the two
+divided by the model's sigma_max (1 for a flow model); the ratio applies to sigma unless a base is given.
+hard_var's base, er4's root and vpsde take sigma and sigma_prev as they are:
     hard         eta
     soft         eta * (1 + s / p)
     softer       1 - sqrt(1 - eta^2 (p^2 - s^2) / p^2)

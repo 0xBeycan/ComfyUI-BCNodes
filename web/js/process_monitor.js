@@ -187,7 +187,8 @@ async function fullClear() {
 	try {
 		const r = await call("clear", {});
 		const failed = (r.steps.find((s) => s.name === "pack_models")?.detail ?? []).filter((h) => h.error);
-		// the device-wide VRAM (weights under dynamic VRAM are outside torch's reserved); reserved without NVML
+		// the device-wide VRAM (weights under dynamic VRAM are outside torch's reserved); torch's reserved where there
+		// is no device-wide reading (MPS)
 		const [vramLabel, vramKey] = r.before.vram_device != null ? ["VRAM (device)", "vram_device"] : ["VRAM reserved", "vram_reserved"];
 		const short = [clearChange(r, "RAM", "ram"), clearChange(r, vramLabel, vramKey)].filter(Boolean).join(", ");
 		state.clearLast = [

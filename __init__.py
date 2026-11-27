@@ -1,8 +1,8 @@
 """ComfyUI-BCNodes — utility nodes for ComfyUI.
 
-Every node module only touches torch / numpy / stdlib at import time; scipy,
-PIL, cv2, safetensors, torchvision, the BiRefNet and Depth Anything architectures and the pip
-dependencies (postfx, caption-audit) are imported inside the functions that
+Every node module only touches torch / numpy / stdlib at import time; PIL,
+cv2, safetensors, torchvision, the BiRefNet and Depth Anything architectures and the pip
+dependencies (postfx, caption-audit, anthropic) are imported inside the functions that
 use them. tests/test_import_time.py holds the package to that.
 
 Nodes:
@@ -19,7 +19,7 @@ Nodes:
     BC_ImageResize               resize image / mask: stretch, keep proportion, pad or crop
     BC_JoinImageLists            concatenate image lists, unbounded inputs
     BC_BiRefNetRemoveBackground  BiRefNet matting, plain torch
-    BC_DepthAnythingV2           Depth Anything V2 Small depth map, near = white, plain torch
+    BC_DepthAnythingV2           Depth Anything V2 Small or Depth Anything 3 (core) depth map, near = white
     BC_AutoModelDownloader       fetch a workflow's models into models/
     BC_MathExpression            arithmetic over a, b, c without eval()
     BC_PromptList                one prompt per line, as a list
@@ -41,6 +41,7 @@ Nodes:
     BC_PatchSageAttention        MODEL -> MODEL whose attention runs one SageAttention kernel, per model
     BC_DetailBoost               MODEL -> MODEL told a lower sigma in a step range: more fine detail
     BC_QwenImageShift            MODEL -> MODEL with the official Qwen-Image-2512 shift (per latent size), replaces ModelSamplingAuraFlow
+    BC_DualSamplingShift         MODEL -> MODEL with two flow shifts: shift_1 from full noise, shift_2 for refine passes (denoise < 1)
     BC_DyPEPatcher               MODEL -> MODEL with DyPE on its rotary positions (Z-Image, Qwen-Image), image size from the latent, shift kept
     BC_DyPEConfig                DyPE Patcher's / Dual Sampler's automatic DyPE values for one model, only the edited fields
     BC_DualSampler               two-pass hires fix, any model: pass 1, latent / pixel upscale blend, pass 2 with DyPE
@@ -70,7 +71,7 @@ Nodes:
     BC_FrequencyMerge            low frequencies of one image + high frequencies of another
     BC_Detailer                  each mask region cropped, sampled at the model's size, pasted back
     BC_FaceDetailer              SAM 3 faces detailed: the character with the LoRA model, others with model_no_lora; then eyes
-    BC_PreFlightObserve          Qwen3.5-9B as an observation sensor: image / frames -> observations JSON
+    BC_PreFlightObserve          the LM Loader's chat model as an observation sensor: image / frames -> observations JSON
     BC_PreFlightReport           rules engine: observations + caption -> IG / TikTok / X verdict ranges, logged
     BC_PreFlightOutcome          what a platform did to a post, into the feedback store
     BC_PreFlightCalibrate        the feedback store's calibration tables, as text
@@ -88,7 +89,7 @@ from .nodes import (
     any_switch, birefnet, caption_audit, claude, cond_pipe, depth_anything, detail_boost, detailer, downloader, dype, everywhere, frequency_merge,
     image_comparer, image_quality_gate, image_scale, latent_upscale, lists, lm, logic, lora_key_fix, mask, math_expression, postfx,
     power_lora_loader, preflight, prompt_list, qwen_image_shift, sage_attention, save_image, save_image_with_caption, seed, seedvr2,
-    select_switch, show_text, skin_texture, social_media_export, vae_loader, dual_sampler,
+    select_switch, show_text, skin_texture, social_media_export, vae_loader, dual_sampler, dual_sampling_shift,
 )
 from .nodes.common import register_link_stamp
 from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's routes and, when on, its sampler)
@@ -96,8 +97,8 @@ from .nodes import process_monitor  # noqa: F401  (no nodes: the monitor's route
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 for _module in (logic, mask, image_scale, lists, birefnet, depth_anything, downloader, math_expression, prompt_list, any_switch, select_switch, seed, show_text,
-                lm, claude, image_comparer, power_lora_loader, lora_key_fix, vae_loader, latent_upscale, sage_attention, detail_boost, qwen_image_shift, dype,
-                dual_sampler, everywhere,
+                lm, claude, image_comparer, power_lora_loader, lora_key_fix, vae_loader, latent_upscale, sage_attention, detail_boost, qwen_image_shift,
+                dual_sampling_shift, dype, dual_sampler, everywhere,
                 cond_pipe, seedvr2, postfx, caption_audit, social_media_export, image_quality_gate, save_image, save_image_with_caption, skin_texture,
                 frequency_merge, detailer, preflight):
     NODE_CLASS_MAPPINGS.update(_module.NODE_CLASS_MAPPINGS)

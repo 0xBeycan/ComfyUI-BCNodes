@@ -45,14 +45,16 @@ class DetailBoost:
                            "sigma). 1: the mode's full effect; positive values add fine detail, negative values soften. "
                            "0: the model is not patched (the output is bit-identical to the input model's)."}),
                 "mode": (list(MODES), {"default": "hard", "tooltip":
-                         "How much noise the model is told is gone, with s the call's sigma and p the schedule sigma "
-                         "before it. hard: eta at every step (flow models: noise/signal x sqrt(1 - eta^2)). soft: "
+                         "How much noise the model is told is gone, with sigma the call's sigma, sigma_prev the "
+                         "schedule sigma before it, and s and p the two over the model's sigma_max (1 on a flow "
+                         "model). hard: eta at every step (flow models: noise/signal x sqrt(1 - eta^2)). soft: "
                          "eta * (1 + s/p), about twice hard. softer, eps, exp: grow with the step's size (p - s). "
-                         "soft-linear: above 1 on a falling schedule, so capped: hard's result below eta 1. sinusoidal: "
-                         "eta * sin(pi s)^2, strongest at s 0.5 (middle steps). lorentzian: eta of s / sqrt(s^2 + 1), "
-                         "weaker at high sigma. hard_var: eta of sqrt(p - s), only in the late steps where s <= "
+                         "soft-linear: above 1 on a falling schedule, so capped on a flow model (hard's result below "
+                         "eta 1) and no effect on other models. sinusoidal: eta * sin(pi s)^2, strongest at s 0.5 "
+                         "(middle steps). lorentzian: eta of sigma_max * s / sqrt(s^2 + 1), weaker at high sigma. "
+                         "hard_var: eta of sqrt(sigma_prev - sigma), only in the late steps where s <= "
                          "(sqrt(1 + 4p) - 1) / 2. er4: eta is an exponent of its noise scaler. vpsde: a flow-model "
-                         "formula, s - eta/4 * p(1 - p)(p - s)."}),
+                         "formula, sigma - eta/4 * sigma_prev(1 - sigma_prev)(sigma_prev - sigma)."}),
                 "eta": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 10.0, "step": 0.01, "tooltip":
                         "The mode's strength (no noise is added). 0: the model is not patched. hard on a flow model: "
                         "0.5 tells the model noise/signal x 0.866; from 1 on the cut is capped (x 0.014)."}),

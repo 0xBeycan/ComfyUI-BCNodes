@@ -15,7 +15,7 @@ Each mask of the `mask` batch is one region (SAM 3 Detect with `individual_masks
 | `seed`, `steps`, `cfg`, `sampler_name`, `scheduler` | KSampler's | as on KSampler |
 | `denoise` | `0.5` | how far the region may be redrawn; Face Detailer's face pass (its eye pass takes `eye_denoise`) |
 
-Each region is sampled once; at `denoise` `0` it is not sampled.
+Each region is sampled once. At `denoise` `0` the Detailer details no region: nothing is encoded, sampled, decoded or pasted, every pixel keeps its exact value and the `mask` output is empty. On the Face Detailer `denoise` `0` turns the face pass off and `eye_denoise` `0` the eye pass, as their toggles do.
 
 ### Size, crop size and the largest region (both nodes)
 
@@ -60,9 +60,9 @@ SAM 3 finds every face of each frame (`sam3_model` is a checkpoint under `models
 | `face` | on | the face's mask | `face_size`, `face_crop_size`, `max_face_height`, `denoise` |
 | `eyes` | on | both eyes as one region, on one crop | `eye_size`, `eye_crop_size`, `eye_denoise` |
 
-With `face` and `eyes` both off the image passes through as it is and the `mask` is empty: SAM 3 is not loaded and no face is searched for.
+A pass at `0` (`denoise` for the face, `eye_denoise` for the eyes) is off, as its toggle off. With both passes off the image passes through as it is and the `mask` is empty: SAM 3 is not loaded and no face is searched for.
 
-The eyes are found on the face's box of the frame the face pass left, and cut to the face's mask (another face's eye inside the box is not taken). Both are detailed as one region, the union of their masks, on one crop in one sampling: the model sees both eyes, so their gazes match (an eye on a crop of its own never sees the other one). When only one eye is found it is detailed alone. The eye pass uses the face's model and the sampling widgets but `denoise`: `eye_denoise` (default `0.35`, `0`–`1`) sets how far the eyes may be redrawn. The box of the eyes has its longer side redrawn at `eye_size` px inside a crop sampled at `eye_crop_size` px, by the same rule as the face.
+The eyes are found on the face's box of the frame the face pass left, and cut to the face's mask (another face's eye inside the box is not taken). Both are detailed as one region, the union of their masks, on one crop in one sampling: the model sees both eyes, so their gazes match (an eye on a crop of its own never sees the other one). When only one eye is found it is detailed alone. The eye pass uses the face's model and the sampling widgets but `denoise`: `eye_denoise` (default `0.35`, `0`–`1`) sets how far the eyes may be redrawn; at `0` the eyes are not searched for and keep their pixels. The box of the eyes has its longer side redrawn at `eye_size` px inside a crop sampled at `eye_crop_size` px, by the same rule as the face.
 
 **The size gate.** A face's height is the height of its SAM 3 mask's box, its longer side the longer side of that box (the height, for an upright face), in px.
 

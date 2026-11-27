@@ -8,13 +8,13 @@ Half-precision input (float16 or bfloat16, e.g. BCVideoNodes' Load Video): Mask 
 
 ## `BC_MaskFillHoles` — Mask Fill Holes
 
-`masks` (`MASK`, optional) → `MASKS`. Fills every fully enclosed hole of each mask in the batch: the mask is quantised to 8 bit, and the background regions that cannot reach the border in 4-connected steps (OpenCV connected components) become foreground — the same result as the earlier scipy `binary_fill_holes` implementation, bit for bit. A hole closed only by diagonal steps is filled; a gap touching the border is not enclosed and stays open. Output is hard `0/1`, `float32`, shape `(B, H, W)`. A missing mask (`None`, an empty tensor, or nothing wired) returns `torch.zeros((1, 64, 64))`.
+`masks` (`MASK`, optional) → `MASKS`. Fills every fully enclosed hole of each mask in the batch: the mask is quantised to 8 bit, and the background regions that cannot reach the border in 4-connected steps (OpenCV connected components) become foreground. A hole closed only by diagonal steps is filled; a gap touching the border is not enclosed and stays open. Output is hard `0/1`, shape `(B, H, W)`, in a half-precision input's dtype and `float32` otherwise. A missing mask (`None`, an empty tensor, or nothing wired) returns `torch.zeros((1, 64, 64))`.
 
 ## `BC_MaskGrow` — MaskGrow
 
 `mask` (`MASK`, optional), widgets `invert_mask` (default `False`), `grow` (`-999..999`, default `4`), `blur` (`0..999`, default `4`) → `mask`.
 
-Optional inversion, then `|grow|` iterations of grey dilation (positive) or erosion (negative) with a cross-shaped 3×3 kernel on the 8-bit mask (OpenCV), then a Gaussian blur of radius `blur` (PIL). The result is the same as the earlier scipy implementation, bit for bit, with the morphology about ten times faster (measured at `grow` 10); frames are written into one preallocated output. A missing mask returns `torch.zeros((1, 64, 64))`.
+Optional inversion, then `|grow|` iterations of grey dilation (positive) or erosion (negative) with a cross-shaped 3×3 kernel on the 8-bit mask (OpenCV), then a Gaussian blur of radius `blur` (PIL). Frames are written into one preallocated output. A missing mask returns `torch.zeros((1, 64, 64))`.
 
 ## `BC_DrawMaskOnImage` — Draw Mask On Image
 

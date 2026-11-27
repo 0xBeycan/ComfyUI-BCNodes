@@ -48,10 +48,18 @@ One line per model: a URL, a directory under `ComfyUI/models` and two switches, 
 
 The file name comes from the URL; when the URL has none (Civitai-style links) write it after the directory.
 
+The fields above are the frontend's. The node's one input is `entries`, a hidden `STRING` widget that holds the lines as a JSON list; it is what the workflow saves and what a prompt sent through the API carries:
+
+```json
+[{"url": "https://huggingface.co/owner/repo/resolve/main/model.safetensors", "dir": "diffusion_models", "hf": false, "civitai": false}]
+```
+
+`hf` and `civitai` mark the token a line needs; an older line's single `token` flag counts as the token of its URL's host. A line with neither `url` nor `dir` is skipped.
+
 What happens:
 
 - **First open.** When a workflow with this node is opened and some of its models are missing, one dialog lists them with a `Download` / `Not now` choice. Files marked as needing a token are tagged, and the dialog shows the token boxes with the files each one is needed for; a download does not start while a required token is missing. `Download` runs the downloads with a progress bar per file. The answer is remembered on the server (`user/BCNodes/downloader_seen.json`, keyed by the model list), so it is asked once per list, on any browser or URL. Nothing is asked when every file is already there.
 - **On the node.** The button reads `Download all models`, `Download missing models (n)` or `All models downloaded`; the status row names the missing files, or the token that is still needed (`needs Civitai token: x.safetensors`) — the button stays disabled until it is entered. A download started from the button reports to the browser console and to the status row, and ends with a small done dialog.
 - **When queued.** The node is an output node: running the workflow — from the UI or through the API with no browser — downloads whatever is still missing before finishing, and fails with a clear message if a required token is not stored.
 
-Downloads stream to `name.part` and are renamed when complete; an interrupted download resumes. The Hugging Face token is sent as a bearer header to huggingface.co, the Civitai token is appended to civitai.com links.
+Downloads stream to `name.part` and are renamed when complete; an interrupted download resumes. The Hugging Face token is sent as a bearer header to huggingface.co, the Civitai token is appended to civitai.com links as `token=`, unless the link already carries one. A stored token is sent over https only: an `http://` link that would carry it is upgraded to `https://`. The `Authorization` header is dropped on a redirect to another host (huggingface.co hands file bodies to a CDN through signed links). A response that is a web page instead of a file stops the download with `login or consent required?`.

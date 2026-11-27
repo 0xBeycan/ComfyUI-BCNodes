@@ -9,6 +9,10 @@ time_snr_shift, the formula of ModelSamplingAuraFlow.
 
 The stretch (stretch_shift_to_terminal) moves 1 - sigma by one factor so the schedule's last sigma
 lands on the terminal value; the sigma 0 the scheduler appends after it is not stretched.
+
+The shift nodes' OUTER_SAMPLE wrappers (Qwen Image Shift, Dual Sampling Shift) share the refine rule
+(refine_pass), the check that the run's model_sampling is still the node's (check_model_sampling) and the
+run with model_sampling held at another shift (run_at_shift).
 """
 
 import math
@@ -39,3 +43,30 @@ def stretch_to_terminal(sigmas: torch.Tensor, terminal: float) -> torch.Tensor:
     out = sigmas.clone()
     out[:-1] = 1 - one_minus / (one_minus[-1] / (1 - terminal))
     return out
+
+
+def refine_pass(noise: torch.Tensor, sigmas: torch.Tensor, full_noise: float) -> bool:
+    """A refine pass: a sampler run on new noise whose schedule starts below `full_noise` (denoise below 1,
+    or a later start step). Neither the denoise nor add_noise reaches an OUTER_SAMPLE wrapper; core's empty
+    noise (KSamplerAdvanced's add_noise off, SamplerCustomAdvanced's DisableNoise) is all zeros and adds
+    nothing to the latent, so nonzero noise is exactly "new noise added", and the later part of a split run
+    is no refine pass."""
+    return float(sigmas[0]) < full_noise and bool(noise.any())
+
+
+def check_model_sampling(executor, sampling, prefix: str) -> None:
+    """Stops an OUTER_SAMPLE wrapper's run when the run's model_sampling is no longer `sampling`, the object
+    its node put on the model: a node after it replaced it."""
+    if executor.class_obj.model_patcher.get_model_object("model_sampling") is not sampling:
+        raise ValueError(f"{prefix} a node after it replaced the model's model_sampling (ModelSamplingAuraFlow or "
+                         "another shift node), so its shift would be applied twice. Keep one of the two.")
+
+
+def run_at_shift(sampling, shift: float, after: float, multiplier: float, executor, args, kwargs):
+    """Runs an OUTER_SAMPLE executor with `sampling` (the run's model_sampling) at `shift` (percent_to_sigma:
+    ControlNet and conditioning step ranges follow it), then sets it to `after`, also when the run fails."""
+    sampling.set_parameters(shift=shift, multiplier=multiplier)
+    try:
+        return executor(*args, **kwargs)
+    finally:
+        sampling.set_parameters(shift=after, multiplier=multiplier)

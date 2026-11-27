@@ -1,6 +1,7 @@
-# postfx and caption-audit back the PostFx and Caption Audit nodes; opencv-python the mask
-# morphology and hole filling (MaskGrow, Mask Fill Holes); anthropic (Anthropic's official SDK)
-# the Claude node. Everything else ships with ComfyUI.
+# The four packages the pack uses that ComfyUI does not ship (the same as pyproject.toml): postfx the
+# PostFx nodes; caption-audit the Caption Audit node; opencv-python MaskGrow, Mask Fill Holes, Image
+# Quality Gate and the PostFx mask resize; anthropic (Anthropic's official SDK) Claude and Claude Chat.
+# Everything else ships with ComfyUI; the optional packages are listed in README.md.
 postfx>=1.1.0
 caption-audit>=1.3
 opencv-python

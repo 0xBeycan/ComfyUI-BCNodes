@@ -626,8 +626,11 @@ async def main():
         "2": N("BC_SaveImage", images=["1", 0], **save_kw),
     }, "save-image")
     saved = os.path.join(folder_paths.get_output_directory(), "run", "shot-40-24-001.png")
+    # core adds a "metadata" entry (the file's kind and size) to each listed file (comfy_execution/media_enrichment.py)
+    listed = [{k: v for k, v in e.items() if k != "metadata"} for e in out["2"]["images"]] if out is not None else None
     check("SaveImage: writes output/run/shot-40-24-001.png and lists it for the gallery",
-          out is not None and os.path.isfile(saved) and out["2"]["images"] == [{"filename": "shot-40-24-001.png", "subfolder": "run", "type": "output"}])
+          out is not None and os.path.isfile(saved) and listed == [{"filename": "shot-40-24-001.png", "subfolder": "run", "type": "output"}],
+          f"{listed}")
     check("SaveImage: jobs.json written", os.path.isfile(os.path.join(folder_paths.get_output_directory(), "run", "jobs.json")))
     check("SaveImage: cached on the second queue", out is not None and executed == [], f"{executed}")
     out, _ = await run({
@@ -2356,14 +2359,16 @@ def detailer_zimage_patch():
     """The detailer's cut of Z-Image's Fun ControlNet (pipelines/detailer/conditioning.crop_model) on a model
     patched by core's own ZImageFunControlnet node, with an inpaint image and a mask: a Union 2.1-shaped
     ZImage_Control (inpaint channels) built on the meta device, no weights (the node reads its class and
-    additional_in_dim; a call past the last control block returns before the model runs) and a stand-in VAE.
+    additional_in_dim; a call past the last control block returns before the model runs), a stand-in VAE, and
+    a stand-in model holding Z-Image's model sampling (the node reads the patch's sigma range from it).
     Core's patch is found although core loads its module under the file's path; on a clone, its hint,
-    inpaint image and mask are cut to the crop, and core's own call encodes the cut at the crop's sampling
-    size; the model connected keeps its lists, its patch and the patch's encode."""
+    inpaint image and mask are cut to the crop, its sigma range kept, and core's own call encodes the cut at
+    the crop's sampling size; the model connected keeps its lists, its patch and the patch's encode."""
     import importlib
 
     import comfy.ldm.lumina.controlnet
     import comfy.model_patcher
+    import comfy.model_sampling
     import comfy.ops
     import torch
 
@@ -2384,11 +2389,14 @@ def detailer_zimage_patch():
 
     control = comfy.ldm.lumina.controlnet.ZImage_Control(dim=64, n_heads=2, n_kv_heads=2, n_control_layers=3, additional_in_dim=17,
                                                          refiner_control=True, device="meta", operations=comfy.ops.manual_cast)
-    model = comfy.model_patcher.ModelPatcher(torch.nn.Linear(1, 1), torch.device("cpu"), torch.device("cpu"))
+    base = torch.nn.Linear(1, 1)
+    # Z-Image's sampling settings (comfy/supported_models.py ZImage): end_percent 0.5 -> the sigma range (1.0, 0.75)
+    base.model_sampling = comfy.model_sampling.ModelSamplingDiscreteFlow(types.SimpleNamespace(sampling_settings={"multiplier": 1.0, "shift": 3.0}))
+    model = comfy.model_patcher.ModelPatcher(base, torch.device("cpu"), torch.device("cpu"))
     image, mask, vae = torch.rand(1, 96, 128, 3), torch.zeros(1, 96, 128), VAE()
     mask[:, 20:60, 40:90] = 1.0
     patched = nodes.NODE_CLASS_MAPPINGS["ZImageFunControlnet"]().diffsynth_controlnet(
-        model, types.SimpleNamespace(model=control), vae, image=image, strength=0.8, inpaint_image=image, mask=mask)[0]
+        model, types.SimpleNamespace(model=control), vae, image=image, strength=0.8, inpaint_image=image, mask=mask, end_percent=0.5)[0]
     lists = patched.model_options["transformer_options"]["patches"]
     patch = lists["double_block"][0]
     held = (patch.image, patch.inpaint_image, patch.mask, patch.encoded_image)
@@ -2405,10 +2413,13 @@ def detailer_zimage_patch():
           and cut.mask.shape == (1, 1, 1, 64, 64) and torch.equal(cut.mask, patch.mask[..., 16:80, 32:96])
           and cut.encoded_image is None and cut.temp_data is None,
           f"{tuple(cut.image.shape)} {tuple(cut.mask.shape)} {cut.encoded_image is None}")
+    check("Detailer Z-Image ControlNet: the cut keeps the patch's sigma range (start_percent / end_percent)",
+          cut.sigma_range == patch.sigma_range == (1.0, 0.75), f"{cut.sigma_range} {patch.sigma_range}")
 
     vae.encoded.clear()
     latent = torch.zeros(1, 16, crop.height // 8, crop.width // 8)
-    cut({"x": latent, "img": None, "img_input": None, "txt": None, "pe": None, "vec": None, "block_index": 30, "block_type": "double"})
+    cut({"x": latent, "img": None, "img_input": None, "txt": None, "pe": None, "vec": None, "block_index": 30, "block_type": "double",
+         "transformer_options": {"sigmas": torch.tensor([0.9])}})  # a sigma inside the range: core's call runs
     check("Detailer Z-Image ControlNet: core's call encodes the cut hint and inpaint image at the crop's sampling size",
           vae.encoded == [(1, 512, 512, 3)] * 2 and tuple(cut.encoded_image.shape) == (1, 33, 64, 64), f"{vae.encoded}")
     check("Detailer Z-Image ControlNet: the model connected keeps its lists, its patch and the patch's hint and encode",

@@ -1,241 +1,39 @@
 # Development
 
-```
-ComfyUI-BCNodes/
-  __init__.py              assembles the mappings; registers the link stamp, the LM catalog route and the PreFlight
-                           records route
-  nodes/
-    logic.py               BC_LogicBoolean, BC_IsMaskEmpty
-    mask.py                BC_MaskFillHoles, BC_MaskGrow, BC_DrawMaskOnImage, BC_BlockifyMask, BC_RepeatMaskBatch
-    image_scale.py         BC_ImageScaleByAspectRatio, BC_ImageResize
-    lists.py               BC_JoinImageLists
-    math_expression.py     BC_MathExpression
-    prompt_list.py         BC_PromptList, BC_AspectPromptList
-    any_switch.py          BC_AnySwitch
-    select_switch.py       BC_SelectSwitch
-    seed.py                BC_Seed
-    show_text.py           BC_ShowText
-    lm.py                  BC_QwenLM, BC_LMConfig, BC_LMLoader + GET /bcnodes/lm/catalog;
-                           the Qwen-LM folder_paths key
-    claude.py              BC_Claude, BC_ClaudeConfig + Claude Chat's routes (/bcnodes/claude/chats*)
-    image_comparer.py      BC_ImageComparer
-    power_lora_loader.py   BC_PowerLoraLoader
-    lora_key_fix.py        BC_LoraLoaderKeyFix
-    sage_attention.py      BC_PatchSageAttention
-    detail_boost.py        BC_DetailBoost
-    dype.py                BC_DyPEPatcher, BC_DyPEConfig
-    dual_sampler.py        BC_DualSampler
-    everywhere.py          BC_AnythingEverywhere, BC_FastGroupsBypasser (no-ops)
-    cond_pipe.py           BC_CondPipePack, BC_CondPipeUnpack
-    seedvr2.py             BC_SeedVR2FramingDownscale, BC_SeedVR2Resize, BC_SeedVR2VAEEncode, BC_SeedVR2ChunkSize,
-                           BC_SeedVR2VAEDecode, BC_SeedVR2PostProcess, BC_SeedVR2PreprocessCompact, BC_SeedVR2PostProcessCompact
-    common.py              wildcard type + flexible optional inputs + slot order + the device widget + an LM family's
-                           folders + unused outputs
-    birefnet.py            BC_BiRefNetRemoveBackground
-    depth_anything.py      BC_DepthAnythingV2
-    downloader.py          BC_AutoModelDownloader + its HTTP routes
-    postfx.py              BC_PostFxApply, BC_PostFxTheme, BC_PostFxCustomLook, BC_PostFxLut, BC_PostFxSignatureSheet
-    caption_audit.py       BC_CaptionAudit
-    social_media_export.py BC_SocialMediaExport (the ComfyUI adapter)
-    social_specs.json      the platform table it reads on every run
-    image_quality_gate.py  BC_ImageQualityGate
-    save_image.py          BC_SaveImage
-    save_image_with_caption.py  BC_SaveImageWithCaption
-    skin_texture.py        BC_SkinTexture
-    frequency_merge.py     BC_FrequencyMerge
-    detailer.py            BC_Detailer, BC_FaceDetailer
-    preflight.py           BC_PreFlightObserve, BC_PreFlightReport, BC_PreFlightOutcome, BC_PreFlightCalibrate
-                           + GET /bcnodes/preflight/records and the bcnodes.preflight.records event; the store's path
-    process_monitor.py     Process Monitor: its HTTP routes and live event, the full clear's baseline (no nodes)
-  pipelines/               flows that combine models and libs; no ComfyUI node classes
-    matting.py             the BiRefNet matte, then the matte options
-    model_download.py      downloader lines resolved to files under ComfyUI/models, token gate
-    postfx.py              the postfx adapter: dropdown catalogs, looks, apply, contact sheet
-    skin_texture.py        SAM 3 prompts, face gate, mask assembly, texture call
-    detailer/
-      region.py            the crop around a region and its sampling size (its longer side at crop_size, the region's at
-                           size); None when the region's longer side is size or more
-      conditioning.py      ControlNet hints cut to the crop (the conditioning's, Z-Image Fun ControlNet's model
-                           patch on a clone); core's inpaint conditioning of the crop
-      core.py              the detailer core (Detailer's flow): crop -> sampling -> paste
-      face.py              Face Detailer: SAM 3 faces, the character, the size gate, the face and eye passes
-    quality_gate.py        shot profiles, the three-tier checks, verdict, report, badge
-    dual_sampler.py        Dual Sampler: DyPE on model_2, first pass, latent / pixel upscale blend, second pass, decodes
-    social_export.py       Social Media Export geometry / encoding engine, no ComfyUI or torch imports
-    save_image.py          Save Image name grammar, job JSON, save loop; Save Image With Caption's folder,
-                           caption extension check, save loop
-    depth_anything.py      Depth Anything: output size (short side or cover + crop), per-frame normalisation
-    lora.py                a LoRA file through core's conversion, the key fix and core's loader (both LoRA loaders)
-    lm.py                  the LM run (LMRequest -> LMResult): catalog, prompt checks, model file search / download,
-                           LoRA, sampling; LMSpec (the BC_LM value), prepare (once per wrapper call) and generate
-                           (once per model call), lm_spec (LM Loader's checks); unload_backends; the catalog
-                           route's data and the LoRA list
-    claude/
-      messages.py          the Claude node's run (ClaudeRequest -> ClaudeResult): images sized as the API sizes them
-                           and encoded, the Messages API request, the stream with the interrupt checked, the answer
-      chat.py              Claude Chat: sessions on disk, a turn's request with the history, its events
-    caption_audit/
-      audit.py             audit plumbing: package guard, allowed roots, run_audit, reports
-      card.py              the fixed-size card
-    preflight/
-      prompts.py           the observation prompt (verbatim, versioned) and its schema: validation, coercion
-      observe.py           Observe: frames sampled, generate -> parse -> one retry -> validate -> meta, fail closed
-      rules.py             the rules engine: observation + caption -> verdict ranges, the summary
-      feedback.py          the append-only feedback store
-      report.py            Report: observation JSON -> report, summary, logged record id
-      outcome.py           Outcome: the record list, the outcome logged
-      calibrate.py         Calibrate: the two tables
-    seedvr2/
-      resize.py            BC_SeedVR2Resize flow
-      encode.py            streaming tiled VAE encode
-      decode.py            streaming tiled VAE decode
-      postprocess.py       per-frame colour correction
-      compact.py           the compact pair: Resize + Encode, Decode + PostProcess, the SEEDVR2_PLAN between them
-      framing.py           Framing Downscale: the tallest SAM 3 face box -> close-up / medium / far -> the factor
-      chunk_size.py        Chunk Size: the DiT's VRAM law against the card -> frames per chunk (4n+1)
-      progress.py          progress bar + timed log lines of the slice loops
-    process_monitor/       the Process Monitor
-      monitor.py           sampler thread, runs, per-node records, threshold snapshot
-      hook.py              the hook into ComfyUI's executor: detection, install, the per-node wrapper
-      blackbox.py          run logs, rotation, the Last run and Crash reports
-      emulate.py           the estimate before a run: graph, weights, fit check, calibration
-      clear.py             the full clear: its steps, each measured against the startup baseline
-      profiles.py          per-node-type cost profiles for Emulate
-      settings.py          the monitor's settings file
-      drop_stale.py        the drop stale outputs setting (a hook on ComfyUI's output cache)
-  models/                  one package per model; __init__.py imports those that register
-    common/
-      registry.py          model families (matting, depth) and the LM families and backends (lm_family,
-                           lm_backend): register / names / get
-      dype.py              DyPE on a model: the adapter a model is taken by (the dype family), the values, the
-                           CALC_COND_BATCH wrapper that sets a step embedder for one sampling step (the model's and a
-                           ControlNet's), each call sized from its own input (APPLY_MODEL wrapper, control-model hook)
-      download.py          weight download with console progress; model_file (a file in a ComfyUI model folder)
-      lm/                  the LM runtime the LM families share; registers the core backend
-        catalog.py         the models.yaml schema, the built-in file merged with the user's, errors naming file + entry
-        backend.py         the LMBackend protocol, GenerateParams, LoraSpec
-        core_backend.py    ComfyUI core: load_clip, the LoRA copy, the prompt's tokens, generate, decode; one slot;
-                           unload() for the full clear
-        family.py          PromptParts, LMFamily
-    birefnet/
-      checkpoints.py       the 11 checkpoints, registered as matting models
-      weights.py           weights folder (ComfyUI/models/background_removal) and download
-      loader.py            one model loaded at a time; unload() for the full clear
-      inference.py         resize, normalise, run, matte back to size
-      arch/                BiRefNet + Swin v1 architecture (see LICENSE in the folder)
-    depth_anything_v2/     Depth Anything V2 Small, registered as v2-small in the depth family
-      weights.py           weights folder (ComfyUI/models/geometry_estimation) and download
-      loader.py            the model, loaded once; unload() for the full clear
-      inference.py         resize as the authors, run, resample to the size asked for
-      arch/                DPT head + DINOv2 ViT-S architecture (see LICENSE in the folder)
-    depth_anything_3/      Depth Anything 3 over ComfyUI core, registered as v3-small, v3-base, v3-mono-large,
-                           v3-metric-large in the depth family (no code vendored)
-      weights.py           beycanai/Depth-Anything files into ComfyUI/models/geometry_estimation
-      loader.py            one model at a time, core's loader; unload() for the full clear
-      inference.py         core's preprocess and forward, sky, inverse depth, percentile clip
-    seedvr2/               adapters over ComfyUI's SeedVR2 VAE
-      vae.py               VAE check, the tiling a tile_size runs (0: auto, least work that fits) + VRAM room
-      dit.py               the DiT's VRAM law per chunk (measured), SeedVR2 Chunk Size's margin
-      tiling.py            tile plan per axis (rows, columns), a typed tile's overlap rules, blend weights
-      frames.py            shortest-edge resize, pad, 4n+1 frame count
-    sam3/                  adapter over ComfyUI's SAM 3
-      checkpoint.py        default checkpoint, combo list, path (downloads the default)
-      loader.py            one checkpoint held at a time; unload() for the full clear
-      detect.py            text detection through ComfyUI's SAM3_Detect
-    qwen_lm/               the Qwen LM family (models/Qwen-LM, LoRAs in its loras/), registered as qwen_lm, named
-                           Qwen LM (LM Loader's family value)
-      models.yaml          the built-in catalog: models, precisions with their files, sampling defaults and sources
-      chat.py              the official chat templates (qwen3.5, qwen3.8, qwen3-vl), their checks, the output split
-      images.py            the official image processor's sizing (smart_resize) and bicubic resize
-    z_image/               Z-Image (core's ZImage), registered as Z-Image in the dype family
-      adapter.py           which models, the DyPE values, the embedder of one call
-      dype/                DyPE's Z-Image rotary embedder (Apache-2.0, derived from ComfyUI-DyPE; LICENSE, NOTICE)
-    qwen_image/            Qwen-Image (core's QwenImage), registered as Qwen-Image in the dype family
-      adapter.py           which models, the DyPE values, the InstantX ControlNet's own embedder, the embedder of one call
-      dype/                DyPE's Qwen-Image rotary embedder (Apache-2.0, derived from ComfyUI-DyPE; LICENSE, NOTICE)
-  libs/                    model-independent helpers
-    image.py               IMAGE frame <-> PIL, fit into a target size, a frame's long side capped (thumbnail)
-    geometry.py            integer size arithmetic for resizing; a ControlNet preprocessor's output size
-    filters.py             the two separable Gaussians (reflect, replicate)
-    frequency.py           Frequency Merge: one image's Gaussian low-pass + another's high-pass
-    mask.py                fill holes, grow / blur, draw a colour through a mask, blockify, offset, refine foreground, fit a mask batch
-    resize.py              Image Resize: size plan, crop / resample / pad per frame
-    color.py               hex colour parser, sRGB <-> linear, colour match over a band (the detailer's paste)
-    blend.py               Laplacian-pyramid (multiband) blend
-    texture.py             the skin-texture engine
-    image_metrics.py       blur / sharpness / noise / clipping / entropy
-    math_expression.py     the whitelisted expression evaluator
-    download.py            HTTP download with resume, allowed hosts, token store (+ the Claude node's API key)
-    files.py               the next image counter from the files in a folder; walk_once, a folder walk that follows
-                           links and walks each real folder once
-    image_write.py         Save Image formats, metadata, writer
-    memory_sources.py      RAM (cgroup v2 / v1, process RSS) and VRAM (CUDA, MPS, NVML) readers; what the RAM is
-                           made of (anon / file, RssAnon / RssFile), glibc's free blocks and malloc_trim
-    tensor_census.py       tensor bytes, each byte counted once by address range, file-backed memory told apart; the live tensor census
-    safetensors_info.py    weights from a safetensors header
-    lora_keys.py           LoRA keys core's loader leaves out (.diff_m, PEFT keys without the prefix), renamed to the
-                           names it maps; the keys still unmapped
-    lm_lora.py             LM LoRAs: the format table, alpha resolution, config checks, base-model check, the list
-    sage_attention.py      SageAttention kernels as ComfyUI's attention override: the kernel table, resolve + test call,
-                           layouts, the calls that run the original attention, nan_guard, the per-run counts
-    detail_boost.py        Detail Boost: the lowered sigma per mode, where a model call sits in the run's schedule,
-                           the step range and the weight blend
-    sampling.py            one sampler run as core's KSampler node makes it (common_ksampler)
-    dype/                  DyPE's 1-D rotary frequency tables and the embedder every model's DyPE shares (core's
-                           EmbedND layout, ntk / pi / base) (Apache-2.0, derived from ComfyUI-DyPE; LICENSE, NOTICE)
-  docs/                    the node documentation, one page per menu category; README.md links them
-  luts/                    drop .cube LUTs here for PostFx LUT (gitignored)
-  web/js/
-    auto_bypass.js         the BC_AutoBypass virtual node
-    join_image_lists.js    unlimited slots for Join Image Lists (grow_inputs.js)
-    grow_inputs.js         growing input slots, shared by Join Image Lists and Claude
-    claude.js              Claude's image slots and its API key setting
-    claude_chat.js         Claude Chat, the Claude sidebar tab
-    any_switch.js          unlimited slots + type following for Any Switch
-    select_switch.js       named option slots, rows and the selected combo for Select Switch
-    wildcard_type.js       socket type following, shared by the two switches
-    math_expression.js     result overlay for Math Expression
-    seed.js                Seed buttons + prompt rewrite of -1
-    show_text.js           Show Text boxes
-    comparer.js            image comparer widget
-    power_lora_loader.js   LoRA rows
-    fast_groups_bypasser.js  group toggles
-    anything_everywhere.js prompt-time input filling
-    auto_model_downloader.js  node UI, first-open dialog, progress
-    align.js               toolbox align / distribute buttons
-    save_image.js          no output preview under Save Image
-    save_image_with_caption.js  the frontend's text replacements in its filename_prefix
-    process_monitor.js     Process Monitor: top bar, modal, the on / off setting
-    lm.js                  Qwen LM's precision / thinking widgets; LM Config's shown defaults
-    edited_fields.js       a config node's `edited` widget and greyed un-edited fields (LM Config, DyPE Config)
-    dype.js                DyPE Config's `edited`, the selected model's automatic values, Reset to automatic values
-    preflight.js           PreFlight Outcome's record list, kept current from the records route and event
-    bcnodes_api.js         JSON calls to the pack's routes (downloader, Process Monitor, LM catalog, PreFlight records)
-  locales/en/main.json     tooltips for the Align buttons
-  tests/
-    test_import_time.py    import gate
-    test_nodes.py          every node with None / empty input, plus plain spot checks
-    test_runtime.py        headless ComfyUI: real validation + execution
-    test_layers.py         layer rule + module-level import rule, checked statically
-    layers/                pytest unit tests per layer (nodes/, pipelines/, models/, libs/)
-    conftest.py _harness.py  ComfyUI stubs, package binding
-    parity_seedvr2_video.py  BC_SeedVR2VAEEncode / VAEDecode / PostProcess vs ComfyUI's own nodes, numerically
-    compare_sage_attention.py  Patch Sage Attention's kernels vs torch SDPA on a CUDA GPU: accuracy, time, fallbacks
-```
+The repository layout (the four layers `nodes/ -> pipelines/ -> models/ -> libs/`, what each module holds, the layer rule, how to add a node or a model) is in [CLAUDE.md](../CLAUDE.md), the one place it is kept.
 
-Tests:
+## Install
+
+The pack goes into a ComfyUI checkout's `custom_nodes/` ([Installation](../README.md#installation); ComfyUI 0.44.0 or later), or next to a ComfyUI checkout for the tests alone. Its requirements go into the Python ComfyUI runs on, from the repo root:
 
 ```
-python tests/test_import_time.py                  # import budget and heavy-module ban
-python tests/test_nodes.py                        # None / empty input never raises unexpectedly
-COMFYUI_DIR=../ComfyUI python tests/test_runtime.py   # nodes through ComfyUI's validate_prompt + PromptExecutor
-python -m pytest tests -q                         # layer rule, unit tests
-python tests/parity_seedvr2_video.py --comfy ../ComfyUI --vae ../ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors   # SeedVR2 VAE Encode / Decode / PostProcess against ComfyUI's nodes (GPU for the VAE)
-python tests/compare_sage_attention.py            # SageAttention kernels against torch SDPA (CUDA GPU; SKIP without one)
+pip install -r requirements.txt
 ```
 
-The tests need `postfx` and `caption-audit` importable: `pip install -r requirements.txt`, or `PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts.
+The tests need `postfx`, `caption-audit` and `anthropic` importable: `pip install -r requirements.txt`, or `PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts of the first two. Without `anthropic` the runtime test fails at its Claude sections (`claude_chat_routes` stops the run with an import error), and pytest skips the Claude tests (`tests/layers/pipelines/test_pipe_claude_messages.py`, `test_pipe_claude_chat.py`).
 
-The runtime test needs a ComfyUI checkout with its requirements installed in the same Python; it starts no server. It covers the things that only the real executor can prove: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, Select Switch running only the selected lazy branch, that a genuine type mismatch is still rejected, Lora Loader (Key Fix) against core's own LoRA loader on a tiny real Wan model (the keys core leaves out as they are, and loads once renamed), and the LM nodes against core's Qwen code without weights: `lm_core` (the prompt's tokens equal core's own Qwen3.5 and Qwen3-VL tokenizers' output for ordinary text, and the official Qwen3.5 tokenizer's ids where core's differ (words with combining marks), and every LoRA key form lands on its weight in the key maps of core models built on the meta device, where an adapter of Qwen3.5-9B's structure passes the base-model check on Qwen3.5-9B and is refused on the others, and a LoRA on `embed_tokens` / `lm_head` is refused on Qwen3.5-4B's tied head) and `lm_nodes` (the catalog route, the `Qwen-LM` folder, and LM Config -> Qwen LM through `validate_prompt` + `PromptExecutor` with a stand-in backend), and `preflight_nodes` (LM Loader -> Observe -> Report -> Show Text, Outcome and Calibrate with the same stand-in backend: the prompt and greedy parameters the backend gets, the store in the user directory, the records route and event, the caching of each node).
+## Tests
 
-Every module in `nodes/`, `pipelines/`, `models/` and `libs/` imports only `torch`, `numpy` and the standard library at module level; `scipy`, `PIL`, `cv2`, `safetensors`, `torchvision`, `folder_paths`, `comfy.*`, `yaml` and the pip packages `postfx` / `caption_audit` are imported inside the functions that use them (the downloader also touches `server` / `aiohttp`, which ComfyUI has loaded already), so the pack adds nothing to ComfyUI's startup. A node module also imports its pipeline, model and lib modules inside the methods that use them (a widget list such as the model names inside `INPUT_TYPES`), so the package import reads and compiles little more than `nodes/`; the Process Monitor's own modules load at import, where it registers and starts. `python tests/test_import_time.py` checks both.
+The four gates, from the repo root. `COMFYUI_DIR=../ComfyUI` is a ComfyUI checkout next to the pack; with the pack inside `ComfyUI/custom_nodes/` it is `COMFYUI_DIR=../..`.
+
+```
+python tests/test_import_time.py                      # import budget, no heavy module, every module cold
+python tests/test_nodes.py                            # every node with None / empty inputs, plus spot checks
+COMFYUI_DIR=../ComfyUI python tests/test_runtime.py   # nodes through ComfyUI's validate_prompt + PromptExecutor; a SKIP is red
+python -m pytest tests -q                             # layer rule, unit tests
+```
+
+Unit tests live in `tests/layers/<layer>/`, next to the layer of the code they call directly (`nodes/`, `pipelines/`, `models/`, `libs/`); `tests/pytest.ini` anchors pytest's rootdir in `tests/`, since the repo root is itself a package.
+
+The runtime test needs a ComfyUI checkout (`$COMFYUI_DIR`, or `ComfyUI` next to this pack) with its requirements installed in the same Python; without one it prints SKIP, which counts as a failure. It starts no server and uses only core CPU nodes plus test-only stand-ins, and covers what only the real executor can prove. `main()` first runs the core checks: canvas-only slots (`In3`, `any_03`) reaching the node, wildcard sockets validating in both directions, list outputs fanning out, Select Switch running only the selected lazy branch, a genuine type mismatch still rejected, and each node's caching on a second queue. Then come the sections, one function each, in this order: `cond_pipe`, `lora_key_fix`, `vae_loader`, `latent_upscale`, `sage_attention`, `detail_boost`, `qwen_image_shift`, `dype_models`, `detailer_zimage_patch`, `detailer_qwen_fun_controlnet`, `lm_core`, `lm_nodes`, `claude_nodes`, `claude_chat_routes`, `preflight_nodes`, `unused_outputs`, `process_monitor_hook` and `process_monitor_clear` (`process_monitor_default` runs before the core checks). Each one's docstring says what it proves. The LM sections run against core's Qwen code without weights: `lm_core` (the prompt's tokens against core's own Qwen3.5 and Qwen3-VL tokenizers and the official Qwen3.5 tokenizer's ids where core's differ; every LoRA key form in the key maps of core models built on the meta device; the base-model and tied-head checks) and `lm_nodes` (the catalog route, the `Qwen-LM` folder, LM Config -> Qwen LM through `validate_prompt` + `PromptExecutor` with a stand-in backend).
+
+Two scripts outside the suite:
+
+```
+python tests/parity_seedvr2_video.py --comfy ../ComfyUI --vae /path/to/seedvr2_vae.safetensors   # SeedVR2 VAE Encode / Decode / PostProcess against ComfyUI's nodes (GPU for the VAE)
+python tests/compare_sage_attention.py                # SageAttention kernels against torch SDPA (CUDA GPU; SKIP without one)
+```
+
+## Import rule
+
+Every module in `nodes/`, `pipelines/`, `models/` and `libs/` imports only `torch`, `numpy`, the standard library and relative pack modules at module level. Everything else (`PIL`, `cv2`, `safetensors`, `torchvision`, `yaml`, `av`, `folder_paths`, `comfy.*`, `comfy_extras.*`, the pip packages `postfx`, `caption_audit` and `anthropic`, and the optional packages) is imported inside the function that uses it, so the pack adds nothing to ComfyUI's startup. The one exception is the downloader's `server` / `aiohttp`, imported at module level inside a guarded `try` (ComfyUI has loaded both already). A node module also imports its pipeline, model and lib modules inside the methods that use them (a widget list such as the model names inside `INPUT_TYPES`), so the package import reads and compiles little more than `nodes/`; the Process Monitor's own modules load at import, where it registers and starts. `python tests/test_import_time.py` checks both, and `tests/test_layers.py` checks the layer rule and the module-level imports statically.

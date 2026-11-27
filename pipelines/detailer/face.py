@@ -15,6 +15,8 @@ alone when only one is found.
   its own pixels while its eyes are still detailed.
 - Order: the character first, with its model, then the other faces with theirs, so the model changes
   once per frame.
+- A pass at denoise 0 is off, as its toggle off: it would redraw nothing, so its regions keep their pixels and
+  are not marked (the eye pass off: no eye search).
 - Face and eyes both off: the image passes through as it is and SAM 3 is not loaded.
 
 SAM 3 is the multiplex checkpoint under models/checkpoints (models/sam3, downloaded on first use when
@@ -78,8 +80,9 @@ def run(image, model, model_no_lora, face_s, eye_s, sam3_model, threshold, selec
     """BC_FaceDetailer: (image with the faces detailed, the pixels changed), frame by frame into outputs of
     the image's dtype when that is half precision, float32 otherwise. `select`: the optional MASK that
     picks the character; `face_s`, `eye_s`: the core.Settings of the face pass and of the eye pass;
-    `max_height`: px, a taller face skips the face pass."""
+    `max_height`: px, a taller face skips the face pass. A pass at denoise 0 is off."""
     b, h, w, c = image.shape
+    face_pass, eyes_pass = face_pass and face_s.denoise > 0, eyes_pass and eye_s.denoise > 0
     if not (face_pass or eyes_pass):  # nothing to detail: SAM 3 is not loaded, no model is cloned
         return image.to(output_dtype(image)), torch.zeros((b, h, w), dtype=output_dtype(image))
     sam, clip = load(sam3_model)

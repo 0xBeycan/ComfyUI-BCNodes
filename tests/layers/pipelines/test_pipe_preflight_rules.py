@@ -46,20 +46,37 @@ def test_bikini_beach(rules):
     assert not any(r["verdicts"][p]["hard"] for p in rules.PLATFORMS)
 
 
-def test_bikini_bedroom_kills_tiktok(rules):
+def test_bikini_bedroom_is_fyf_ineligible_risk(rules):
     r = rules.judge(obs(garment="bikini", setting="bedroom", exposure="mild"))
     assert V(r, "instagram") == ("RISK", "RISK")
-    assert V(r, "tiktok") == ("BLOCK", "BLOCK")     # indoors -> FYF ineligible
+    assert V(r, "tiktok") == ("RISK", "RISK")       # indoors -> FYF ineligible: a demotion
+    assert r["verdicts"]["tiktok"]["reasons"] == ["bikini indoors — FYF ineligible"]
     assert r["fired_rules"] == ["base.bikini"]
 
 
 def test_lingerie(rules):
     r = rules.judge(obs(garment="lingerie", exposure="significant"))
     assert V(r, "instagram") == ("RISK", "RISK")
-    assert V(r, "tiktok") == ("BLOCK", "BLOCK")
+    assert V(r, "tiktok") == ("RISK", "RISK")       # FYF ineligible: a demotion
+    assert r["verdicts"]["tiktok"]["reasons"] == ["significant exposure — FYF ineligible"]
     assert V(r, "x") == ("RISK", "RISK")
     assert r["verdicts"]["x"]["label_required"] is True
     assert r["fired_rules"] == ["base.minimal"]
+
+
+@pytest.mark.parametrize("kw", [
+    dict(garment="lingerie"),
+    dict(garment="underwear_only"),
+    dict(garment="regular", exposure="significant"),
+    *[dict(garment="bikini", setting=s)
+      for s in ("beach_pool", "bedroom", "indoor_other", "outdoor", "gym", "studio")],
+])
+def test_tiktok_fyf_ineligibility_is_risk_never_block(rules, kw):
+    # FYF ineligibility keeps the post up (reach demotion); BLOCK is removal only.
+    r = rules.judge(obs(**kw))
+    assert V(r, "tiktok") == ("RISK", "RISK")
+    assert r["verdicts"]["tiktok"]["hard"] is False
+    assert r["range_drivers"] == []                 # a point verdict has nothing to collapse
 
 
 def test_see_through(rules):
@@ -177,7 +194,7 @@ def test_low_confidence_never_reopens_hard_solicitation(rules):
     assert (ig["best"], ig["worst"]) == ("BLOCK", "BLOCK")   # hard, NOT widened open
     assert ig["hard"] is True
     tt = r["verdicts"]["tiktok"]                             # not hard -> widened
-    assert (tt["best"], tt["worst"]) == ("RISK", "BLOCK")
+    assert (tt["best"], tt["worst"]) == ("OK", "BLOCK")
     assert r["fired_rules"] == ["base.minimal", "hard.solicitation", "mod.confidence_low"]
 
 

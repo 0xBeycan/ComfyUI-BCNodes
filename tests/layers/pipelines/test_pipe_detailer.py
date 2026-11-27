@@ -17,10 +17,12 @@ VAE, Differential Diffusion and node_helpers:
     as concat_mask, the latent of the pixels;
   - the paste: every pixel outside the mask keeps its exact value, a colour drift is matched away, the
     patch's own detail lands inside;
-  - the run: one sampling call per region (denoise, seed; none at denoise 0) on a Differential Diffusion
-    clone, the soft noise mask at the sampling size, the cut hint in the conditioning, a video VAE's 5-D
-    decode, only masked pixels changed, a region of `size` px or more skipped, a region over max_size
-    skipped (at it detailed), the mask output, the image unlinked (nothing sampled), half precision.
+  - the run: one sampling call per region (denoise, seed) on a Differential Diffusion clone, the soft
+    noise mask at the sampling size, the cut hint in the conditioning, a video VAE's 5-D decode, only
+    masked pixels changed, a region of `size` px or more skipped, a region over max_size skipped (at it
+    detailed), the mask output, the image unlinked (nothing sampled), half precision;
+  - denoise 0: every region left as it is (no Differential Diffusion clone, no VAE call, no sampling),
+    the image bit-identical in float32 and float16, the mask output empty.
 """
 
 import sys
@@ -324,9 +326,28 @@ def test_one_sampling_on_a_differential_diffusion_clone(det, sampled):
     assert out.dtype == torch.float32 and changed.dtype == torch.float32
 
 
-def test_denoise_zero_samples_nothing(det, sampled):
-    det.core.run(picture(2), square(), "model", settings(det, denoise=0.0), 64)
-    assert sampled == []
+class UnusedVAE:
+    """A VAE that must not be called."""
+
+    def encode(self, pixels):
+        raise AssertionError("VAE encode at denoise 0")
+
+    def decode(self, latent):
+        raise AssertionError("VAE decode at denoise 0")
+
+
+def test_denoise_zero_leaves_every_region_as_it_is(det, sampled, monkeypatch):
+    def unused(model):
+        raise AssertionError("Differential Diffusion clone at denoise 0")
+
+    monkeypatch.setattr(det.core, "differential", unused)
+    masks = torch.cat([square(top=4, left=4, size=8), square(top=40, left=40, size=8)])
+    for dtype in (torch.float32, torch.float16):
+        image = picture(2).repeat(2, 1, 1, 1).to(dtype)
+        out, changed = det.core.run(image, masks.to(dtype), "model", settings(det, vae=UnusedVAE(), denoise=0.0), 64)
+        # no encode, sampling, decode or paste: every pixel keeps its exact value, and no region is marked
+        assert sampled == [] and out.dtype == dtype and torch.equal(out, image)
+        assert changed.dtype == dtype and changed.shape == (2, 64, 64) and not bool(changed.any())
 
 
 def test_only_masked_pixels_change(det, sampled):

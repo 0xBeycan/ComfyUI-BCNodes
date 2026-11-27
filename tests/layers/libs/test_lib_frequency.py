@@ -7,6 +7,8 @@
   - the texture comes from detail: a one-pixel checkerboard on detail (no low frequency at sigma 4)
     lands on a flat base as base + strength x checkerboard;
   - clamped to [0, 1]; RGBA in -> RGB out; the output dtype is the inputs' promoted dtype;
+  - a half-precision input is read through libs/image.float_frame: an 8-bit image given as float16
+    merges exactly as its float32 source, a continuous float16 or a bfloat16 image as its exact values;
   - a batch is merged image by image (each equal to its own single-image merge);
   - another size or image count, and a sigma the image cannot hold, are errors that say what to do.
 """
@@ -80,12 +82,29 @@ def test_rgba_in_rgb_out(fq):
     (torch.float16, torch.float16, torch.float16),
     (torch.float16, torch.float32, torch.float32),
     (torch.float32, torch.float16, torch.float32),
+    (torch.bfloat16, torch.bfloat16, torch.bfloat16),
 ])
 def test_output_dtype_is_the_promoted_input_dtype(fq, da, db, expected):
     a = picture(5)
     out = fq(a.to(da), a.to(db), 2.0, 1.0, CPU)
     assert out.dtype == expected and out.shape == a.shape
-    assert torch.allclose(out.float(), a.to(da).float(), atol=1e-3)  # within float16 rounding
+    assert torch.allclose(out.float(), a.to(da).float(), atol=1e-3)  # within half rounding
+
+
+def test_8bit_float16_input_merges_as_its_float32_source(fq):
+    g = torch.Generator().manual_seed(10)
+    base = torch.randint(0, 256, (2, 24, 32, 3), generator=g).float() / 255  # 8-bit levels k / 255
+    detail = torch.randint(0, 256, (2, 24, 32, 3), generator=g).float() / 255
+    expected = fq(base, detail, 2.0, 1.3, CPU)
+    assert torch.equal(fq(base.half(), detail, 2.0, 1.3, CPU), expected)
+    assert torch.equal(fq(base, detail.half(), 2.0, 1.3, CPU), expected)
+    assert torch.equal(fq(base.half(), detail.half(), 2.0, 1.3, CPU), expected.half())
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_other_half_input_merges_as_its_exact_values(fq, dtype):
+    base, detail = picture(11).to(dtype), picture(12)  # continuous values: no 8-bit data
+    assert torch.equal(fq(base, detail, 2.0, 1.3, CPU), fq(base.float(), detail, 2.0, 1.3, CPU))
 
 
 def test_batch_merged_image_by_image(fq):

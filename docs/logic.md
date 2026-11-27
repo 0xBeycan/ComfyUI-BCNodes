@@ -2,7 +2,7 @@
 
 ## `BC_LogicBoolean` — Logic Boolean
 
-A `FLOAT` widget in `[0, 1]` (default `1`) is rounded to a boolean.
+`boolean` (`FLOAT`, `0..1`, step `0.01`, default `1`) is rounded to the nearest integer with Python's `round`, which rounds a half to even: `0.5` gives `False` / `0`, `0.51` gives `True` / `1`.
 
 | Output | Value for widget `0.7` |
 | --- | --- |
@@ -13,7 +13,9 @@ A `FLOAT` widget in `[0, 1]` (default `1`) is rounded to a boolean.
 
 ## `BC_MathExpression` — Math Expression
 
-`expression` (multiline) plus optional `a`, `b`, `c` (`INT`, `FLOAT`, `IMAGE` or `LATENT`) → `INT`, `FLOAT` (the same value, truncated and as a float). The result is also drawn on the node. Re-evaluated on every run.
+`expression` (multiline) plus optional `a`, `b`, `c` (`INT`, `FLOAT`, `IMAGE` or `LATENT`) → `INT`, `FLOAT` (the same value, truncated and as a float). The result is also drawn on the node.
+
+The node is cached like any other: it runs again when `expression` or a connected input changes. An expression that calls `randomint` / `randomchoice` or reads another node's widget (`NodeTitle.widget`, which is not part of the cache key) can give another result with the same inputs, so the node runs on every queue, and the nodes below it with it.
 
 The expression is parsed with `ast` and walked with a whitelist — there is no `eval()`. Allowed: numbers; `+ - * / // % **`, `& | ^ << >>`; unary `- + ~ not`; `and` / `or`; comparisons (`== != < <= > >=`, chained) which yield `1` / `0`; the names `a`, `b`, `c`; `a.width` / `a.height` for an `IMAGE` or `LATENT` input (latent sizes are multiplied by 8); `NodeTitle.widget` to read another node's widget by node title or type; and the functions `min max abs round int float pow sqrt floor ceil randomint randomchoice iif`. Anything else — subscripts, strings, lambdas, other attributes or functions — is a `ValueError` naming the offending piece. An empty expression evaluates to `0`; a referenced input that is not connected is an error.
 
@@ -37,4 +39,6 @@ The option inputs are lazy: only the selected option's branch is executed, so an
 | `🎲 New Fixed Random` | Writes a concrete random seed into the widget; it then stays fixed. |
 | `♻️ (Use Last Queued Seed)` | Puts the seed of the last queued run back into the widget. Greyed out and in parentheses until a run has used a seed that differs from the widget; after a random run it reads `♻️ <seed>`. |
 
-`-1` never travels: right before a prompt is sent, the frontend replaces it with a drawn seed in the API prompt and in the workflow copy that ends up in image metadata, so dropping a saved image onto the canvas brings the real seed back. A prompt queued through the API with `-1` gets the same treatment on the server. Random seeds are drawn below 2⁵³ so they survive the round trip through JavaScript exactly. The node re-evaluates every run; downstream nodes re-run only when the seed actually changes.
+`-1` never travels: right before a prompt is sent, the frontend replaces it with a drawn seed in the API prompt and in the workflow copy that ends up in image metadata, so dropping a saved image onto the canvas brings the real seed back. A prompt queued through the API with `-1` gets the same treatment on the server. Random seeds are drawn below 2⁵³ so they survive the round trip through JavaScript exactly.
+
+A concrete seed is cached like any widget value: the same seed reuses the cached result, so it does not make the nodes below it run again. Only a `-1` that reaches the server (a prompt queued through the API) makes the node run on every queue, with a new seed each time.

@@ -10,13 +10,15 @@ import math
 import torch
 
 from .filters import gauss_reflect
+from .image import float_frame
 
 
 def frequency_merge(base, detail, sigma, strength, device):
     """G(base) + strength * (detail - G(detail)), clamped to [0, 1]: `base` gives the structure and
     colour, `detail` the texture. `base` and `detail` are (B, H, W, C) batches of one size, C 3 or 4
     (alpha is dropped); `sigma` is the Gaussian's, in pixels. One image at a time in float32 on
-    `device`, written into one (B, H, W, 3) output on the CPU in the inputs' promoted dtype."""
+    `device` (a half-precision image read through libs/image.float_frame), written into one
+    (B, H, W, 3) output on the CPU in the inputs' promoted dtype."""
     if tuple(base.shape[:3]) != tuple(detail.shape[:3]):
         raise ValueError(
             f"Frequency Merge: base is {base.shape[2]}x{base.shape[1]} ({base.shape[0]} image(s)), detail is "
@@ -30,8 +32,8 @@ def frequency_merge(base, detail, sigma, strength, device):
             f"hold; set split_sigma to {math.floor((min(height, width) - 1) / 3 * 10) / 10} or less")
     out = torch.empty((batch, height, width, 3), dtype=torch.promote_types(base.dtype, detail.dtype))
     for i in range(batch):
-        b = base[i, ..., :3].to(device=device, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
-        d = detail[i, ..., :3].to(device=device, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+        b = float_frame(base[i, ..., :3]).to(device=device, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+        d = float_frame(detail[i, ..., :3]).to(device=device, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
         merged = d - gauss_reflect(d, sigma)  # a new tensor: detail's high frequencies
         merged.mul_(strength).add_(gauss_reflect(b, sigma)).clamp_(0, 1)
         out[i].copy_(merged[0].permute(1, 2, 0))

@@ -13,7 +13,7 @@ A lower `downscale_factor` gives SeedVR2 more to restore, so more skin texture, 
 | below `medium_min_face` | far | `far_factor` (`1`: no downscale, the face is left as it is) |
 | no face found | — | `no_face_factor` (`1`), with a warning in the log |
 
-`detection_threshold` (default `0.5`) is SAM 3's. The node logs the fraction, the band and the factor on every run. A batch gets one factor, from its tallest face over every frame, because Resize takes one factor; the frames are detected four at a time.
+The four factors and the two bounds take `0.01`–`1`; `medium_min_face` must be below `close_up_min_face`, or the node stops with an error before SAM 3 runs. `detection_threshold` (default `0.5`, `0`–`1`) is SAM 3's. The node logs the fraction, the band and the factor on every run. A batch gets one factor, from its tallest face over every frame, because Resize takes one factor; the frames are detected four at a time.
 
 The factors follow what was seen on SeedVR2 image upscales: a close-up at `0.5` looks best (`1` looks plastic), a medium shot at `0.75`, and a far shot at `0.5` changes the face. The two bounds are uncalibrated estimates. SAM 3's face box measured `0.37` of the image height on the chest-up shot of those observations, `0.24` on the thigh-up one and `0.14` on the knee-up one, and each bound sits between two neighbours (their geometric mean, rounded). On an image 1024 px tall the bounds keep the face at 138 px or more after the downscale (`0.18 × 1024 × 0.75`; `0.3 × 1024 × 0.5` = 154), between the 70 px face that changed and the 184 px one that held. The fraction does not see the resolution: the same fraction is twice the pixels at twice the height, so a high-resolution far shot may stand a lower factor than a low-resolution one.
 
@@ -30,7 +30,9 @@ One node for the whole input stage of the SeedVR2 graph: `ImageScaleBy(lanczos, 
 
 ## `BC_SeedVR2VAEEncode` — SeedVR2 VAE Encode
 
-`pixels` (`IMAGE`, the frames from *SeedVR2 Resize* `image`), `vae` (`VAE`, the SeedVR2 VAE), widgets `tile_size` (default `1024`), `overlap` (default `256`), `temporal_size`, `temporal_overlap` (the four of *VAE Encode (Tiled)*; the temporal two are ignored, as they are there for this VAE) → `LATENT` `(1, 16, T', H/8, W/8)`, float32.
+`pixels` (`IMAGE`, the frames from *SeedVR2 Resize* `image`), `vae` (`VAE`, the SeedVR2 VAE), widgets `tile_size` (default `1024`), `overlap` (default `256`), `temporal_size` and `temporal_overlap` (defaults `64` and `8`; the four of *VAE Encode (Tiled)*; the temporal two are ignored, as they are there for this VAE) → `LATENT` `(1, 16, T', H/8, W/8)`, float32.
+
+The four tile widgets are advanced inputs, as on *VAE Encode (Tiled)*: the frontend keeps them among the node's advanced inputs, hidden until *Show advanced inputs*, unless the setting *Always show advanced widgets on all nodes* is on.
 
 ComfyUI's *VAE Encode (Tiled)* moves the whole clip to the GPU first (after a full float32 `x × 2 − 1` copy in RAM), then encodes it slice by slice, so VRAM grows with the frame count on top of the encoder's fixed working set (over 28 GB for a whole 1080p frame, measured on a 32 GB card): 897 frames at 1080p do not fit a 32 GB card in one tile. This node runs the same slice loop with the same causal memory cache and the same `x × 2 − 1`, but builds each 4-frame input slice on the GPU only when its turn comes; the posterior mode, the crop to the latent size and the `× scaling_factor` follow the native path. VRAM is the encoder's working set whatever the length, and the float32 copy in RAM is gone. Spatial tiling is the native one: the same tile grid, cosine blend on the latent grid and count normalisation as `tiled_vae`, tile by tile with one causal cache at a time, the blend accumulated in float32 in RAM in the latent the node returns; a `tile_size` that covers the frame means one tile and no blend. At 1080p a whole-frame tile (2048) needs 27.7 GiB (driver level; 24.3 GiB torch peak) on 81 frames and fits a 32 GB card with nothing else loaded (a 5090 peaked at 27.89 of its 31.36 GiB on the driver over a 901-frame clip, the same at every length, with the Process Monitor off); a 1024 tile needs 14 GiB, about 21 GiB free next to other resident memory (measured on an RTX PRO 4500, 81 frames at 1088x1920). `tests/parity_seedvr2_video.py --vae … --tile …` checks it against `VAE.encode_tiled` (expected: identical latent) and prints both peak VRAMs.
 
@@ -57,7 +59,7 @@ where the megapixels are the DiT's frame (8 × 8 per latent cell, so 2.09 for 10
 
 ## `BC_SeedVR2VAEDecode` — SeedVR2 VAE Decode
 
-`samples` (`LATENT`), `vae` (`VAE`, the SeedVR2 VAE), widgets `tile_size` (default `1024`), `overlap` (default `256`), `temporal_size`, `temporal_overlap` (the four of *VAE Decode (Tiled)*; the temporal two are ignored, as they are there for this VAE) → `IMAGE` `(B×T, H, W, 3)`, float16, `[0, 1]`.
+`samples` (`LATENT`), `vae` (`VAE`, the SeedVR2 VAE), widgets `tile_size` (default `1024`), `overlap` (default `256`), `temporal_size` and `temporal_overlap` (defaults `64` and `8`; the four of *VAE Decode (Tiled)*; the temporal two are ignored, as they are there for this VAE; all four advanced inputs, as on *SeedVR2 VAE Encode*) → `IMAGE` `(B×T, H, W, 3)`, float16, `[0, 1]`.
 
 ComfyUI's *VAE Decode (Tiled)* on the SeedVR2 VAE decodes the whole clip in one call and keeps every decoded frame on the GPU until the end (`slicing_decode` collects the slices and `torch.cat`s them), so VRAM grows with the frame count — a 32 GB card tops out near 190 frames at 1080p. This node runs the same slice loop with the same causal memory cache, the same `/ scaling_factor`, even crop and `(x + 1) / 2` clamp, but moves each decoded slice to RAM as soon as it exists, and keeps the latent in RAM too: each slice of each tile goes to the GPU only when its turn comes. VRAM is then the decoder's working set for one tile (over 31 GB for a whole 1080p frame, which no 32 GB card fits — 2048 fails at the first slice on a 5090; 25-28 GiB with a 1024 tile, about the whole of a 32 GB card; 18 GiB with 768, which runs with 20 GiB free; 10.5 GiB with 512, which runs with 13; measured on an RTX PRO 4500, 81 frames at 1088x1920), whatever the length; the clip length is bounded by RAM instead. The frames are stored as float16, which is what the float16 VAE produced — the native node only upcasts them. Spatial tiling is the native one (same latent-grid tiles, same pixel-grid cosine blend and count normalisation as `tiled_vae`), tile by tile with one causal cache at a time; the blend is accumulated in float16 in the output itself and normalised in place in float32 per 4-frame chunk, so the clip is in RAM once and the result equals the native tiled decode within float16 rounding. `tests/parity_seedvr2_video.py --vae … --tile …` checks it against `VAE.decode_tiled` (expected: equal after rounding to float16) and prints both peak VRAMs.
 
@@ -79,7 +81,7 @@ Menu `BCNodes/seedvr2/compact`. The same chain as *SeedVR2 Resize* → *SeedVR2 
 
 ### `BC_SeedVR2PreprocessCompact` — SeedVR2 Preprocess (Compact)
 
-`image` (`IMAGE`, the original frames), `vae` (`VAE`, the SeedVR2 VAE), the widgets of *SeedVR2 Resize* (`upscale_factor`, `downscale_factor`, `max_resolution`, `emulate_bf16`) and of *SeedVR2 VAE Encode* (`tile_size`, `overlap`; the two temporal widgets, which this VAE ignores, are left out), with the same names and defaults, except that `tile_size` takes `0` (auto, the default; see *Auto tile* below).
+`image` (`IMAGE`, the original frames), `vae` (`VAE`, the SeedVR2 VAE), the widgets of *SeedVR2 Resize* (`upscale_factor`, `downscale_factor`, `max_resolution`, `emulate_bf16`) and of *SeedVR2 VAE Encode* (`tile_size`, `overlap`; the two temporal widgets, which this VAE ignores, are left out), with the same names and defaults, except that `tile_size` takes `0` (auto, the default; see *Auto tile* below). `tile_size` and `overlap` are advanced inputs, as on *SeedVR2 VAE Encode*.
 
 | Output | Type | Value |
 | --- | --- | --- |
@@ -90,7 +92,7 @@ Resize's `image` (the padded float16 clip) exists only inside the node, while it
 
 ### `BC_SeedVR2PostProcessCompact` — SeedVR2 PostProcess (Compact)
 
-`samples` (`LATENT`, the sampler's), `vae` (`VAE`), `image` (`IMAGE`, the same original frames), `plan` (`SEEDVR2_PLAN`), widgets `color_correction_method` (`lab` / `wavelet` / `adain` / `none`), `tile_size` (`0`, auto, by default), `overlap` → `images` (`IMAGE`, float16).
+`samples` (`LATENT`, the sampler's), `vae` (`VAE`), `image` (`IMAGE`, the same original frames), `plan` (`SEEDVR2_PLAN`), widgets `color_correction_method` (`lab` / `wavelet` / `adain` / `none`), `tile_size` (`0`, auto, by default), `overlap` (both advanced inputs, as on *SeedVR2 VAE Encode*) → `images` (`IMAGE`, float16).
 
 The decode writes only the frames, rows and columns the output keeps into the output buffer (the 4n+1 frames and the pad to 16 are decoded, never stored), and each frame is colour-corrected in place there. Its reference is rebuilt from `image` four frames at a time with Resize's own code, so it is Resize's `reference`; `none` builds none. A float16 `image` is requantized to `k / 255` first, as in Resize. The node stops with an error when `image` is not the batch the plan was made from.
 

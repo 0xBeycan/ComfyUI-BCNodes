@@ -1,7 +1,8 @@
 # ComfyUI-BCNodes
 
-A ComfyUI custom-node pack (`BC_*` utility nodes plus a `web/js` frontend). The node list is in
-`README.md`; what each node does is in `docs/`, one page per menu category.
+A ComfyUI custom-node pack (`BC_*` utility nodes plus a `web/js` frontend). The node list and what
+each node does are in `docs/`, one page per menu category, each node under a heading with its key;
+`README.md` links every page.
 
 ## Architecture
 
@@ -13,15 +14,17 @@ nodes/  ->  pipelines/  ->  models/  ->  libs/
 
 | layer | holds | never holds |
 |---|---|---|
-| `nodes/` | The ComfyUI surface: `INPUT_TYPES`, tooltips, `DESCRIPTION`, categories. Converting ComfyUI types (IMAGE/MASK tensors, LATENT dicts, hidden `PROMPT`/`EXTRA_PNGINFO`, `ui` payloads, temp/output folders) to library types and back, then one pipeline call. One file per domain. The downloader's HTTP routes. | algorithms |
+| `nodes/` | The ComfyUI surface: `INPUT_TYPES`, tooltips, `DESCRIPTION`, categories. Converting ComfyUI types (IMAGE/MASK tensors, LATENT dicts, hidden `PROMPT`/`EXTRA_PNGINFO`, `ui` payloads, temp/output folders) to library types and back, then one pipeline call. One file per domain. The pack's HTTP routes: the downloader's, the LM catalog, Claude Chat's, the PreFlight records, the Process Monitor's. | algorithms |
 | `pipelines/` | Flows that combine models and libs. Config and contract types (dataclasses, TypedDicts). | model architectures, ComfyUI node classes |
 | `models/` | One package per model: architecture, weights, cache, model-specific pre/post-processing, adapters over ComfyUI core models. `models/common/` holds the registry and the weight download. | pipeline logic |
 | `libs/` | Model-independent helpers. | imports of `models/`, `pipelines/` or `nodes/`; ComfyUI node classes |
 
 The root `__init__.py` only registers: it imports the node modules and merges their mappings (their
 order is the menu order), then registers the link stamp of the unused heavy outputs
-(`register_link_stamp`, which also hooks `stamps_last` to the server's startup; below).
-`WEB_DIRECTORY = "./web"`.
+(`register_link_stamp`, which also hooks `stamps_last` to the server's startup; below), and the
+HTTP routes of `nodes/lm.py` (the LM catalog), `nodes/claude.py` (Claude Chat) and `nodes/preflight.py`
+(the PreFlight records) through each module's `register_routes()`, which returns at once outside a
+running server. `WEB_DIRECTORY = "./web"`.
 It also imports `nodes/process_monitor.py`, which registers no nodes: it registers the Process
 Monitor's HTTP routes and, when the monitor's saved setting is on, starts it (see Process Monitor).
 
@@ -31,7 +34,7 @@ nodes/common.py               AnyType, FlexibleOptionalInputType, slot_index, co
                               registered; Qwen LM and PreFlight Observe), the unused-heavy-outputs helper (LinkStamp,
                               register_link_stamp, stamps_last, heavy_wanted, wants, drop_unwanted, drop_unlinked_heavy),
                               edited_fields (a config node's edited and linked fields: LM Config, DyPE Config)
-nodes/<domain>.py             one per domain (38); social_specs.json is the user-editable platform table
+nodes/<domain>.py             one per domain (39); social_specs.json is the user-editable platform table
 nodes/lm.py                   Qwen LM, LM Config, LM Loader (family, model, precision, LoRA, keep -> a BC_LM value, an
                               LMSpec; loads nothing);
                               model_inputs and MODEL_DEFAULTS, the model / precision / lora / lora_strength widgets
@@ -157,6 +160,11 @@ libs/sage_attention.py        Patch Sage Attention: SageAttention kernels as cor
                               that run the original attention, nan_guard, the per-run counts); the node hangs it on a
                               model clone with ON_PRE_RUN / ON_CLEANUP callbacks
 libs/sampling.py              ksampler: one sampler run as core's common_ksampler (Detailer, Dual Sampler)
+libs/flow_shift.py            the official Qwen-Image flow shift: image_seq_len (the latent's 2x2-patch tokens), mu
+                              (diffusers' calculate_shift line), stretch_to_terminal (the schedule's stretch to a
+                              terminal sigma); Qwen Image Shift. refine_pass, check_model_sampling, run_at_shift (the
+                              shift wrappers' refine rule, model_sampling check, run at a shift): Qwen Image Shift, Dual
+                              Sampling Shift
 libs/dype/                    DyPE's 1-D rotary frequency tables (vision_yarn, yarn, ntk; the decaying attention scale),
                               float64 as core's rope, and embed.py (core's EmbedND layout with the ntk / pi / base tables,
                               which each model's embedder subclasses); derived from ComfyUI-DyPE, Apache-2.0, LICENSE +
@@ -390,8 +398,10 @@ where it is.
 
 ## Tests and gates
 
-`postfx` and `caption-audit` must be importable: `pip install -r requirements.txt`, or
-`PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts. From the repo root:
+`postfx`, `caption-audit` and `anthropic` must be importable: `pip install -r requirements.txt`, or
+`PYTHONPATH=/path/to/postfx:/path/to/caption-audit` for local checkouts of the first two (without
+`anthropic`, `tests/test_runtime.py` fails at its Claude sections and pytest skips the Claude tests).
+From the repo root:
 
 ```
 python tests/test_import_time.py                      # import budget, no heavy module, every module cold

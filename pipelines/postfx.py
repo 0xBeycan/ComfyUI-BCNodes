@@ -34,8 +34,8 @@ def postfx_package():
 # --- Catalogs (populate dropdowns) ----------------------------------------
 
 def theme_names():
-    """'category/stem' labels for every built-in theme, ordered signature ->
-    luts -> experimental."""
+    """'category/stem' labels for every built-in theme, in postfx's list_themes
+    order (postfx 1.1.0: grain -> signature -> luts -> experimental)."""
     return [f"{cat}/{stem}" if cat else stem for stem, _desc, cat in postfx_package().list_themes()]
 
 

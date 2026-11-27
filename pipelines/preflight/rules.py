@@ -5,8 +5,8 @@ summary_text and never re-implements a rule.
 
 The model is a pure observation sensor; this engine is the only place that "judges". Every verdict is a
 RANGE (best..worst) because the sensor cannot resolve everything with certainty and because some rules
-depend on factors outside the frame (setting, region, account signals). ``range_drivers`` names the
-unknown so the user can collapse the range themselves.
+depend on factors outside the frame (region, account signals). ``range_drivers`` names the unknown so the
+user can collapse the range themselves.
 
 Every rule has a stable ID (e.g. ``base.bikini``); whenever a rule changes a verdict its ID is appended to
 ``fired_rules`` in application order: the hook the Calibrate node uses to attribute real-world outcomes to
@@ -15,7 +15,7 @@ individual rules.
 
 import re
 
-ENGINE_VERSION = "1.4.0"
+ENGINE_VERSION = "1.5.0"
 
 # Observation schema versions this engine knows how to interpret. Stage 0 fails
 # closed on anything else, so an observation produced by a newer/older schema is
@@ -158,23 +158,25 @@ def _apply_base_rules(V, obs, fired):
         _merge(tt, BLOCK, BLOCK, "nudity")
         _merge(x, RISK, RISK, "adult label + sensitive media settings required")
 
+    # TikTok's For-You-Feed ineligibility keeps the post up and only cuts its
+    # reach: a demotion (RISK), never a removal (BLOCK).
     if garment in _MINIMAL_GARMENTS or exposure == "significant":
         matched.append("base.minimal")
         _merge(ig, RISK, RISK, "minimal coverage — suggestive demotion risk")
-        _merge(tt, BLOCK, BLOCK, "significant exposure — FYF ineligible")
+        _merge(tt, RISK, RISK, "significant exposure — FYF ineligible")
         _merge(x, RISK, RISK, "adult label recommended")
 
     if garment == "bikini":
         matched.append("base.bikini")
         _merge(ig, RISK, RISK, "bikini — demotion possible")
-        # TikTok collapses on setting: FYF-killed indoors, RISK at beach/pool,
-        # otherwise the RISK..BLOCK range stands (setting is the unknown).
+        # TikTok: FYF ineligible indoors, demotion possible at beach/pool; both
+        # are RISK, so the setting names the reason, not the verdict.
         if setting in ("bedroom", "indoor_other"):
-            _merge(tt, BLOCK, BLOCK, "bikini indoors — FYF ineligible")
+            _merge(tt, RISK, RISK, "bikini indoors — FYF ineligible")
         elif setting == "beach_pool":
             _merge(tt, RISK, RISK, "bikini at beach/pool — demotion possible")
         else:
-            _merge(tt, RISK, BLOCK, "bikini — RISK at beach/pool, FYF kill indoors")
+            _merge(tt, RISK, RISK, "bikini — demotion possible, FYF ineligible if indoors")
         # X: OK/RISK, label only when exposure is at least moderate.
         _merge(x, OK, RISK, "bikini")
 
@@ -382,24 +384,9 @@ def _apply_x_label(V, obs, motion):
 # range_drivers — human-readable explanations of what the range hinges on
 # ---------------------------------------------------------------------------
 
-def _range_drivers(obs, fired, widened_low_conf, V):
+def _range_drivers(widened_low_conf, V):
     drivers = []
     explained = set()
-    if "base.bikini" in fired:
-        setting = obs.get("setting", "indoor_other")
-        if setting == "beach_pool":
-            drivers.append(
-                "TikTok: bikini reported at 'beach_pool' — FYF demotion (RISK). If it "
-                "were indoors (bedroom/indoor_other) TikTok would be FYF-ineligible (BLOCK).")
-        elif setting in ("bedroom", "indoor_other"):
-            drivers.append(
-                "TikTok: bikini reported indoors ('%s') — FYF-ineligible (BLOCK). If "
-                "this is actually a beach or pool, the verdict drops to RISK." % setting)
-        else:
-            drivers.append(
-                "TikTok: bikini reported in '%s' — verdict spans RISK (beach/pool) to "
-                "BLOCK (indoors); confirm the setting to collapse it." % setting)
-        explained.add("tiktok")
     if widened_low_conf:
         drivers.append(
             "All non-final verdicts were widened because the sensor reported LOW "
@@ -557,7 +544,7 @@ def judge(observations, caption_text="", is_video=False):
 
     _apply_x_label(V, observations, motion)
 
-    drivers = _range_drivers(observations, fired, widened, V)
+    drivers = _range_drivers(widened, V)
     return _build_report(observations, flags, fired, V, drivers, unknown=False)
 
 

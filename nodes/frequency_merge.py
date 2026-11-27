@@ -37,8 +37,8 @@ class FrequencyMerge:
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
-    OUTPUT_TOOLTIPS = ("base's low frequencies + detail's high frequencies, clamped to [0, 1], RGB; float16 only when both "
-                       "inputs are float16.",)
+    OUTPUT_TOOLTIPS = ("base's low frequencies + detail's high frequencies, clamped to [0, 1], RGB; in the inputs' promoted "
+                       "dtype: float16 when both are float16, bfloat16 when both are bfloat16, float32 otherwise.",)
     FUNCTION = "merge"
     CATEGORY = "BCNodes/image"
     SEARCH_ALIASES = ["BCNodes", "frequency merge", "frequency separation", "high pass", "low pass", "detail transfer",

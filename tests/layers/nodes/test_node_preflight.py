@@ -321,7 +321,7 @@ def test_report_survives_store_failure(pf, store, sent, bcnodes, monkeypatch):
     monkeypatch.setattr(bcnodes["pipelines.preflight.feedback"], "log_prediction", boom)
     report_json, summary, rid, _ = pf.PreFlightReport().report(obs_json(garment="lingerie", exposure="significant"), "", True)
     assert rid == "" and sent == []
-    assert json.loads(report_json)["verdicts"]["tiktok"]["worst"] == "BLOCK"
+    assert json.loads(report_json)["verdicts"]["tiktok"]["worst"] == "RISK"
 
 
 def test_report_is_video_from_frames_analyzed(pf, store):

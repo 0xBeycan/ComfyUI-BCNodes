@@ -24,7 +24,8 @@ def sampling_inputs():
         "scheduler": (comfy.samplers.KSampler.SCHEDULERS, {"tooltip": "The scheduler, as on KSampler."}),
         "denoise": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01,
                               "tooltip": "How far each region may be redrawn (Face Detailer: the face pass; the eyes take "
-                                         "eye_denoise). 0 skips the sampling."}),
+                                         "eye_denoise). 0 leaves every region as it is: nothing is encoded, sampled or "
+                                         "pasted, and the mask output marks none (Face Detailer: no face pass)."}),
     }
 
 
@@ -141,7 +142,8 @@ class FaceDetailer:
                                                      "the eyes' masks never change."}),
                 "eye_denoise": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01,
                                           "tooltip": "How far the eyes may be redrawn: the eye pass's denoise, in place of denoise. 0 "
-                                                     "skips the sampling."}),
+                                                     "turns the eye pass off: the eyes are not searched for and keep their "
+                                                     "pixels."}),
                 "sam3_model": (choices(), {"default": DEFAULT_SAM3,
                                           "tooltip": "SAM 3 checkpoint under models/checkpoints; the default is downloaded when missing."}),
                 "threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01,

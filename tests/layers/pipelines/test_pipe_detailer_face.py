@@ -14,7 +14,10 @@ records each region and the model, and paints the region so a later detection ca
   - the eyes: found on the face's box of the frame the face pass left, cut to the face's mask (a part
     outside it dropped), both eyes one region on one crop; one eye alone when only one is found;
   - the passes in order face, eyes; the mask output the union of the regions detailed;
-  - face and eyes both off: the image passes through, SAM 3 is not loaded and no model is cloned.
+  - a pass at denoise 0 is off: denoise 0 skips the face pass while the eyes run, eye_denoise 0 the eye pass
+    and its eye search;
+  - face and eyes both off, or both at 0: the image passes through, SAM 3 is not loaded and no model is
+    cloned.
 """
 
 import importlib
@@ -74,9 +77,9 @@ def flow(bcnodes):
 
 
 def run(flow, monkeypatch, world, model_no_lora="other", select=None, max_h=1024, size=1024, crop_size=2048, eye_size=1024,
-        eye_crop_size=2048, eye_denoise=0.35, face=True, eyes=False):
+        eye_crop_size=2048, denoise=0.5, eye_denoise=0.35, face=True, eyes=False):
     settings = importlib.import_module(flow.__package__ + ".core").Settings
-    face_s = settings(None, [], [], 0, 1, 1.0, "euler", "simple", 0.5, size, crop_size)
+    face_s = settings(None, [], [], 0, 1, 1.0, "euler", "simple", denoise, size, crop_size)
     eye_s = settings(None, [], [], 0, 1, 1.0, "euler", "simple", eye_denoise, eye_size, eye_crop_size)
     monkeypatch.setattr(flow, "load", lambda name: ("sam", "clip") if name == "sam3.safetensors" else None)
     monkeypatch.setattr(flow, "text_condition", lambda clip, text: text)
@@ -216,10 +219,31 @@ def test_face_and_eyes_off_pass_the_image_through(flow, monkeypatch):
 
     for name in ("load", "text_condition", "detect", "detail", "differential"):
         monkeypatch.setattr(flow, name, unused)
-    s = importlib.import_module(flow.__package__ + ".core").Settings(None, [], [], 0, 1, 1.0, "euler", "simple", 0.5,
-                                                                      1024, 2048)
-    for dtype in (torch.float32, torch.float16):
-        image = torch.rand(2, H, W, 3).to(dtype)
-        out, changed = flow.run(image, "main", "other", s, s, "sam3.safetensors", 0.4, None, 1024, False, False)
-        assert out.dtype == dtype and torch.equal(out, image)
-        assert changed.dtype == dtype and changed.shape == (2, H, W) and not bool(changed.any())
+    settings = importlib.import_module(flow.__package__ + ".core").Settings
+    on = settings(None, [], [], 0, 1, 1.0, "euler", "simple", 0.5, 1024, 2048)
+    zero = settings(None, [], [], 0, 1, 1.0, "euler", "simple", 0.0, 1024, 2048)
+    # both toggles off, or both on at denoise 0 and eye_denoise 0 (a pass at 0 is off)
+    for s, face, eyes in ((on, False, False), (zero, True, True)):
+        for dtype in (torch.float32, torch.float16):
+            image = torch.rand(2, H, W, 3).to(dtype)
+            out, changed = flow.run(image, "main", "other", s, s, "sam3.safetensors", 0.4, None, 1024, face, eyes)
+            assert out.dtype == dtype and torch.equal(out, image)
+            assert changed.dtype == dtype and changed.shape == (2, H, W) and not bool(changed.any())
+
+
+def test_denoise_zero_turns_the_face_pass_off(flow, monkeypatch):
+    world = World(faces=("a",), parts={"eyes:2": eye_masks})
+    out, changed = run(flow, monkeypatch, world, denoise=0.0, eyes=True)
+    # the eyes still run on the face's box, which keeps its pixels; only the eyes are marked
+    assert details(world) == [(("dd", "main"), A_EYES)]
+    assert int(changed[0].sum()) == world.pixels[0] == 400
+    assert torch.equal(out[0, ..., 0], 0.9 * changed[0])
+
+
+def test_eye_denoise_zero_turns_the_eye_pass_off(flow, monkeypatch):
+    world = World(faces=("a",), parts={"eyes:2": eye_masks})
+    out, changed = run(flow, monkeypatch, world, eye_denoise=0.0, eyes=True)
+    # the face pass alone; the eyes are not searched for
+    assert details(world) == [(("dd", "main"), A)]
+    assert [call[1] for call in world.calls if call[0] == "detect"] == ["face:200"]
+    assert torch.equal(changed[0], face_mask("a"))

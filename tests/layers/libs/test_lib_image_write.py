@@ -1,7 +1,8 @@
 """libs/image_write.py write_image's PNG compression level: quality 0-60 gives level 0-6 (quality / 10),
 anything above gives 6; quality 0 is DEFAULT_QUALITY (90), so 6; Save Image With Caption's
 PNG_QUALITY (40) stays level 4. A TIFF written with save_metadata reads back with the prompt in EXIF
-`Make` and the workflow in `ImageDescription`, a workflow larger than JPEG's 64 KB too."""
+`Make` and the workflow in `ImageDescription`, a workflow larger than JPEG's 64 KB too. JPEG 2000 does
+not use the value: every quality below 100 writes the same lossy file, 100 a lossless one."""
 
 import json
 
@@ -45,3 +46,17 @@ def test_tiff_keeps_prompt_and_workflow(image_write, tmp_path):
     exif = Image.open(path).getexif()
     assert exif[0x010F] == "Prompt: " + json.dumps(prompt)
     assert exif[0x010E] == "Workflow: " + json.dumps(workflow)
+
+
+def test_jpeg2000_lossy_below_100_lossless_at_100(image_write, tmp_path):
+    import numpy as np
+    from PIL import Image, features
+
+    if not features.check("jpg_2000"):
+        pytest.skip("Pillow built without OpenJPEG")
+    pixels = np.random.default_rng(0).integers(0, 256, (24, 32, 3), dtype=np.uint8)
+    for quality in (50, 95, 100):
+        image_write.write_image(str(tmp_path / f"{quality}.jp2"), Image.fromarray(pixels), None, False, None, quality)
+    assert (tmp_path / "50.jp2").read_bytes() == (tmp_path / "95.jp2").read_bytes()
+    assert not np.array_equal(np.array(Image.open(tmp_path / "95.jp2")), pixels)
+    assert np.array_equal(np.array(Image.open(tmp_path / "100.jp2")), pixels)

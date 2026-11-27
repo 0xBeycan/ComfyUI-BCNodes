@@ -40,7 +40,8 @@ LAYERS = ("nodes", "pipelines", "models", "libs")
 NODE_MODULES = ["logic", "mask", "image_scale", "lists", "birefnet", "depth_anything", "downloader", "math_expression", "prompt_list", "any_switch", "select_switch", "seed", "show_text",
                 "lm", "claude", "image_comparer", "power_lora_loader", "lora_key_fix", "sage_attention", "detail_boost", "everywhere", "cond_pipe", "seedvr2",
                 "postfx", "caption_audit", "social_media_export", "image_quality_gate", "save_image", "save_image_with_caption", "skin_texture",
-                "frequency_merge", "preflight", "qwen_image_shift", "detailer", "vae_loader", "latent_upscale", "dype", "dual_sampler"]
+                "frequency_merge", "preflight", "qwen_image_shift", "detailer", "vae_loader", "latent_upscale", "dype", "dual_sampler",
+                "dual_sampling_shift"]
 HEAVY = [
     "transformers", "timm", "scipy", "cv2", "PIL", "huggingface_hub",
     "safetensors", "kornia", "einops", "torchvision", "folder_paths",
@@ -151,7 +152,7 @@ def main():
         "BC_JoinImageLists", "BC_BiRefNetRemoveBackground", "BC_DepthAnythingV2", "BC_AutoModelDownloader",
         "BC_MathExpression", "BC_PromptList", "BC_AspectPromptList", "BC_AnySwitch", "BC_SelectSwitch", "BC_Seed", "BC_ShowText",
         "BC_QwenLM", "BC_LMConfig", "BC_LMLoader", "BC_Claude", "BC_ClaudeConfig",
-        "BC_ImageComparer", "BC_PowerLoraLoader", "BC_LoraLoaderKeyFix", "BC_VAELoader", "BC_LatentUpscale", "BC_PatchSageAttention", "BC_DetailBoost", "BC_QwenImageShift", "BC_DyPEPatcher", "BC_DyPEConfig", "BC_DualSampler", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
+        "BC_ImageComparer", "BC_PowerLoraLoader", "BC_LoraLoaderKeyFix", "BC_VAELoader", "BC_LatentUpscale", "BC_PatchSageAttention", "BC_DetailBoost", "BC_QwenImageShift", "BC_DualSamplingShift", "BC_DyPEPatcher", "BC_DyPEConfig", "BC_DualSampler", "BC_AnythingEverywhere", "BC_FastGroupsBypasser",
         "BC_CondPipePack", "BC_CondPipeUnpack",
         "BC_SeedVR2Resize", "BC_SeedVR2VAEEncode", "BC_SeedVR2VAEDecode", "BC_SeedVR2PostProcess",
         "BC_SeedVR2PreprocessCompact", "BC_SeedVR2PostProcessCompact", "BC_SeedVR2FramingDownscale", "BC_SeedVR2ChunkSize",

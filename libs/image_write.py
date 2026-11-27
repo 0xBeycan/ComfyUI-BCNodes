@@ -55,7 +55,7 @@ def write_image(path, img, prompt, save_metadata, extra_pnginfo, quality):
     ext = Path(path).suffix
     if ext in PLUGINS:
         importlib.import_module(PLUGINS[ext])  # registers the Pillow codec
-    if quality == 0:
+    if quality == 0:  # 0 = the default: PNG level 0 takes a quality of 1-5
         quality = DEFAULT_QUALITY
     kwargs = {}
     if ext in (".avif", ".webp", ".jxl"):
@@ -67,6 +67,9 @@ def write_image(path, img, prompt, save_metadata, extra_pnginfo, quality):
             kwargs["quality"] = quality
         kwargs["optimize"] = OPTIMIZE
     elif ext in (".j2k", ".jp2", ".jpc", ".jpf", ".jpx", ".j2c"):
+        # Pillow's JPEG 2000 writer reads neither `exif` nor `quality`: below 100 the irreversible (lossy)
+        # wavelet at Pillow's default rate (one full-quality layer), the same file for every value; 100 the
+        # reversible wavelet, lossless
         if save_metadata:
             kwargs["exif"] = exif_bytes(img, prompt, extra_pnginfo)
         if quality < 100:

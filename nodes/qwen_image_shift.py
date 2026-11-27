@@ -69,11 +69,10 @@ class Shift:
     def __call__(self, executor, *args, **kwargs):
         from comfy.model_sampling import time_snr_shift
 
-        from ..libs.flow_shift import image_seq_len, mu, stretch_to_terminal
+        from ..libs.flow_shift import (check_model_sampling, image_seq_len, mu, refine_pass, run_at_shift,
+                                       stretch_to_terminal)
 
-        if executor.class_obj.model_patcher.get_model_object("model_sampling") is not self.sampling:
-            raise ValueError(f"{PREFIX} a node after it replaced the model's model_sampling (ModelSamplingAuraFlow or "
-                             "another shift node), so its shift would be applied twice. Keep one of the two.")
+        check_model_sampling(executor, self.sampling, PREFIX)
         args = list(args)
         sigmas = args[3]
         shift = None
@@ -81,7 +80,7 @@ class Shift:
             multiplier, base_seq_len, max_seq_len, base_shift, max_shift, threshold, rate = self.dynamic
             height, width = kwargs["latent_shapes"][0][-2:]
             tokens = image_seq_len(height, width)
-            refine = float(sigmas[0]) < 1.0 and bool(args[0].any())
+            refine = refine_pass(args[0], sigmas, 1.0)  # model_sampling at shift 1: full noise is sigma 1
             seq = threshold + rate * (tokens - threshold) if refine and tokens > threshold else tokens
             m = mu(seq, base_seq_len, max_seq_len, base_shift, max_shift)
             shift = math.exp(m) * multiplier
@@ -105,11 +104,7 @@ class Shift:
         args[3] = sigmas
         if shift is None:
             return executor(*args, **kwargs)
-        self.sampling.set_parameters(shift=shift, multiplier=1.0)
-        try:
-            return executor(*args, **kwargs)
-        finally:
-            self.sampling.set_parameters(shift=1.0, multiplier=1.0)
+        return run_at_shift(self.sampling, shift, 1.0, 1.0, executor, args, kwargs)
 
 
 class QwenImageShift:

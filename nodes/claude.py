@@ -34,10 +34,9 @@ class Claude:
                                       "tooltip": "The user message, sent as written after the images. Empty only when "
                                                  "an image is connected."}),
                 "model": (list(MODELS), {"default": DEFAULT_MODEL,
-                                         "tooltip": "The Claude model: Opus 5.5 ($4 / $20 per million input / output "
-                                                    "tokens), Sonnet 5.5 ($2 / $10), Haiku 5.5 ($0.10 / $0.50), Fable "
-                                                    "5.2 ($8 / $40). model_id on a Claude Config node runs any other "
-                                                    "model."}),
+                                         "tooltip": "The Claude model: Opus 5.5, Sonnet 5.5, Haiku 5.5 or Fable 5.2; "
+                                                    "their token prices are on https://www.anthropic.com/pricing. "
+                                                    "model_id on a Claude Config node runs any other model."}),
                 "max_tokens": ("INT", {"default": DEFAULT_MAX_TOKENS, "min": 1, "max": MAX_TOKENS,
                                        "tooltip": "The most tokens the model writes, thinking and answer together. "
                                                   "Only the tokens written are billed. An answer cut here is an error, "
@@ -119,8 +118,8 @@ class ClaudeConfig:
                                                        "Haiku 5.5, which has no fallback). error: the run fails. A "
                                                        "refusal of the whole chain fails the run either way."}),
                 "speed": (SPEEDS, {"default": defaults.speed,
-                                   "tooltip": "fast: the model's fast mode, up to 2.5x faster output at a higher "
-                                              "price (Opus 5.5: $8 / $40 per million tokens; Fable 5.2: $16 / $80). "
+                                   "tooltip": "fast: the model's fast mode on Opus 5.5 and Fable 5.2, up to 2.5x "
+                                              "faster output at a higher price (https://www.anthropic.com/pricing). "
                                               "Another model rejects it."}),
                 "image_format": (IMAGE_FORMATS, {"default": defaults.image_format,
                                                  "tooltip": "How images are uploaded. png: lossless. jpeg: quality 95, "
@@ -137,12 +136,13 @@ class ClaudeConfig:
             "optional": {
                 "cache_system_prompt": ("BOOLEAN", {"default": defaults.cache_system_prompt,
                                                     "tooltip": "Prompt caching of the system prompt: a run within 5 "
-                                                               "minutes of the last reads it at about a tenth of the "
-                                                               "input price (the first writes it at 1.25x); the answer "
-                                                               "is the same. Pays off when many runs share one long "
-                                                               "system prompt (captioning a set); below the model's "
-                                                               "minimum (512 tokens on Opus 5.5) nothing is cached "
-                                                               "and nothing extra is charged."}),
+                                                               "minutes of the last reads it from the cache, billed "
+                                                               "below the input price (the first writes it, billed "
+                                                               "above it; https://www.anthropic.com/pricing); the "
+                                                               "answer is the same. Pays off when many runs share one "
+                                                               "long system prompt (captioning a set); below the "
+                                                               "model's minimum (512 tokens on Opus 5.5) nothing is "
+                                                               "cached and nothing extra is charged."}),
             },
         }
 
