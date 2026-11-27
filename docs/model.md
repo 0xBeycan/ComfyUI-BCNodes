@@ -253,9 +253,11 @@ The node replaces the model's `model_sampling`, as ModelSamplingAuraFlow does, a
 
 ### What it does
 
-The clone's `model_sampling` is a new object of the model's own `model_sampling` class (its prediction type kept) at `shift_1`, with the model's multiplier and noise scale, built as ModelSamplingSD3 builds it. A run from full noise is handed to the sampler unchanged: with every scheduler its sigmas are exactly ModelSamplingAuraFlow's at `shift_1` (multiplier 1: Z-Image, Qwen-Image after ModelSamplingAuraFlow) or ModelSamplingSD3's (multiplier 1000: Wan, SD3).
+The clone's `model_sampling` is a new object at `shift_1`. For a ModelSamplingDiscreteFlow model it is of the model's own `model_sampling` class (its prediction type kept), with the model's multiplier and noise scale, built as ModelSamplingSD3 builds it. For a ModelSamplingFlux model (Qwen-Image, Flux) it is the object ModelSamplingAuraFlow puts on it (see Models below). A run from full noise is handed to the sampler unchanged: with every scheduler its sigmas are exactly ModelSamplingAuraFlow's at `shift_1` (multiplier 1: Z-Image, Qwen-Image, Flux) or ModelSamplingSD3's (multiplier 1000: Wan, SD3).
 
 A sampler builds its sigmas before any model patch sees the run, so a refine pass gets `shift_1`'s sigmas too. An `OUTER_SAMPLE` wrapper (ComfyUI's patcher wrappers) maps them to `shift_2` when the run starts. It takes t of each sigma from `shift_1` (the inverse of sigma = shift_1 · t / (1 + (shift_1 − 1) · t)), then applies the same formula at `shift_2`. During the run `model_sampling` is at `shift_2`, so ControlNet and conditioning step ranges follow it. After the run it is back at `shift_1`, also when the run fails.
+
+Static use: with `shift_2` equal to `shift_1` the wrapper hands every run on as it is, so every run, a refine pass too, gets exactly ModelSamplingAuraFlow's (or ModelSamplingSD3's) sigmas at that shift.
 
 ### Refine passes
 
@@ -277,7 +279,11 @@ Full noise: `model_sampling`'s top sigma at `shift_1` is 1 only to float32 round
 
 ### Models
 
-The node takes flow models with one shift, whose `model_sampling` is core's ModelSamplingDiscreteFlow: Z-Image, Wan, SD3, or any model after ModelSamplingAuraFlow / ModelSamplingSD3. Qwen-Image and Flux load with ModelSamplingFlux: put ModelSamplingAuraFlow before the node (its shift is replaced by `shift_1`). Any other model stops with an error: EPS or v-prediction models, and audio-video models (ModelSamplingAV, whose audio has a second shift).
+The node takes flow models with one shift. A model whose `model_sampling` is core's ModelSamplingDiscreteFlow (Z-Image, Wan, SD3, or any model after ModelSamplingAuraFlow / ModelSamplingSD3) keeps its class, prediction type and multiplier.
+
+A model whose `model_sampling` is core's ModelSamplingFlux (Qwen-Image and Flux from the loader, or any model after core's ModelSamplingFlux node) gets what ModelSamplingAuraFlow puts on it: ModelSamplingDiscreteFlow with flow prediction, multiplier 1 and the noise scale ModelSamplingAuraFlow gives it. ModelSamplingFlux's timestep is the sigma, and so is a multiplier-1 one's: the model gets the same timestep for a sigma as from the loader. No ModelSamplingAuraFlow is needed before the node. The model's own shift is replaced by `shift_1`; ModelSamplingFlux's shift is an exponent, so Qwen-Image's loader default of 1.15 is a flow shift of e^1.15 ≈ 3.16.
+
+Any other model stops with an error: EPS or v-prediction models, and audio-video models (ModelSamplingAV, whose audio has a second shift).
 
 ### Other patches
 

@@ -45,8 +45,9 @@ pipelines/postfx.py           postfx adapter: catalogs, LUTS_DIR, looks, apply, 
 pipelines/skin_texture.py     SAM 3 prompts, face gate, mask assembly, texture call
 pipelines/detailer/           region (the crop around a region: sampled at crop_size, the region's longer side at size inside
                               it; None when that side is size or more),
-                              conditioning (each ControlNet's hint cut to the crop: the conditioning's, and Z-Image Fun
-                              ControlNet's model patch on a clone of the model; core's inpaint conditioning), core
+                              conditioning (each ControlNet's hint cut to the crop: every ControlBase chain in the
+                              conditioning, and core's model-patch ControlNets (PATCHES, found by class name) on a clone
+                              of the model; a kind it cannot cut an error that names it; core's inpaint conditioning), core
                               (Detailer's flow: crop -> Differential Diffusion sampling -> paste), face (Face
                               Detailer: SAM 3 faces, the character, the size gate, the face and eye passes)
 pipelines/quality_gate.py     shot profiles, QualityCheck, verdict, report, badge
@@ -162,9 +163,9 @@ libs/sage_attention.py        Patch Sage Attention: SageAttention kernels as cor
 libs/sampling.py              ksampler: one sampler run as core's common_ksampler (Detailer, Dual Sampler)
 libs/flow_shift.py            the official Qwen-Image flow shift: image_seq_len (the latent's 2x2-patch tokens), mu
                               (diffusers' calculate_shift line), stretch_to_terminal (the schedule's stretch to a
-                              terminal sigma); Qwen Image Shift. refine_pass, check_model_sampling, run_at_shift (the
-                              shift wrappers' refine rule, model_sampling check, run at a shift): Qwen Image Shift, Dual
-                              Sampling Shift
+                              terminal sigma); Qwen Image Shift. flow_sampling (the model_sampling ModelSamplingAuraFlow
+                              makes), refine_pass, check_model_sampling, run_at_shift (the shift wrappers' refine rule,
+                              model_sampling check, run at a shift): Qwen Image Shift, Dual Sampling Shift
 libs/dype/                    DyPE's 1-D rotary frequency tables (vision_yarn, yarn, ntk; the decaying attention scale),
                               float64 as core's rope, and embed.py (core's EmbedND layout with the ntk / pi / base tables,
                               which each model's embedder subclasses); derived from ComfyUI-DyPE, Apache-2.0, LICENSE +
@@ -294,6 +295,9 @@ where it is.
   order). Add it to `NODE_MODULES` and its keys to `expected` in `tests/test_import_time.py`, and
   to the eager tuple of `tests/_harness.py` `load_package`.
 - Add unit tests for its behaviour under `tests/layers/<layer>/`.
+- Document it in its category's page, `docs/<category>.md`, under a heading `` `BC_<Name>` — Display Name ``:
+  what it does, its inputs and widgets with their defaults, its outputs. A new group gets its own page and one
+  line in README's Documentation list. README lists no nodes.
 - Frontend code goes under `web/js/`, loaded by path.
 - A whole-batch IMAGE or MASK output the node makes, among two or more outputs (or on an output
   node), is a heavy output: list it in `HEAVY_OUTPUTS` (names from `RETURN_NAMES`), add

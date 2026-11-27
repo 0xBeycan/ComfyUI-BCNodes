@@ -40,9 +40,12 @@ class Detailer:
                 "image": ("IMAGE",),
                 "mask": ("MASK", {"tooltip": "The regions to detail, one per mask of the batch (e.g. SAM 3 Detect with individual_masks "
                                              "on), each applied to every frame. Only the pixels inside a mask change."}),
-                "model": ("MODEL",),
+                "model": ("MODEL", {"tooltip": "A ControlNet patched onto it (Apply Fun ControlNet and core's other model-patch "
+                                               "ControlNets) has its hint cut to each crop, on a copy of the model; a patch the "
+                                               "Detailer cannot cut (Apply SUPIR Patch) is an error."}),
                 "vae": ("VAE",),
-                "positive": ("CONDITIONING", {"tooltip": "A ControlNet applied to it (Apply ControlNet) has its hint cut to each crop."}),
+                "positive": ("CONDITIONING", {"tooltip": "Every ControlNet applied to it (Apply ControlNet and the nodes built on it) has "
+                                                        "its hint cut to each crop; one of a kind the Detailer cannot cut is an error."}),
                 "negative": ("CONDITIONING",),
                 **sampling_inputs(),
                 "region_size": ("INT", {"default": 640, "min": 64, "max": 8192, "step": 64,
@@ -104,9 +107,12 @@ class FaceDetailer:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "model": ("MODEL", {"tooltip": "The pipeline's main model, with the character LoRA: the character's face is detailed with it."}),
+                "model": ("MODEL", {"tooltip": "The pipeline's main model, with the character LoRA: the character's face is detailed "
+                                               "with it. A ControlNet patched onto it has its hint cut to each crop, on a copy of the "
+                                               "model; a patch the Detailer cannot cut is an error."}),
                 "vae": ("VAE",),
-                "positive": ("CONDITIONING", {"tooltip": "A ControlNet applied to it (Apply ControlNet) has its hint cut to each crop."}),
+                "positive": ("CONDITIONING", {"tooltip": "Every ControlNet applied to it (Apply ControlNet and the nodes built on it) has "
+                                                        "its hint cut to each crop; one of a kind the Detailer cannot cut is an error."}),
                 "negative": ("CONDITIONING",),
                 **sampling_inputs(),
                 "face_size": ("INT", {"default": 640, "min": 64, "max": 8192, "step": 64,

@@ -6,13 +6,17 @@ VAE, Differential Diffusion and node_helpers:
     and moved inside it at the same zoom (each sampling side rounded up to a multiple of 64, the crop taken
     at that aspect, the zoom raised only where the crop would not fit);
     wide, tall and square boxes; None when the longer side is `size` or more;
-  - ControlNet hints cut to the crop: same size, another size, another aspect (core's centre cut), a
-    chain copied link by link and shared by the positive and the negative, a 1x1 extra concat kept, the
-    input conditioning untouched;
-  - Z-Image's Fun ControlNet on the model (core's ZImageControlPatch): its hint, inpaint image and mask
-    cut to the crop with the same centre cut, no encoded hint kept, one copy per region on a clone of
-    the Differential Diffusion clone, the model connected and its patch untouched; a model without it
-    sampled as it is;
+  - ControlNet hints cut to the crop: same size, another size, another aspect (core's centre cut, or
+    scaled as it is), channels last; a chain copied link by link and shared by the positive and the
+    negative, a 1x1 extra concat kept, the input conditioning untouched; a link that is no ControlBase an
+    error, before any encode;
+  - core's model-patch ControlNets, one stand-in per kind (each with the fields core's class sets): Z-Image's
+    Fun ControlNet (hint, inpaint image and mask cut with the centre cut, no encoded hint kept, one copy per
+    region on a clone of the Differential Diffusion clone), the DiffSynth ControlNet (the mask scaled as it
+    is, the encode's size dropped), Qwen-Image 2.1's Fun ControlNet (scaled as it is; its wrapper and block
+    patches pointed at the copy, two stacked), Wan's Uni3C, Anima's LLLite (its attention and MLP patches
+    pointed at the copy) and MiniMax H3's Fun ControlNet; every other setting kept, the model connected and
+    its patches untouched; a model without any sampled as it is; SUPIR's patch an error, before any encode;
   - core's inpaint conditioning: the pixels under the rounded mask grey in the concat latent, the mask
     as concat_mask, the latent of the pixels;
   - the paste: every pixel outside the mask keeps its exact value, a colour drift is matched away, the
@@ -46,7 +50,12 @@ class FakeVAE:
         return latent.movedim(1, -1)[:, None]
 
 
-class FakeControl:
+class ControlBase:
+    """comfy.controlnet.ControlBase, the class the cut checks each link of a chain against (the det fixture
+    installs it as comfy.controlnet)."""
+
+
+class FakeControl(ControlBase):
     """What the cut reads and writes of a core ControlBase: copy() as core's (the previous link not copied)."""
 
     def __init__(self, hint, extra=()):
@@ -72,28 +81,121 @@ def copy_lists(obj):
 
 
 class FakeModel:
-    """What the detailer reads and calls of core's ModelPatcher: model_options, and clone() as core's (its
-    model_options through deepcopy_list_dict, `parent` the model cloned)."""
+    """What the detailer reads and calls of core's ModelPatcher: model_options (transformer_options' patch
+    lists and replace patches), wrappers, and clone() as core's (model_options through deepcopy_list_dict,
+    each wrapper list copied, `parent` the model cloned)."""
 
-    def __init__(self, patches=None, tag=None):
-        self.model_options = {"transformer_options": {} if patches is None else {"patches": patches}}
+    def __init__(self, patches=None, tag=None, replace=None, wrappers=None):
+        to = {} if patches is None else {"patches": patches}
+        if replace is not None:
+            to["patches_replace"] = replace
+        self.model_options, self.wrappers = {"transformer_options": to}, wrappers or {}
         self.tag, self.parent = tag, None
 
     def clone(self):
         c = FakeModel(tag=("clone", self.tag))
         c.model_options, c.parent = copy_lists(self.model_options), self
+        c.wrappers = {kind: {key: list(w) for key, w in by_key.items()} for kind, by_key in self.wrappers.items()}
         return c
 
 
-class ZImageControlPatch:
-    """What the cut reads and writes of core's ZImageControlPatch (comfy_extras/nodes_model_patch.py): the
-    hint and the inpaint image (B, H, W, C), the mask as core keeps it ((B, 1, 1, H, W)), the encoded hint
-    and the state between blocks."""
+class Patch:
+    """A stand-in of one of core's model-patch ControlNets (the cut finds it by its class name): the settings
+    core's classes share, `fields` (what core's __init__ sets), and the method core registers as a wrapper."""
+
+    def __init__(self, **fields):
+        self.model_patch, self.vae, self.strength, self.sigma_range = object(), object(), 0.8, (1.0, 0.75)
+        self.__dict__.update(fields)
+
+    def diffusion_model_wrapper(self, executor, *args):
+        return executor(*args)
+
+
+class ZImageControlPatch(Patch):
+    """core's ZImageControlPatch (comfy_extras/nodes_model_patch.py): the hint and the inpaint image
+    (B, H, W, C), the mask as core keeps it ((B, 1, 1, H, W)), the encoded hint and the state between
+    blocks."""
 
     def __init__(self, image, inpaint_image=None, mask=None):
-        self.model_patch, self.vae, self.strength = object(), object(), 0.8
-        self.image, self.inpaint_image, self.mask = image, inpaint_image, mask
-        self.encoded_image, self.temp_data = torch.zeros(1, 33, 8, 8), None
+        super().__init__(image=image, inpaint_image=inpaint_image, mask=mask, encoded_image=torch.zeros(1, 33, 8, 8), temp_data=None)
+
+
+class DiffSynthCnetPatch(Patch):
+    """core's DiffSynthCnetPatch: the hint (B, H, W, C), the mask as Z-Image's, the hint encoded at
+    construction and the size it was encoded at."""
+
+    def __init__(self, image, mask=None):
+        super().__init__(image=image, mask=mask, encoded_image=torch.zeros(1, 16, 8, 8), encoded_image_size=tuple(image.shape[1:3]))
+
+
+class QwenImage21FunControlPatch(Patch):
+    """core's QwenImage21FunControlPatch: the hint and the inpaint image (B, H, W, C), the node's mask, the
+    blocks it follows, and what it computes (the control latent, the stream between blocks)."""
+
+    def __init__(self, image, inpaint_image=None, mask=None):
+        super().__init__(image=image, inpaint_image=inpaint_image, mask=mask, active=False, injection_layers=[0, 2],
+                         control=torch.zeros(1, 129, 4, 4), stream=None, pristine=None)
+
+
+class QwenImage21FunControlBlockPatch:
+    """core's block patch of it: the control patch, the block, the replace patch it wraps."""
+
+    def __init__(self, control_patch, block_index, previous):
+        self.control_patch, self.block_index, self.previous = control_patch, block_index, previous
+
+
+class WanUni3CCnetPatch(Patch):
+    """core's WanUni3CCnetPatch: the render video (T, H, W, C) and its encode."""
+
+    def __init__(self, render_video):
+        super().__init__(render_video=render_video, sigma_start=1.0, sigma_end=0.0, prepared_render=torch.zeros(1, 16, 1, 8, 8),
+                         temp_data=None)
+
+
+class AnimaLLLitePatch(Patch):
+    """core's AnimaLLLitePatch (comfy/ldm/anima/lllite.py): the hint (B, H, W, C) and the mask (B, H, W)."""
+
+    def __init__(self, image, mask=None):
+        super().__init__(image=image, mask=mask, sigma_start=1.0, sigma_end=0.0)
+
+
+class AnimaLLLiteAttentionPatch:
+    """core's attention patch of it: the patch it reads and the projections it patches."""
+
+    def __init__(self, patch, targets):
+        self.patch, self.targets = patch, targets
+
+
+class AnimaLLLiteMLPPatch:
+    def __init__(self, patch):
+        self.patch = patch
+
+
+class MiniMaxH3FunControlPatch(Patch):
+    """core's MiniMaxH3FunControlPatch (comfy_extras/nodes_minimax_h3.py): the control and source videos
+    (T, C, H, W), the mask, and what it computes."""
+
+    def __init__(self, control_video, mask=None, source_video=None):
+        super().__init__(control_video=control_video, mask=mask, source_video=source_video, sigma_start=1.0, sigma_end=0.0,
+                         control_latent=torch.zeros(1, 49, 1, 4, 4), control_latent_shape=(1, 48, 1, 4, 4), control_stream=None,
+                         pristine_stream=None, active=False)
+
+
+class MiniMaxH3FunControlBlockPatch(QwenImage21FunControlBlockPatch):
+    pass
+
+
+class SUPIRPatch:
+    """core's SUPIRPatch (comfy/ldm/supir/supir_patch.py): registered as three of its methods."""
+
+    def middle_after(self, kwargs):
+        return kwargs
+
+    def output_block(self, h, hsp, transformer_options):
+        return h, hsp
+
+    def pre_upsample(self, layer, x, *args, **kwargs):
+        return layer(x)
 
 
 def conditioning_set_values(conditioning, values={}, append=False):
@@ -102,7 +204,10 @@ def conditioning_set_values(conditioning, values={}, append=False):
 
 
 @pytest.fixture
-def det(bcnodes):
+def det(bcnodes, monkeypatch):
+    controlnet = types.ModuleType("comfy.controlnet")
+    controlnet.ControlBase = ControlBase
+    monkeypatch.setitem(sys.modules, "comfy.controlnet", controlnet)
     return types.SimpleNamespace(region=bcnodes["pipelines.detailer.region"], cond=bcnodes["pipelines.detailer.conditioning"],
                                  core=bcnodes["pipelines.detailer.core"])
 
@@ -236,6 +341,12 @@ def test_hint_cut_to_the_crop(det):
     # a hint twice as wide as the image: core uses its centre 100 x 100
     wide = det.cond._cut(hint(100, 200), crop, 100, 100)
     assert torch.equal(wide, hint(100, 200)[..., 20:40, 60:80])
+    # ... or, scaled as it is (no centre cut), all of it at twice the image's scale across
+    stretched = det.cond._cut(hint(100, 200), crop, 100, 100, centre=False)
+    assert torch.equal(stretched, hint(100, 200)[..., 20:40, 20:60])
+    # channels last (..., H, W, C): the same rows and columns
+    assert torch.equal(det.cond._cut(hwc(100, 200), crop, 100, 100, channels_last=True), hwc(100, 200)[:, 20:40, 60:80])
+    assert torch.equal(det.cond._cut(hwc(100, 200), crop, 100, 100, False, True), hwc(100, 200)[:, 20:40, 20:60])
 
 
 def hwc(h, w):
@@ -258,6 +369,110 @@ def test_zimage_patch_cut_to_the_crop(det):
     assert bare.image is None and bare.mask is None and torch.equal(bare.inpaint_image, hwc(100, 100)[:, 20:40, 10:30])
 
 
+def test_diffsynth_patch_cut_to_the_crop(det):
+    crop = det.region.Crop(10, 20, 30, 40, 128, 128)
+    patch = DiffSynthCnetPatch(hwc(100, 200), mask=hint(50, 100)[:, :1, None])
+    cut = det.cond._crop_patch(patch, crop, 100, 100)
+    # the hint through core's centre cut; the mask scaled onto the latent as it is (core's crop "none")
+    assert torch.equal(cut.image, hwc(100, 200)[:, 20:40, 60:80])
+    assert torch.equal(cut.mask, hint(50, 100)[:, :1, None, 10:20, 10:30])
+    # the encode kept for core's to(), its size dropped: the first call encodes the cut at the crop's size
+    assert cut.encoded_image is patch.encoded_image and cut.encoded_image_size is None and patch.encoded_image_size == (100, 200)
+    assert (cut.model_patch, cut.vae, cut.strength, cut.sigma_range) == (patch.model_patch, patch.vae, 0.8, (1.0, 0.75))
+
+
+def test_qwen_image_21_patch_cut_with_its_wrapper_and_block_patches(det):
+    """core registers Qwen-Image 2.1's Fun ControlNet as its bound diffusion_model_wrapper and a block patch per
+    block it follows (each wrapping the replace patch already there): two stacked, the second's block 0 wrapping
+    the first's, which wraps another pack's."""
+    crop = det.region.Crop(10, 20, 30, 40, 128, 128)
+    first = QwenImage21FunControlPatch(hwc(100, 200), inpaint_image=hwc(50, 100), mask=hint(100, 100)[:, 0])
+    second = QwenImage21FunControlPatch(hwc(100, 100))
+    other, unrelated = types.SimpleNamespace(), lambda executor, *args: executor(*args)
+    block = QwenImage21FunControlBlockPatch
+    dit = {("single_block", 0): block(second, 0, block(first, 0, other)), ("single_block", 2): block(first, 2, None)}
+    wrappers = {"diffusion_model": {None: [first.diffusion_model_wrapper, second.diffusion_model_wrapper, unrelated]}}
+    model = FakeModel(replace={"dit": dict(dit)}, wrappers=wrappers)
+    out = det.cond.crop_model(model, crop, 100, 100)
+    assert out is not model and out.parent is model
+    w = out.wrappers["diffusion_model"][None]
+    cut, cut2 = w[0].__self__, w[1].__self__
+    assert type(cut) is QwenImage21FunControlPatch and cut is not first and cut2 is not second and w[2] is unrelated
+    assert w[0].__func__ is QwenImage21FunControlPatch.diffusion_model_wrapper
+    odit = out.model_options["transformer_options"]["patches_replace"]["dit"]
+    b0, b2 = odit[("single_block", 0)], odit[("single_block", 2)]
+    assert b0.control_patch is cut2 and b0.previous.control_patch is cut and b0.previous.previous is other and b0.block_index == 0
+    assert b2.control_patch is cut and b2.previous is None and b2.block_index == 2
+    # core scales all three onto the latent as they are (common_upscale's crop "disabled")
+    assert torch.equal(cut.image, hwc(100, 200)[:, 20:40, 20:60]) and torch.equal(cut.inpaint_image, hwc(50, 100)[:, 10:20, 10:30])
+    assert torch.equal(cut.mask, hint(100, 100)[:, 0, 20:40, 10:30])
+    assert cut.control is None and cut.stream is None and cut.pristine is None
+    assert (cut.strength, cut.sigma_range, cut.injection_layers, cut.vae) == (0.8, (1.0, 0.75), first.injection_layers, first.vae)
+    assert cut2.inpaint_image is None and cut2.mask is None and torch.equal(cut2.image, hwc(100, 100)[:, 20:40, 10:30])
+    # the model connected keeps its wrappers, its block patches and the patches' own images
+    assert [f.__self__ for f in model.wrappers["diffusion_model"][None][:2]] == [first, second]
+    assert model.model_options["transformer_options"]["patches_replace"]["dit"] == dit
+    assert dit[("single_block", 0)].control_patch is second and dit[("single_block", 0)].previous.control_patch is first
+    assert first.image.shape == (1, 100, 200, 3) and first.control is not None
+
+
+def test_uni3c_patch_cut_on_a_clone(det):
+    crop = det.region.Crop(10, 20, 30, 40, 128, 128)
+    video = torch.cat([hwc(100, 100), hwc(100, 100) + 1])  # (T, H, W, C)
+    patch = WanUni3CCnetPatch(video)
+    out = det.cond.crop_model(FakeModel({"double_block": [patch]}), crop, 100, 100)
+    cut = out.model_options["transformer_options"]["patches"]["double_block"][0]
+    assert cut is not patch and torch.equal(cut.render_video, video[:, 20:40, 10:30])
+    assert cut.prepared_render is None and cut.temp_data is None and patch.prepared_render is not None
+    assert (cut.strength, cut.sigma_start, cut.sigma_end, cut.vae) == (0.8, 1.0, 0.0, patch.vae)
+
+
+def test_anima_lllite_patch_cut_with_its_attention_and_mlp_patches(det):
+    """core's AnimaLLLiteApply: the patch in post_input, and three patches that read what it computes by the
+    patch object itself: each copy must point at the cut."""
+    crop = det.region.Crop(10, 20, 30, 40, 128, 128)
+    patch = AnimaLLLitePatch(hwc(100, 200), mask=hint(100, 100)[:, 0])
+    attn1, attn2 = AnimaLLLiteAttentionPatch(patch, {"q": "self_attn_q_proj"}), AnimaLLLiteAttentionPatch(patch, {})
+    mlp = AnimaLLLiteMLPPatch(patch)
+    model = FakeModel({"post_input": [patch], "attn1_patch": [attn1], "attn2_patch": [attn2], "mlp_patch": [mlp]})
+    out = det.cond.crop_model(model, crop, 100, 100)
+    lists = out.model_options["transformer_options"]["patches"]
+    cut = lists["post_input"][0]
+    assert cut is not patch and torch.equal(cut.image, hwc(100, 200)[:, 20:40, 60:80])
+    assert torch.equal(cut.mask, hint(100, 100)[:, 0, 20:40, 10:30])
+    assert (cut.strength, cut.sigma_start, cut.sigma_end) == (0.8, 1.0, 0.0)
+    for name, kept in (("attn1_patch", attn1), ("attn2_patch", attn2), ("mlp_patch", mlp)):
+        copied = lists[name][0]
+        assert type(copied) is type(kept) and copied is not kept and copied.patch is cut and kept.patch is patch
+    assert lists["attn1_patch"][0].targets is attn1.targets
+    assert model.model_options["transformer_options"]["patches"]["attn1_patch"] == [attn1]
+
+
+def test_minimax_h3_patch_cut_with_its_wrapper_and_block_patches(det):
+    crop = det.region.Crop(10, 20, 30, 40, 128, 128)
+    video = torch.cat([hint(100, 100), hint(100, 100) + 1])  # (T, C, H, W), as core's node hands it on
+    patch = MiniMaxH3FunControlPatch(video, mask=hint(100, 200)[:, 0])
+    blocks = {("double_block", 0): MiniMaxH3FunControlBlockPatch(patch, 0, None)}
+    model = FakeModel(replace={"dit": blocks}, wrappers={"diffusion_model": {None: [patch.diffusion_model_wrapper]}})
+    out = det.cond.crop_model(model, crop, 100, 100)
+    cut = out.wrappers["diffusion_model"][None][0].__self__
+    assert out.model_options["transformer_options"]["patches_replace"]["dit"][("double_block", 0)].control_patch is cut
+    assert torch.equal(cut.control_video, video[..., 20:40, 10:30]) and torch.equal(cut.mask, hint(100, 200)[:, 0, 20:40, 60:80])
+    assert cut.source_video is None and cut.control_latent is None and cut.control_latent_shape is None
+    assert cut.control_stream is None and cut.pristine_stream is None and patch.control_latent is not None
+    assert (cut.strength, cut.sigma_start, cut.sigma_end) == (0.8, 1.0, 0.0)
+
+
+SUPIR = SUPIRPatch()
+
+
+@pytest.mark.parametrize("patches", [{"middle_block_after_patch": [SUPIR.middle_after]}, {"output_block_patch": [SUPIR.output_block]},
+                                     {"forward_timestep_embed_patch": [(object, SUPIR.pre_upsample)]}])
+def test_supir_patch_is_an_error(det, patches):
+    with pytest.raises(ValueError, match="SUPIRPatch, which the Detailer cannot use: it holds the latent of the whole image"):
+        det.cond.crop_model(FakeModel(dict(patches)), det.region.Crop(10, 20, 30, 40, 128, 128), 100, 100)
+
+
 def test_control_chain_cut_once_for_positive_and_negative(det):
     crop = det.region.Crop(10, 20, 30, 40, 128, 128)
     first = FakeControl(hint(100, 100))
@@ -276,6 +491,22 @@ def test_control_chain_cut_once_for_positive_and_negative(det):
     # the input is untouched; an entry without a ControlNet keeps its dict
     assert positive[0][1]["control"] is second and second.cond_hint_original.shape[-2:] == (100, 100)
     assert second.previous_controlnet is first and neg[1][1] is negative[1][1]
+
+
+class OtherControl:
+    """A ControlNet of another kind: a hint the cut could reach, but no ControlBase."""
+
+    def __init__(self, hint):
+        self.cond_hint_original, self.extra_concat_orig, self.previous_controlnet = hint, [], None
+
+
+def test_a_controlnet_that_is_no_controlbase_is_an_error(det):
+    crop = det.region.Crop(10, 20, 30, 40, 128, 128)
+    with pytest.raises(ValueError, match="ControlNet of class OtherControl, which the Detailer cannot cut"):
+        det.cond.crop_conditioning([[torch.zeros(1), {"control": OtherControl(hint(100, 100))}]], crop, 100, 100, {})
+    chained = FakeControl(hint(100, 100)).set_previous_controlnet(OtherControl(hint(100, 100)))  # an earlier link of the chain
+    with pytest.raises(ValueError, match="OtherControl"):
+        det.cond.crop_conditioning([[torch.zeros(1), {"control": chained}]], crop, 100, 100, {})
 
 
 def test_inpaint_conditioning(det, sampled):
@@ -414,6 +645,15 @@ def test_a_model_without_the_zimage_patch_is_sampled_as_it_is(det, sampled):
     det.core.run(picture(2), square(), model, settings(det), 64)
     assert all(c["model"].tag == ("dd", model, 1.0) for c in sampled)  # the DD clone itself, not a clone of it
     assert sampled[0]["model"].model_options["transformer_options"]["patches"]["double_block"][0] is other
+
+
+@pytest.mark.parametrize("where", ["conditioning", "model"])
+def test_a_controlnet_it_cannot_cut_stops_the_run_before_any_encode(det, sampled, where):
+    positive = [[torch.zeros(1), {"control": OtherControl(hint(64, 64))}]] if where == "conditioning" else None
+    model = FakeModel({"middle_block_after_patch": [SUPIR.middle_after]}) if where == "model" else "model"
+    with pytest.raises(ValueError, match="OtherControl" if where == "conditioning" else "SUPIRPatch"):
+        det.core.run(picture(2), square(), model, settings(det, vae=UnusedVAE(), positive=positive), 64)
+    assert sampled == []
 
 
 def test_regions_in_batch_order_and_skipped_when_too_large(det, sampled):

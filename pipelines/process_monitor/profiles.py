@@ -2,8 +2,9 @@
 what it holds besides them while it runs (its transient), each derived from that node's code.
 
 A profile takes a Ctx and returns ({output slot: estimate}, transient bytes or None, note). An
-estimate is a dict: "type", "shape", "bytes", and the dims later profiles read ("n", "h", "w" for
-frames; "lt", "lh", "lw" for a SeedVR2 latent). "shared": True marks an output that is one of the
+estimate is a dict: "type", "shape", "bytes", the dims later profiles read ("n", "h", "w" for
+frames; "lt", "lh", "lw" for a SeedVR2 latent) and, for an IMAGE or MASK, its "dtype" (torch's name,
+not only its size: float16 and bfloat16 are both two bytes). "shared": True marks an output that is one of the
 node's inputs passed on: it adds no bytes. A transient of None is "not counted"; the note says
 which part of the node's memory the profile does not size (a model's own working set, mostly).
 A profile raises NotCounted when an input it needs has no estimate, or when the prompt does not say
@@ -16,6 +17,8 @@ from ...libs.geometry import aspect_ratio, round_up_to_multiple, short_side_size
 from ...libs.resize import plan as resize_plan
 
 F32, F16 = 4, 2
+# the dtypes an IMAGE or MASK estimate holds (torch's names) and their bytes per value
+DTYPE_BYTES = {"float32": F32, "float16": F16, "bfloat16": F16}
 FACE_SIZE = 512  # Face Crop's square
 SEEDVR2_LATENT_CHANNELS = 16
 SEEDVR2_PAD = 16
@@ -32,7 +35,7 @@ DETAILER_REGION_PEAK = 8 * 3 * F32  # bytes per pixel of a crop's sampling size 
 LOAD_VIDEO_MODELS = {"Wan": {"step": 4, "grid": 16}, "SCAIL": {"step": 4, "grid": 32}, "None": {"step": 1, "grid": 1}}
 # BCVLoadVideo's precision widget: the dtype its frames are stored in. A workflow saved before the
 # widget gets its default, fp16. The clips BCVideoNodes makes from a half clip keep its dtype.
-LOAD_VIDEO_PRECISIONS = {"fp32": F32, "fp16": F16}
+LOAD_VIDEO_PRECISIONS = {"fp32": "float32", "fp16": "float16"}
 MIN_CHUNK, MIN_LAST_CHUNK = 5, 29  # the long-video samplers' shortest chunk, and last_chunk min29's last one
 
 
@@ -102,14 +105,14 @@ def wan_latent_bytes(n, h, w, dtype_bytes=F32):
     return wan_latent_frames(n) * 16 * (h // 8) * (w // 8) * dtype_bytes
 
 
-def image(n, h, w, dtype_bytes=F32, channels=3):
-    return {"type": "IMAGE", "shape": [n, h, w, channels], "n": n, "h": h, "w": w, "dtype_bytes": dtype_bytes,
-            "bytes": image_bytes(n, h, w, dtype_bytes, channels)}
+def image(n, h, w, dtype="float32", channels=3):
+    return {"type": "IMAGE", "shape": [n, h, w, channels], "n": n, "h": h, "w": w, "dtype": dtype,
+            "bytes": image_bytes(n, h, w, DTYPE_BYTES[dtype], channels)}
 
 
-def mask(n, h, w, dtype_bytes=F32):
-    return {"type": "MASK", "shape": [n, h, w], "n": n, "h": h, "w": w, "dtype_bytes": dtype_bytes,
-            "bytes": mask_bytes(n, h, w, dtype_bytes)}
+def mask(n, h, w, dtype="float32"):
+    return {"type": "MASK", "shape": [n, h, w], "n": n, "h": h, "w": w, "dtype": dtype,
+            "bytes": mask_bytes(n, h, w, DTYPE_BYTES[dtype])}
 
 
 def wan_latent(n, h, w):
@@ -122,9 +125,14 @@ def shared(est):
     return dict(est, shared=True)
 
 
+def dtype_name(est):
+    """The dtype of an IMAGE or MASK estimate, torch's name (float32 unless it says otherwise)."""
+    return est.get("dtype", "float32")
+
+
 def dtype_of(est):
-    """The bytes per value of an IMAGE or MASK estimate (float32 unless it says otherwise)."""
-    return est.get("dtype_bytes", F32)
+    """The bytes per value of an IMAGE or MASK estimate."""
+    return DTYPE_BYTES[dtype_name(est)]
 
 
 def widened(est):
@@ -244,12 +252,12 @@ def _resized(c, keep_dtype=False):
     plan = resize_plan(img["h"], img["w"], c.widget("width", 0), c.widget("height", 0), c.widget("keep_proportion", "stretch"),
                        c.widget("crop_position", "center"), c.widget("divisible_by", 0), c.widget("upscale_method", "bilinear"))
     h, w = plan.output
-    out = {0: image(img["n"], h, w, dtype_of(img) if keep_dtype else F32)}
+    out = {0: image(img["n"], h, w, dtype_name(img) if keep_dtype else "float32")}
     m = c.tensor("mask", required=False)
     if m is not None:
         # BC_ImageResize: a pillarbox_blur pad gives the mask the image's dtype
         source = img if c.widget("keep_proportion", "stretch") == "pillarbox_blur" and plan.pad else m
-        out[3] = mask(m["n"], h, w, dtype_of(source) if keep_dtype else F32)
+        out[3] = mask(m["n"], h, w, dtype_name(source) if keep_dtype else "float32")
     return out
 
 
@@ -280,7 +288,7 @@ def _conform_video(c):
     w, h = target if portrait else target[::-1]
     if (h, w) == (img["h"], img["w"]):
         return {0: shared(img)}, 0, "already at its size: passed on untouched"
-    return {0: image(img["n"], h, w, img.get("dtype_bytes", F32))}, 0, "one frame at a time into a preallocated output"
+    return {0: image(img["n"], h, w, dtype_name(img))}, 0, "one frame at a time into a preallocated output"
 
 
 def _scale_by_aspect_ratio(c):
@@ -296,9 +304,9 @@ def _scale_by_aspect_ratio(c):
         w, h = round_up_to_multiple(w, int(multiple)), round_up_to_multiple(h, int(multiple))
     # without an image the image output is None; without a mask the mask is zeros, one per frame, in the
     # image's dtype; each output in its input's dtype (fitted through 8-bit PIL)
-    out = {1: mask(m["n"] if m else img["n"], h, w, dtype_of(m or img))}
+    out = {1: mask(m["n"] if m else img["n"], h, w, dtype_name(m or img))}
     if img:
-        out[0] = image(img["n"], h, w, dtype_of(img))
+        out[0] = image(img["n"], h, w, dtype_name(img))
     return out, 0, "one frame at a time (8-bit PIL) into preallocated outputs"
 
 
@@ -319,7 +327,7 @@ def _frame_mask(name="mask", half_frames=1):
     def profile(c):
         m = c.tensor(name)
         frames = half_frames if dtype_of(m) == F16 else 0
-        return ({0: mask(m["n"], m["h"], m["w"], dtype_of(m))}, frames * mask_bytes(1, m["h"], m["w"]),
+        return ({0: mask(m["n"], m["h"], m["w"], dtype_name(m))}, frames * mask_bytes(1, m["h"], m["w"]),
                 "one frame at a time into a preallocated output of the mask's dtype")
     return profile
 
@@ -328,7 +336,7 @@ def _repeat_mask(widget):
     def profile(c):
         m = c.tensor("mask")
         # repeat, or one cat over n references to the same mask, in the mask's dtype: no copy besides the output
-        return {0: mask(m["n"] * int(c.widget(widget, 1)), m["h"], m["w"], dtype_of(m))}, 0, "output only"
+        return {0: mask(m["n"] * int(c.widget(widget, 1)), m["h"], m["w"], dtype_name(m))}, 0, "output only"
     return profile
 
 
@@ -345,7 +353,7 @@ def _draw_mask_preallocated(c):
     # and blended into a float32 frame copied into the output, a half mask's frame read as float32
     work = 2 * image_bytes(1, img["h"], img["w"], channels=channels) if dtype_of(img) == F16 else 0
     work += mask_bytes(1, m["h"], m["w"]) if dtype_of(m) == F16 else 0
-    return ({0: image(img["n"], img["h"], img["w"], dtype_of(img), channels=channels)}, work,
+    return ({0: image(img["n"], img["h"], img["w"], dtype_name(img), channels=channels)}, work,
             "one frame at a time into a preallocated output of the image's dtype")
 
 
@@ -493,7 +501,7 @@ def _long_video(held, seeked=(), painted=None, overlap=None, last_chunk="fit", w
             reseed = decoded * frame + seed + chunk * frame + local if half_out and k > 0 else 0
             peak = max(peak, steady, reseed, *(moment + seed for moment in moments))
             decoded_before = decoded
-        out = image(total, h, w, F16 if half_out else F32)
+        out = image(total, h, w, dtype_name(pose) if half_out else "float32")
         note = (f"chunk plan {' + '.join(map(str, lengths))}: decoded chunk, driving-video windows and seed; the core "
                 "node's conditioning and the VAE / sampler working sets not counted")
         if float(c.widget("color_anchor_strength", 0.0)) > 0:
@@ -524,14 +532,14 @@ def _pose(c):
     if c.output_linked(0):
         size = given_size(c, "the pose images'")
         w, h = (img["w"], img["h"]) if size is None else size
-        out[0] = image(img["n"], h, w, dtype_of(img))
+        out[0] = image(img["n"], h, w, dtype_name(img))
     return (out, half_frames(img), "drawn frame by frame into a preallocated output (not drawn when not linked); "
             f"the pose models' ({c.widget('pose_model', 'ViTPose-H')}) weights and working set not counted")
 
 
 def _sam_track(c):
     img = c.tensor("images")
-    return ({0: mask(img["n"], img["h"], img["w"], dtype_of(img))}, 0,
+    return ({0: mask(img["n"], img["h"], img["w"], dtype_name(img))}, 0,
             "a mask of the frames' dtype; frames read as a view; SAM 3.1's own working set not counted")
 
 
@@ -548,11 +556,11 @@ def _wan_animate_preprocess(c):
     final mask too, and the final mask for bg_images. An unlinked raw mask is freed once the final
     mask is made of it; an unlinked final mask lives until bg_images is painted with it."""
     img = c.tensor("images")
-    n, h, w, dtype = img["n"], img["h"], img["w"], dtype_of(img)
+    n, h, w, dtype = img["n"], img["h"], img["w"], dtype_name(img)
     made = {0: image(n, h, w, dtype), 1: image(n, FACE_SIZE, FACE_SIZE), 2: mask(n, h, w, dtype), 7: mask(n, h, w, dtype),
             8: image(n, h, w, dtype)}
     out = {slot: est for slot, est in made.items() if c.output_linked(slot)}
-    one = mask_bytes(n, h, w, dtype)  # the raw mask, and the final mask
+    one = mask_bytes(n, h, w, dtype_of(img))  # the raw mask, and the final mask
     finals = 7 in out or 8 in out
     unlinked = one * (finals and 2 not in out) + one * (8 in out and 7 not in out)
     return (out, max(half_frames(img), unlinked), "pose, face crops, mask, final mask and background frames (each only "
@@ -571,16 +579,16 @@ def _scail2_preprocess(c):
     SCAIL-2 Colored Mask; the masks and colored masks in their frames' dtype. pose_video_mask, the
     driving video on black and the mask only when linked; an unlinked mask lives until the end."""
     img = c.tensor("images")
-    n, h, w, dtype = img["n"], img["h"], img["w"], dtype_of(img)
+    n, h, w, dtype = img["n"], img["h"], img["w"], dtype_name(img)
     if c.linked("reference_mask"):
         ref = c.tensor("reference_mask")
         out = {4: shared(ref)}
     else:
         reference = c.tensor("reference_image")
-        ref = mask(reference["n"], reference["h"], reference["w"], dtype_of(reference))
+        ref = mask(reference["n"], reference["h"], reference["w"], dtype_name(reference))
         out = {4: ref}
     driving = mask(n, h, w, dtype)
-    out[2] = image(ref["n"], ref["h"], ref["w"], dtype_of(ref))
+    out[2] = image(ref["n"], ref["h"], ref["w"], dtype_name(ref))
     cuts = [render_cut(ref)]
     if c.output_linked(1):
         out[1] = image(n, h, w, dtype)
@@ -601,10 +609,10 @@ def _scail2_colored_mask(c):
     ref = c.tensor("reference_mask") if c.linked("reference_mask") else None
     # without a reference mask the reference is one float32 frame of zeros at the driving mask's size
     reference = ref or mask(1, driving["h"], driving["w"])
-    out = {1: image(reference["n"], reference["h"], reference["w"], dtype_of(reference))}
+    out = {1: image(reference["n"], reference["h"], reference["w"], dtype_name(reference))}
     cuts = [render_cut(reference) + (0 if ref else reference["bytes"])]
     if c.output_linked(0):
-        out[0] = image(driving["n"], driving["h"], driving["w"], dtype_of(driving))
+        out[0] = image(driving["n"], driving["h"], driving["w"], dtype_name(driving))
         cuts.append(render_cut(driving))
     return out, max(cuts), "in the masks' dtype, cut 16 frames at a time; pose_video_mask not rendered when not linked"
 
@@ -660,8 +668,8 @@ def _seedvr2_resized(c):
     h_d, w_d = (round(h * down), round(w * down)) if down != 1.0 else (h, w)
     rh, rw = _shortest_edge(h_d, w_d, resolution, c.widget("max_resolution", 4096))
     extra = 0 if n == 1 else (4 - n + 1 if n <= 4 else (4 - (n - 1) % 4) % 4)
-    padded = image(n + extra, round_up_to_multiple(rh, SEEDVR2_PAD), round_up_to_multiple(rw, SEEDVR2_PAD), F16)
-    reference = image(n, rh // 2 * 2, rw // 2 * 2, F16)
+    padded = image(n + extra, round_up_to_multiple(rh, SEEDVR2_PAD), round_up_to_multiple(rw, SEEDVR2_PAD), "float16")
+    reference = image(n, rh // 2 * 2, rw // 2 * 2, "float16")
     return padded, reference
 
 
@@ -700,7 +708,7 @@ def _seedvr2_decoded(c):
 
 
 def _seedvr2_decode(c):
-    return {0: image(*_seedvr2_decoded(c), F16)}, 0, "decoded frames streamed into a float16 output, tiles summed in it"
+    return {0: image(*_seedvr2_decoded(c), "float16")}, 0, "decoded frames streamed into a float16 output, tiles summed in it"
 
 
 def _seedvr2_preprocess_compact(c):
@@ -714,14 +722,14 @@ def _seedvr2_preprocess_compact(c):
 def _seedvr2_postprocess_compact(c):
     frames, h, w = _seedvr2_decoded(c)
     plan = c.tensor("plan")
-    out = image(min(frames, plan["n"]), min(h, plan["h"]), min(w, plan["w"]), F16)
+    out = image(min(frames, plan["n"]), min(h, plan["h"]), min(w, plan["w"]), "float16")
     return {0: out}, 0, "decoded into its float16 output cut to the plan, colour-corrected there; references four frames at a time"
 
 
 def _seedvr2_postprocess(c):
     images, ref = c.tensor("images"), c.tensor("original_resized_images")
     t, h, w = min(images["n"], ref["n"]), min(images["h"], ref["h"]), min(images["w"], ref["w"])
-    return {0: image(t, h // 2 * 2, w // 2 * 2, F16)}, 0, "one frame at a time into a float16 output"
+    return {0: image(t, h // 2 * 2, w // 2 * 2, "float16")}, 0, "one frame at a time into a float16 output"
 
 
 def _seedvr2_framing_downscale(c):
@@ -739,7 +747,7 @@ def _seedvr2_framing_downscale(c):
 def _birefnet(c):
     img = c.tensor("image")
     n, h, w = img["n"], img["h"], img["w"]
-    dtype = dtype_of(img)
+    dtype = dtype_name(img)
     alpha = c.widget("background", "Alpha") == "Alpha"
     one, frame = mask_bytes(1, h, w), image_bytes(1, h, w)
     # one frame at a time in float32: its raw matte, a new one when an option changes it, a half frame read
@@ -747,7 +755,7 @@ def _birefnet(c):
     # cannot be made in a float32 output
     options = (c.widget("sensitivity", 1.0) < 1.0 or c.widget("mask_blur", 0) > 0 or c.widget("mask_offset", 0) != 0
                or bool(c.widget("invert_output", False)))
-    half = dtype == F16
+    half = dtype_of(img) == F16
     transient = one + (one if options else 0) + (frame if half else 0)
     transient += frame if c.widget("refine_foreground", False) else 0
     transient += 0 if alpha else frame + (frame if half else 0)
@@ -763,7 +771,7 @@ def _depth_anything(c):
     else:
         width, height = size
     # a half frame read as float32
-    return {0: image(img["n"], height, width, dtype_of(img))}, image_bytes(1, img["h"], img["w"]) if dtype_of(img) == F16 else 0, \
+    return {0: image(img["n"], height, width, dtype_name(img))}, image_bytes(1, img["h"], img["w"]) if dtype_of(img) == F16 else 0, \
         "one frame at a time into a preallocated output of the image's dtype; the network's working set not counted"
 
 
@@ -771,7 +779,7 @@ def _postfx_apply(c):
     img = c.tensor("image")
     if c.widget("theme") == "none" and not c.linked("look"):
         return {0: shared(img)}, 0, "no look: the input passed on"
-    out = image(img["n"], img["h"], img["w"], dtype_of(img))
+    out = image(img["n"], img["h"], img["w"], dtype_name(img))
     # per frame: the float32 frame (a half one read as float32) and the processed one, clipped into
     # the output; postfx's own working set not counted
     frames = 1 + (1 if dtype_of(img) == F16 else 0)
@@ -781,7 +789,7 @@ def _postfx_apply(c):
 
 def _skin_texture(c):
     img = c.tensor("image")
-    return {0: image(img["n"], img["h"], img["w"], dtype_of(img)), 1: mask(img["n"], img["h"], img["w"], dtype_of(img))}, None, \
+    return {0: image(img["n"], img["h"], img["w"], dtype_name(img)), 1: mask(img["n"], img["h"], img["w"], dtype_name(img))}, None, \
         "one frame at a time into outputs of the image's dtype; SAM 3 and the texture's working set not counted"
 
 
@@ -802,7 +810,7 @@ def _detailer_region(c, size, crop):
 
 def _detailer(c):
     img, masks = c.tensor("image"), c.tensor("mask")
-    n, h, w, dtype, channels = img["n"], img["h"], img["w"], dtype_of(img), img["shape"][-1]
+    n, h, w, dtype, channels = img["n"], img["h"], img["w"], dtype_name(img), img["shape"][-1]
     r, region = _detailer_region(c, "region_size", "region_crop_size")
     made = {0: image(n, h, w, dtype, channels), 1: mask(n, h, w, dtype)}
     out = {slot: est for slot, est in made.items() if c.output_linked(slot)}
@@ -820,7 +828,7 @@ def _detailer(c):
 
 def _face_detailer(c):
     img = c.tensor("image")
-    n, h, w, dtype, channels = img["n"], img["h"], img["w"], dtype_of(img), img["shape"][-1]
+    n, h, w, dtype, channels = img["n"], img["h"], img["w"], dtype_name(img), img["shape"][-1]
     # the face pass's crops and the eye pass's (both eyes on one crop), each by the core's rule (the gates only skip
     # regions: a region sampled is always at its size); the larger bounds a region's work
     r, region = max(_detailer_region(c, "face_size", "face_crop_size"), _detailer_region(c, "eye_size", "eye_crop_size"))
@@ -849,8 +857,10 @@ def _frequency_merge(c):
     r = math.ceil(3 * c.widget("split_sigma", 3.0))
     if r >= min(h, w):
         raise NotCounted("split_sigma blurs over more than the image holds: the node stops with an error")
-    half = base.get("dtype_bytes", F32) == F16 and detail.get("dtype_bytes", F32) == F16
-    out = {0: image(n, h, w, F16 if half else F32)}
+    # the output in torch.promote_types(base, detail), over the DTYPE_BYTES dtypes: theirs when they agree, else
+    # float32 (float16 with bfloat16 too, both two bytes)
+    dtype = dtype_name(base) if dtype_name(base) == dtype_name(detail) else "float32"
+    out = {0: image(n, h, w, dtype)}
     if c.widget("device", "cpu") == "gpu":
         return out, 0, ("one image at a time into a preallocated output; the float32 working buffers on ComfyUI's device "
                          "not counted")
@@ -859,7 +869,7 @@ def _frequency_merge(c):
     # blurred, the blur's row-padded copy, row sum and column-padded copy; an input that is not float32
     # copied to float32 first
     work = 2 * one + image_bytes(1, h, w + 2 * r) + image_bytes(1, h + 2 * r, w)
-    work += sum(one for t in (base, detail) if t.get("dtype_bytes", F32) != F32)
+    work += sum(one for t in (base, detail) if dtype_of(t) != F32)
     return out, work, "one image at a time into a preallocated output, float32 working buffers"
 
 

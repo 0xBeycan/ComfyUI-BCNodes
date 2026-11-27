@@ -6,14 +6,19 @@ denoise below 1, a later start step).
 
 The clone's model_sampling is a new object of the model's own model_sampling class (core's
 ModelSamplingDiscreteFlow with its prediction mixin) at shift_1, with the model's multiplier and noise_scale,
-built as ModelSamplingSD3.patch builds it: a run from full noise gets what ModelSamplingAuraFlow (multiplier 1)
-or ModelSamplingSD3 (multiplier 1000) gives at shift_1, with every scheduler, and the wrapper hands it on
-unchanged. A sampler builds its sigmas before any patch sees the run, so a refine pass's sigmas are shift_1's
-too. The OUTER_SAMPLE wrapper (CFGGuider.sample, ComfyUI's patcher wrappers) maps them to shift_2: t from the
-inverse of the shift_1 flow shift, then time_snr_shift(shift_2, t); for the run model_sampling is at shift_2
-(percent_to_sigma: ControlNet and conditioning ranges), then back at shift_1, also when the run fails. For the
-schedulers that read model_sampling's table (simple, beta, ddim_uniform) that is the scheduler at shift_2, to
-float32 rounding (the map goes through t).
+built as ModelSamplingSD3.patch builds it. A model whose model_sampling is core's ModelSamplingFlux (Qwen-Image
+and Flux from the loader) gets the object ModelSamplingAuraFlow puts there (libs/flow_shift.flow_sampling:
+ModelSamplingDiscreteFlow + CONST, multiplier 1.0, the model's noise_scale kept when it has one) at shift_1;
+ModelSamplingFlux's timestep is the sigma, as multiplier 1.0's is. Either way a run from full noise gets what
+ModelSamplingAuraFlow (multiplier 1) or ModelSamplingSD3 (multiplier 1000) gives at shift_1, with every
+scheduler, and the wrapper hands it on unchanged. A sampler builds its sigmas before any patch sees the run, so
+a refine pass's sigmas are shift_1's too. The OUTER_SAMPLE wrapper (CFGGuider.sample, ComfyUI's patcher
+wrappers) maps them to shift_2: t from the inverse of the shift_1 flow shift, then time_snr_shift(shift_2, t);
+for the run model_sampling is at shift_2 (percent_to_sigma: ControlNet and conditioning ranges), then back at
+shift_1, also when the run fails. For the schedulers that read model_sampling's table (simple, beta,
+ddim_uniform) that is the scheduler at shift_2, to float32 rounding (the map goes through t). Static use
+(shift_2 = shift_1): the wrapper hands every run on unchanged, so every run is ModelSamplingAuraFlow's /
+ModelSamplingSD3's at that shift, bit for bit.
 
 The refine rule is Qwen Image Shift's (libs/flow_shift.refine_pass): the later part of a split run (zero noise)
 stays on shift_1. Full noise: model_sampling's top sigma at shift_1 is 1 only to float32 rounding, and the
@@ -22,11 +27,10 @@ so a run starts below full noise when its first sigma is below the midpoint of m
 sigmas (about half a timestep below the top). ddim_uniform never starts at the top sigma, so its runs on new
 noise are refine passes.
 
-Flow models with one shift only: any other model_sampling (ModelSamplingFlux, which Qwen-Image and Flux load
-with; EPS and v-prediction models; an audio-video model's ModelSamplingAV, whose audio has a second shift) is
-an error, and so is a Qwen Image Shift wrapper on the input model (both nodes set the shift). A node after it
-that replaces model_sampling stops the run. Core chains wrappers: the model's other wrappers stay; a Dual
-Sampling Shift already on the model is replaced.
+Flow models with one shift only: any other model_sampling (EPS and v-prediction models; an audio-video model's
+ModelSamplingAV, whose audio has a second shift) is an error, and so is a Qwen Image Shift wrapper on the input
+model (both nodes set the shift). A node after it that replaces model_sampling stops the run. Core chains
+wrappers: the model's other wrappers stay; a Dual Sampling Shift already on the model is replaced.
 """
 
 WRAPPER_KEY = "bcnodes_dual_sampling_shift"
@@ -53,7 +57,8 @@ class Refine:
 
         check_model_sampling(executor, self.sampling, PREFIX)
         sigmas = args[3]
-        if not refine_pass(args[0], sigmas, self.full_noise):
+        # static use (shift_2 = shift_1): every run as it is, bit for bit
+        if self.shift_2 == self.shift_1 or not refine_pass(args[0], sigmas, self.full_noise):
             return executor(*args, **kwargs)
         # t of each sigma: the inverse of sigma = shift_1 t / (1 + (shift_1 - 1) t)
         t = sigmas / (self.shift_1 - (self.shift_1 - 1) * sigmas)
@@ -67,9 +72,9 @@ class DualSamplingShift:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model": ("MODEL", {"tooltip": "A flow model (Z-Image, Wan, SD3, or any model after "
-                                    "ModelSamplingAuraFlow). The input model is not changed; the output is a patched "
-                                    "clone. Use it in place of ModelSamplingAuraFlow / ModelSamplingSD3."}),
+                "model": ("MODEL", {"tooltip": "A flow model (Z-Image, Wan, SD3, Qwen-Image, Flux, or any model "
+                                    "after ModelSamplingAuraFlow). The input model is not changed; the output is a "
+                                    "patched clone. Use it in place of ModelSamplingAuraFlow / ModelSamplingSD3."}),
                 "shift_1": ("FLOAT", {"default": 3.0, "min": 0.0, "max": 100.0, "step": 0.01, "tooltip":
                             "The shift of a sampler run from full noise (denoise 1): the same sigmas as "
                             "ModelSamplingAuraFlow / ModelSamplingSD3 at this shift with every scheduler but "
@@ -93,24 +98,27 @@ class DualSamplingShift:
                    "sampler run from full noise (the same sigmas as ModelSamplingAuraFlow at that shift), shift_2 for "
                    "a refine pass (a run on new noise that starts below full noise: denoise below 1, a hires or "
                    "upscaled second pass, Dual Sampler's second pass, a detailer's crop). The later part of a split "
-                   "run (add_noise off) keeps shift_1. Flow models with core's ModelSamplingDiscreteFlow only; not "
+                   "run (add_noise off) keeps shift_1. Flow models only: core's ModelSamplingDiscreteFlow, or "
+                   "ModelSamplingFlux (Qwen-Image, Flux), which gets ModelSamplingAuraFlow's flow sampling; not "
                    "together with Qwen Image Shift.")
 
     def patch(self, model, shift_1, shift_2):
         # as the pack's other MODEL nodes: nothing to patch
         if model is None:
             return (model,)
-        from comfy.model_sampling import ModelSamplingAV, ModelSamplingDiscreteFlow
+        from comfy.model_sampling import ModelSamplingAV, ModelSamplingDiscreteFlow, ModelSamplingFlux
         from comfy.patcher_extension import WrappersMP
 
+        from ..libs.flow_shift import flow_sampling
+
         original = model.get_model_object("model_sampling")
-        if not isinstance(original, ModelSamplingDiscreteFlow) or isinstance(original, ModelSamplingAV):
+        flux = isinstance(original, ModelSamplingFlux)
+        if not flux and (not isinstance(original, ModelSamplingDiscreteFlow) or isinstance(original, ModelSamplingAV)):
             names = " + ".join(base.__name__ for base in type(original).__bases__)
             raise ValueError(f"{PREFIX} needs a flow model with one shift, whose model_sampling is core's "
                              "ModelSamplingDiscreteFlow (Z-Image, Wan, SD3, or any model after ModelSamplingAuraFlow "
-                             f"/ ModelSamplingSD3); this model's is {names}. Qwen-Image and Flux load with "
-                             "ModelSamplingFlux: put ModelSamplingAuraFlow before this node (its shift is replaced "
-                             "by shift_1). Any other model (EPS or v-prediction, an audio-video model's "
+                             "/ ModelSamplingSD3) or ModelSamplingFlux (Qwen-Image, Flux); this model's is "
+                             f"{names}. Any other model (EPS or v-prediction, an audio-video model's "
                              "ModelSamplingAV with a second shift for its audio): remove the node.")
         if model.get_wrappers(WrappersMP.OUTER_SAMPLE, QWEN_IMAGE_SHIFT_KEY):
             raise ValueError(f"{PREFIX} the model has a Qwen Image Shift: both nodes set the model's shift. Keep one "
@@ -118,13 +126,16 @@ class DualSamplingShift:
                              "Shift (shift_1 from full noise, shift_2 for refine passes).")
         patched = model.clone()
         patched.remove_wrappers_with_key(WrappersMP.OUTER_SAMPLE, WRAPPER_KEY)
-        sampling = type(original)(model.model.model_config)
-        sampling.set_parameters(shift=shift_1, multiplier=original.multiplier)
-        sampling.set_noise_scale(original.noise_scale)
+        if flux:
+            sampling = flow_sampling(model, shift_1)
+        else:
+            sampling = type(original)(model.model.model_config)
+            sampling.set_parameters(shift=shift_1, multiplier=original.multiplier)
+            sampling.set_noise_scale(original.noise_scale)
         patched.add_object_patch("model_sampling", sampling)
         full_noise = (float(sampling.sigmas[-1]) + float(sampling.sigmas[-2])) / 2
         patched.add_wrapper_with_key(WrappersMP.OUTER_SAMPLE, WRAPPER_KEY,
-                                     Refine(sampling, shift_1, shift_2, original.multiplier, full_noise))
+                                     Refine(sampling, shift_1, shift_2, sampling.multiplier, full_noise))
         return (patched,)
 
 

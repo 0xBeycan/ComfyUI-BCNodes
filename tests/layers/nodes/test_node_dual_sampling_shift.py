@@ -1,19 +1,23 @@
 """Dual Sampling Shift (nodes/dual_sampling_shift.py): the output is a clone whose model_sampling is a new object
-of the model's own class at shift_1, with the model's multiplier and noise_scale; the input model is never
+of the model's own class at shift_1, with the model's multiplier and noise_scale, or for a ModelSamplingFlux model
+(Qwen-Image, Flux) ModelSamplingAuraFlow's object (flow, multiplier 1.0) at shift_1; the input model is never
 changed. A run from full noise (simple and beta, KSampler's sigmas at denoise 1) has exactly the sigmas
 ModelSamplingAuraFlow (multiplier 1) / ModelSamplingSD3 (multiplier 1000) give at shift_1, also at shifts whose
 top sigma is a float32 step off 1 and with a first sigma a few ulps below the top, and the wrapper hands that
 very tensor on with model_sampling at shift_1. A refine pass (denoise below 1, nonzero noise) gets the shift_2
 schedule (simple and beta, to float32 rounding) with model_sampling at shift_2 for the run only (back at shift_1
-after it, also when it fails). The later part of a split run (zero noise) stays on shift_1. A model_sampling that
-is not a one-shift flow one, a Qwen Image Shift wrapper on the input model and a model_sampling another node put
-after it are errors; the model's other wrappers stay and a second node replaces the first one's wrapper.
+after it, also when it fails). The later part of a split run (zero noise) stays on shift_1. Static use (shift_2 =
+shift_1) hands every run on as it is. A model_sampling that is neither a one-shift flow one nor ModelSamplingFlux,
+a Qwen Image Shift wrapper on the input model and a model_sampling another node put after it are errors; the
+model's other wrappers stay and a second node replaces the first one's wrapper.
 
 The patcher is a stand-in with ModelPatcher's clone semantics for wrappers and object patches;
-comfy.patcher_extension and comfy.model_sampling are stubs whose ModelSamplingDiscreteFlow and time_snr_shift
-are core's formulas, and simple / beta / KSampler's denoise slice are core's code (comfy/samplers.py).
+comfy.patcher_extension and comfy.model_sampling are stubs whose ModelSamplingDiscreteFlow, ModelSamplingFlux and
+time_snr_shift are core's formulas, and simple / beta / KSampler's denoise slice are core's code
+(comfy/samplers.py).
 """
 
+import math
 import sys
 import types
 
@@ -73,9 +77,27 @@ class ModelSamplingAV(ModelSamplingDiscreteFlow):
     pass
 
 
+def flux_time_shift(mu, sigma, t):
+    return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
+
+
 class ModelSamplingFlux:
+    """Core's ModelSamplingFlux, its formulas (no noise_scale, no multiplier); records the set_parameters calls made
+    after __init__."""
+
     def __init__(self, model_config=None):
-        self.shift = 1.15
+        settings = model_config.sampling_settings if model_config is not None else {}
+        self.calls = []
+        self.set_parameters(shift=settings.get("shift", 1.15))
+        self.calls = []
+
+    def set_parameters(self, shift=1.15, timesteps=10000):
+        self.calls.append(shift)
+        self.shift = shift
+        self.sigmas = self.sigma(torch.arange(1, timesteps + 1, 1) / timesteps)
+
+    def sigma(self, timestep):
+        return flux_time_shift(self.shift, 1.0, timestep)
 
 
 class ModelSamplingDiscrete:
@@ -125,15 +147,34 @@ def flow_model(multiplier=1.0, mixin=CONST):
     return model_with((ModelSamplingDiscreteFlow, mixin), multiplier)
 
 
+def flux_model():
+    """Qwen-Image or Flux from the loader: core's ModelSamplingFlux + CONST."""
+    return model_with((ModelSamplingFlux, CONST))
+
+
+KINDS = ["flow", "sd3", "flux"]
+
+
+def make(kind):
+    """-> (a model, the multiplier of its clone's model_sampling): a flow model at multiplier 1 (Z-Image) or 1000
+    (Wan, SD3), or a ModelSamplingFlux one, whose clone gets ModelSamplingAuraFlow's multiplier 1."""
+    if kind == "flux":
+        return flux_model(), 1.0
+    multiplier = 1000 if kind == "sd3" else 1.0
+    return flow_model(multiplier), multiplier
+
+
 def aura_flow(model, shift, multiplier):
     """The model_sampling core's ModelSamplingSD3.patch puts on the model (ModelSamplingAuraFlow: multiplier 1.0)."""
 
     class ModelSamplingAdvanced(ModelSamplingDiscreteFlow, CONST):
         pass
 
+    original = model.get_model_object("model_sampling")
     sampling = ModelSamplingAdvanced(model.model.model_config)
     sampling.set_parameters(shift=shift, multiplier=multiplier)
-    sampling.set_noise_scale(model.get_model_object("model_sampling").noise_scale)
+    if hasattr(original, "noise_scale"):
+        sampling.set_noise_scale(original.noise_scale)
     return sampling
 
 
@@ -189,6 +230,7 @@ def comfy_api(monkeypatch, comfy_stubs):
     sampling = types.ModuleType("comfy.model_sampling")
     sampling.ModelSamplingDiscreteFlow = ModelSamplingDiscreteFlow
     sampling.ModelSamplingAV = ModelSamplingAV
+    sampling.ModelSamplingFlux = ModelSamplingFlux
     sampling.CONST = CONST
     sampling.time_snr_shift = time_snr_shift
     monkeypatch.setitem(sys.modules, "comfy.patcher_extension", extension)
@@ -264,12 +306,52 @@ def test_clone_keeps_the_models_class_multiplier_and_noise_scale(node, comfy_api
     assert len(out.wrappers[OUTER][KEY]) == 1
 
 
+def test_a_flux_model_gets_aura_flows_model_sampling(node, comfy_api):
+    """Qwen-Image or Flux from the loader: the object ModelSamplingAuraFlow puts on it at shift_1 (flow, multiplier
+    1.0, noise_scale from the model config: ModelSamplingFlux has none); the input model unchanged."""
+    model = flux_model()
+    original = model.get_model_object("model_sampling")
+    table = original.sigmas.clone()
+    (out,) = node.patch(model, 2.5, 1.5)
+    assert out is not model and model.object_patches == {} and model.wrappers == {}
+    assert model.get_model_object("model_sampling") is original
+    assert original.calls == [] and original.shift == 1.15 and torch.equal(original.sigmas, table)
+    sampling = out.object_patches["model_sampling"]
+    reference = aura_flow(model, 2.5, 1.0)
+    assert type(sampling).__bases__ == (ModelSamplingDiscreteFlow, CONST)
+    assert sampling.calls == [(2.5, 1.0)] and sampling.shift == 2.5 and sampling.multiplier == 1.0
+    assert sampling.noise_scale == reference.noise_scale == 0.5
+    assert torch.equal(sampling.sigmas, reference.sigmas)
+    w = wrapper(out)
+    assert w.sampling is sampling and (w.shift_1, w.shift_2, w.multiplier) == (2.5, 1.5, 1.0)
+
+
 @pytest.mark.parametrize("scheduler", SCHEDULERS)
-@pytest.mark.parametrize("multiplier", [1.0, 1000])
-def test_from_full_noise_is_aura_flow_at_shift_1(node, comfy_api, scheduler, multiplier):
+@pytest.mark.parametrize("kind", KINDS)
+def test_static_use_is_aura_flow_at_the_shift(node, comfy_api, scheduler, kind):
+    """shift_1 = shift_2: every run, from full noise or a refine pass, is handed on as it is: ModelSamplingAuraFlow /
+    ModelSamplingSD3 at that shift, bit for bit, model_sampling never set again."""
+    for shift in (3.0, 1.18, 6.0):
+        model, multiplier = make(kind)
+        (out,) = node.patch(model, shift, shift)
+        sampling = out.object_patches["model_sampling"]
+        reference = aura_flow(model, shift, multiplier)
+        for steps, denoise in [(20, 1.0)] + RUNS:
+            sigmas = ksampler_sigmas(sampling, scheduler, steps, denoise)
+            assert torch.equal(sigmas, ksampler_sigmas(reference, scheduler, steps, denoise)), (shift, steps, denoise)
+            ex, got = sample(out, sigmas)
+            assert got is sigmas and ex.calls[0][2:4] == (shift, multiplier)
+            assert torch.equal(ex.calls[0][4], reference.sigmas)
+        assert sampling.calls == [(shift, multiplier)]
+        assert model.object_patches == {} and model.wrappers == {}
+
+
+@pytest.mark.parametrize("scheduler", SCHEDULERS)
+@pytest.mark.parametrize("kind", KINDS)
+def test_from_full_noise_is_aura_flow_at_shift_1(node, comfy_api, scheduler, kind):
     """1.18 and 1.43: the top sigma is 0.99999988, below 1; 0.54: 1.0000001, above it."""
     for shift_1 in (3.0, 1.18, 1.43, 0.54, 6.0):
-        model = flow_model(multiplier)
+        model, multiplier = make(kind)
         (out,) = node.patch(model, shift_1, 1.5)
         reference = aura_flow(model, shift_1, multiplier)
         sampling = out.object_patches["model_sampling"]
@@ -294,10 +376,10 @@ def test_a_first_sigma_a_few_ulps_off_the_top_is_full_noise(node, comfy_api):
 
 
 @pytest.mark.parametrize("scheduler", SCHEDULERS)
-@pytest.mark.parametrize("multiplier", [1.0, 1000])
+@pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("shift_1, shift_2", [(3.0, 2.0), (1.18, 6.0), (6.0, 3.0), (2.5, 3.5)])
-def test_refine_pass_gets_the_shift_2_schedule(node, comfy_api, scheduler, multiplier, shift_1, shift_2):
-    model = flow_model(multiplier)
+def test_refine_pass_gets_the_shift_2_schedule(node, comfy_api, scheduler, kind, shift_1, shift_2):
+    model, multiplier = make(kind)
     (out,) = node.patch(model, shift_1, shift_2)
     sampling = out.object_patches["model_sampling"]
     at_1, at_2 = aura_flow(model, shift_1, multiplier), aura_flow(model, shift_2, multiplier)
@@ -340,7 +422,6 @@ def test_shift_1_restored_when_the_run_fails(node, comfy_api):
 
 
 @pytest.mark.parametrize("bases, names", [
-    ((ModelSamplingFlux, CONST), "ModelSamplingFlux + CONST"),
     ((ModelSamplingDiscrete, EPS), "ModelSamplingDiscrete + EPS"),
     ((ModelSamplingAV, CONST), "ModelSamplingAV + CONST"),
 ])
@@ -348,8 +429,9 @@ def test_not_a_one_shift_flow_model(node, comfy_api, bases, names):
     model = model_with(bases)
     with pytest.raises(ValueError, match=r"needs a flow model with one shift") as error:
         node.patch(model, 3.0, 1.5)
-    assert f"this model's is {names}." in str(error.value)
-    assert "put ModelSamplingAuraFlow before this node" in str(error.value)
+    message = str(error.value)
+    assert "ModelSamplingDiscreteFlow" in message and "ModelSamplingFlux (Qwen-Image, Flux)" in message
+    assert f"this model's is {names}." in message and message.endswith("remove the node.")
     assert model.object_patches == {} and model.wrappers == {}
 
 

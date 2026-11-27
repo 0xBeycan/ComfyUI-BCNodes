@@ -2,8 +2,8 @@
 
 MODEL -> a clone whose flow shift follows the official Qwen-Image-2512 scheduler, in place of
 ModelSamplingAuraFlow (libs/flow_shift.py has the formulas). The clone's model_sampling is the object
-ModelSamplingAuraFlow puts there (core's ModelSamplingDiscreteFlow + CONST, multiplier 1.0, the model's
-noise_scale kept).
+ModelSamplingAuraFlow puts there (libs/flow_shift.flow_sampling: core's ModelSamplingDiscreteFlow + CONST,
+multiplier 1.0, the model's noise_scale kept).
 
 fixed: model_sampling at `shift`, so every scheduler gives what ModelSamplingAuraFlow gives at that shift.
 dynamic: the shift depends on the latent being sampled, and a sampler builds its sigmas before any patch
@@ -37,22 +37,6 @@ WRAPPER_KEY = "bcnodes_qwen_image_shift"
 PREFIX = "[BCNodes] Qwen Image Shift:"
 REFINE_THRESHOLD = 9600  # tokens: a 1024 x 1536 image upscaled 1.25x
 REFINE_RATE = 0.17       # 2x of 1024 x 1536 (24576 tokens): shift 3.0
-
-
-def flow_sampling(model, shift):
-    """The model_sampling ModelSamplingAuraFlow makes (core's ModelSamplingSD3.patch, flow, multiplier
-    1.0) at `shift`."""
-    from comfy.model_sampling import CONST, ModelSamplingDiscreteFlow
-
-    class ModelSamplingAdvanced(ModelSamplingDiscreteFlow, CONST):
-        pass
-
-    original = model.get_model_object("model_sampling")
-    sampling = ModelSamplingAdvanced(model.model.model_config)
-    sampling.set_parameters(shift=shift, multiplier=1.0)
-    if hasattr(original, "noise_scale"):
-        sampling.set_noise_scale(original.noise_scale)
-    return sampling
 
 
 class Shift:
@@ -180,6 +164,8 @@ class QwenImageShift:
                                  f"({base_seq_len}): the two points of the shift line.")
             dynamic = (multiplier, base_seq_len, max_seq_len, base_shift, max_shift, refine_threshold, refine_rate)
         from comfy.patcher_extension import WrappersMP
+
+        from ..libs.flow_shift import flow_sampling
 
         patched = model.clone()
         patched.remove_wrappers_with_key(WrappersMP.OUTER_SAMPLE, WRAPPER_KEY)

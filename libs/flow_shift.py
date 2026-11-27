@@ -10,9 +10,10 @@ time_snr_shift, the formula of ModelSamplingAuraFlow.
 The stretch (stretch_shift_to_terminal) moves 1 - sigma by one factor so the schedule's last sigma
 lands on the terminal value; the sigma 0 the scheduler appends after it is not stretched.
 
-The shift nodes' OUTER_SAMPLE wrappers (Qwen Image Shift, Dual Sampling Shift) share the refine rule
-(refine_pass), the check that the run's model_sampling is still the node's (check_model_sampling) and the
-run with model_sampling held at another shift (run_at_shift).
+The shift nodes (Qwen Image Shift, Dual Sampling Shift) share the model_sampling ModelSamplingAuraFlow puts on
+a model (flow_sampling) and, in their OUTER_SAMPLE wrappers, the refine rule (refine_pass), the check that the
+run's model_sampling is still the node's (check_model_sampling) and the run with model_sampling held at another
+shift (run_at_shift).
 """
 
 import math
@@ -43,6 +44,22 @@ def stretch_to_terminal(sigmas: torch.Tensor, terminal: float) -> torch.Tensor:
     out = sigmas.clone()
     out[:-1] = 1 - one_minus / (one_minus[-1] / (1 - terminal))
     return out
+
+
+def flow_sampling(model, shift: float):
+    """The model_sampling ModelSamplingAuraFlow makes (core's ModelSamplingSD3.patch, flow, multiplier
+    1.0) at `shift`."""
+    from comfy.model_sampling import CONST, ModelSamplingDiscreteFlow
+
+    class ModelSamplingAdvanced(ModelSamplingDiscreteFlow, CONST):
+        pass
+
+    original = model.get_model_object("model_sampling")
+    sampling = ModelSamplingAdvanced(model.model.model_config)
+    sampling.set_parameters(shift=shift, multiplier=1.0)
+    if hasattr(original, "noise_scale"):
+        sampling.set_noise_scale(original.noise_scale)
+    return sampling
 
 
 def refine_pass(noise: torch.Tensor, sigmas: torch.Tensor, full_noise: float) -> bool:

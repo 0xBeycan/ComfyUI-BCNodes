@@ -772,6 +772,9 @@ async def main():
     await dype_models()
     detailer_zimage_patch()
     detailer_qwen_fun_controlnet()
+    detailer_qwen21_patch()
+    detailer_controlnet_kinds()
+    detailer_model_patch_kinds()
     lm_core()
     await lm_nodes()
     await claude_nodes()
@@ -2500,6 +2503,264 @@ def detailer_qwen_fun_controlnet():
     check("Detailer Qwen Fun ControlNet: the conditioning and the ControlNet connected are left as they are",
           positive[0][1] == held[2] and negative[0][1] == held[3] and positive[0][1]["control"] is applied
           and applied.cond_hint_original is held[0] and applied.cond_hint is held[1] and applied.previous_controlnet is None)
+
+
+def detailer_model(blocks=0, shift=3.0):
+    """A ModelPatcher over a stand-in model for the detailer's model-patch sections, no weights: a flow model
+    sampling at `shift` (the nodes read their sigma range from it) and a diffusion model with `blocks`
+    transformer blocks (Qwen-Image 2.1's Fun ControlNet reads their count)."""
+    import comfy.model_patcher
+    import comfy.model_sampling
+    import torch
+
+    base = torch.nn.Module()
+    settings = types.SimpleNamespace(sampling_settings={"multiplier": 1.0, "shift": shift})
+    base.model_sampling = comfy.model_sampling.ModelSamplingDiscreteFlow(settings)
+    base.diffusion_model = torch.nn.Module()
+    base.diffusion_model.transformer_blocks = torch.nn.ModuleList(torch.nn.Identity() for _ in range(blocks))
+    return comfy.model_patcher.ModelPatcher(base, torch.device("cpu"), torch.device("cpu"))
+
+
+def detailer_qwen21_patch():
+    """The detailer's cut of Qwen-Image 2.1's Fun ControlNet (pipelines/detailer/conditioning.crop_model) on a
+    model patched by core's own ZImageFunControlnet node, with an inpaint image and a mask: a
+    QwenImage21FunControl built on the meta device, no weights (the node reads its class, the registration
+    its count of control blocks), a stand-in VAE, and a stand-in model with Qwen-Image 2.1's model sampling
+    and four blocks. Core registers the patch as its bound DIFFUSION_MODEL wrapper and a block patch on
+    every second block; on a clone, both reach one copy whose hint, inpaint image and mask are cut to the
+    crop (core scales them as they are), its strength, sigma range and blocks kept; core's model_patches_to
+    runs on the clone, and core's own wrapper computes the control from the cut at the crop's sampling size;
+    the model connected keeps its wrapper, its block patches and its patch, which computed nothing."""
+    import importlib
+
+    import comfy.ldm.qwen_image21.model
+    import comfy.ops
+    import comfy.patcher_extension
+    import torch
+
+    pkg = nodes.NODE_CLASS_MAPPINGS["BC_Detailer"].__module__.rsplit(".", 2)[0]
+    cond = importlib.import_module(f"{pkg}.pipelines.detailer.conditioning")
+    crop = importlib.import_module(f"{pkg}.pipelines.detailer.region").Crop(32, 16, 96, 80, 512, 512)
+
+    class VAE:
+        def __init__(self):
+            self.encoded = []
+
+        def encode(self, pixels):
+            self.encoded.append(tuple(pixels.shape))
+            return torch.zeros(pixels.shape[0], 64, pixels.shape[1] // 16, pixels.shape[2] // 16)
+
+        def spacial_compression_encode(self):
+            return 16
+
+    control = comfy.ldm.qwen_image21.model.QwenImage21FunControl(num_blocks=2, inner_dim=64, attention_head_dim=32, device="meta",
+                                                                 operations=comfy.ops.manual_cast)
+    model = detailer_model(blocks=4, shift=0.69)  # Qwen-Image 2.1's sampling settings (comfy/supported_models.py QwenImage21)
+    image, mask, vae = torch.rand(1, 96, 128, 3), torch.zeros(1, 96, 128), VAE()
+    mask[:, 20:60, 40:90] = 1.0
+    patched = nodes.NODE_CLASS_MAPPINGS["ZImageFunControlnet"]().diffsynth_controlnet(
+        model, types.SimpleNamespace(model=control), vae, image=image, strength=0.8, inpaint_image=image, mask=mask, end_percent=0.5)[0]
+    kind = comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL
+    wrappers = list(patched.wrappers[kind][None])
+    patch = wrappers[0].__self__
+    dit = patched.model_options["transformer_options"]["patches_replace"]["dit"]
+    held, images = dict(dit), (patch.image, patch.inpaint_image, patch.mask)
+
+    out = cond.crop_model(patched, crop, 128, 96)
+    cut_wrappers = out.wrappers[kind][None]
+    cut = cut_wrappers[0].__self__
+    cut_dit = out.model_options["transformer_options"]["patches_replace"]["dit"]
+    check("Detailer Qwen-Image 2.1 ControlNet: core's patch found behind its wrapper and copied on a clone; the wrapper and both "
+          "block patches reach the copy",
+          out is not patched and type(cut) is type(patch) and cut is not patch and len(cut_wrappers) == 1
+          and cut_wrappers[0].__func__ is type(patch).diffusion_model_wrapper and sorted(cut_dit) == [("single_block", 0), ("single_block", 2)]
+          and all(type(b) is type(held[k]) and b is not held[k] and b.control_patch is cut and b.block_index == k[1] and b.previous is None
+                  for k, b in cut_dit.items()), f"{type(cut).__name__} { {k: type(b).__name__ for k, b in cut_dit.items()} }")
+    check("Detailer Qwen-Image 2.1 ControlNet: the hint, the inpaint image and the mask cut to the crop, no control kept",
+          torch.equal(cut.image, image[:, 16:80, 32:96]) and torch.equal(cut.inpaint_image, image[:, 16:80, 32:96])
+          and torch.equal(cut.mask, mask[:, 16:80, 32:96]) and cut.control is None, f"{tuple(cut.image.shape)} {tuple(cut.mask.shape)}")
+    check("Detailer Qwen-Image 2.1 ControlNet: the cut keeps the patch's strength, sigma range (end_percent) and blocks",
+          (cut.strength, cut.sigma_range, cut.injection_layers) == (0.8, patch.sigma_range, [0, 2]) and patch.sigma_range[0] == 1.0
+          and 0.0 < patch.sigma_range[1] < 1.0, f"{cut.sigma_range} {cut.injection_layers}")
+
+    out.model_patches_to(torch.device("cpu"))
+    vae.encoded.clear()
+    latent = torch.zeros(1, 64, crop.height // 16, crop.width // 16)
+    ran = cut_wrappers[0](lambda *args: "ran", latent, None, None, None, None, {"sigmas": torch.tensor([0.9])})  # inside the range
+    check("Detailer Qwen-Image 2.1 ControlNet: core's wrapper computes the control from the cut hint and inpaint image at the crop's "
+          "sampling size", ran == "ran" and vae.encoded == [(1, 512, 512, 3)] * 2 and tuple(cut.control.shape) == (1, 129, 32, 32),
+          f"{vae.encoded} {None if cut.control is None else tuple(cut.control.shape)}")
+    check("Detailer Qwen-Image 2.1 ControlNet: the model connected keeps its wrapper, its block patches and its patch, which "
+          "computed nothing", patched.wrappers[kind][None] == wrappers and dit == held and all(b.control_patch is patch for b in dit.values())
+          and all(a is b for a, b in zip((patch.image, patch.inpaint_image, patch.mask), images)) and patch.control is None)
+
+
+def detailer_controlnet_kinds():
+    """The detailer's cut (pipelines/detailer/conditioning.crop_conditioning) of every ControlBase class of core's
+    comfy/controlnet.py, each built without weights and applied by core's Apply ControlNet with a strength, a
+    step range and a mask as an extra concat (as Apply ControlNet Inpainting hands one on): each copy, made by
+    core's own copy(), keeps its class and settings, with its hint and its mask cut to the crop; the ControlNet
+    connected keeps its own. Core has no other ControlBase class."""
+    import importlib
+
+    import comfy.controlnet as cn
+    import comfy.latent_formats
+    import torch
+
+    pkg = nodes.NODE_CLASS_MAPPINGS["BC_Detailer"].__module__.rsplit(".", 2)[0]
+    cond = importlib.import_module(f"{pkg}.pipelines.detailer.conditioning")
+    crop = importlib.import_module(f"{pkg}.pipelines.detailer.region").Crop(32, 16, 96, 80, 512, 512)
+
+    def subclasses(c):
+        return {s for k in c.__subclasses__() for s in {k, *subclasses(k)}}
+
+    cpu = torch.device("cpu")
+    made = [cn.ControlNet(None, load_device=cpu),
+            cn.QwenFunControlNet(None, compression_ratio=1, latent_format=comfy.latent_formats.Wan21(), load_device=cpu, extra_conds=[]),
+            cn.ControlNetSD35(None, compression_ratio=1, latent_format=comfy.latent_formats.SD3(), concat_mask=True, load_device=cpu),
+            cn.ControlLora({"input_hint_block.0.weight": torch.zeros(16, 3, 3, 3)}),
+            cn.T2IAdapter(None, 3, 8, "nearest-exact", device=cpu)]
+    for c in made:
+        c.control_model_wrapped = None  # no weights: copy() only passes it on
+    found = {k for k in subclasses(cn.ControlBase) if k.__module__ == "comfy.controlnet"}
+    check("Detailer ControlNets: core's comfy/controlnet.py has these five ControlBase classes and no other",
+          found == {type(c) for c in made}, f"{sorted(k.__name__ for k in found)}")
+    image, mask, vae = torch.rand(1, 96, 128, 3), torch.rand(1, 1, 96, 128), object()
+    settings = ("strength", "timestep_percent_range", "compression_ratio", "upscale_algorithm", "latent_format", "vae", "concat_mask",
+                "global_average_pooling", "strength_type", "preprocess_image", "control_model", "control_weights", "t2i_model", "channels_in")
+    for control in made:
+        positive, _ = nodes.ControlNetApplyAdvanced().apply_controlnet([[torch.zeros(1, 2, 4), {}]], [[torch.zeros(1, 2, 4), {}]], control,
+                                                                       image, 0.7, 0.1, 0.9, vae=vae, extra_concat=[mask])
+        applied = positive[0][1]["control"]
+        cut = cond.crop_conditioning(positive, crop, 128, 96, {})[0][1]["control"]
+        check(f"Detailer ControlNets: {type(control).__name__} copied with its class and settings, its hint and mask cut to the crop",
+              type(cut) is type(applied) and cut is not applied and all(getattr(cut, k, None) is getattr(applied, k, None) for k in settings)
+              and (cut.strength, cut.timestep_percent_range) == (0.7, (0.1, 0.9))
+              and torch.equal(cut.cond_hint_original, image.movedim(-1, 1)[..., 16:80, 32:96]) and len(cut.extra_concat_orig) == 1
+              and torch.equal(cut.extra_concat_orig[0], mask[..., 16:80, 32:96])
+              and applied.cond_hint_original.shape[-2:] == (96, 128) and applied.extra_concat_orig[0] is mask,
+              f"{type(cut).__name__} {[k for k in settings if getattr(cut, k, None) is not getattr(applied, k, None)]}")
+
+
+def detailer_model_patch_kinds():
+    """The detailer's cut (pipelines/detailer/conditioning.crop_model) of core's other model-patch ControlNets,
+    each core's own class on a model as its node patches it, no weights (stand-ins for the ControlNet model and
+    the VAE): DiffSynthCnetPatch (Apply Qwen Image DiffSynth ControlNet, with a mask), WanUni3CCnetPatch (built
+    and registered as Apply Wan Uni3C ControlNet does, which needs a Uni3C model), AnimaLLLitePatch with its
+    attention and MLP patches (Apply Anima LLLite, with a mask) and MiniMaxH3FunControlPatch with its wrapper
+    and block patches (Apply MiniMax H3 Fun ControlNet). On a clone, one copy, reached from everywhere the node
+    put the patch, holds core's images and masks cut to the crop with what core computed from them dropped and
+    every other setting kept; core's model_patches_to runs on the clone, and the DiffSynth copy encodes the
+    cut at the crop's sampling size on its first call. SUPIRPatch, as Apply SUPIR Patch registers it, is an
+    error that names it."""
+    import importlib
+    import sys
+
+    import comfy.ldm.supir.supir_patch
+    import comfy.patcher_extension
+    import torch
+
+    pkg = nodes.NODE_CLASS_MAPPINGS["BC_Detailer"].__module__.rsplit(".", 2)[0]
+    cond = importlib.import_module(f"{pkg}.pipelines.detailer.conditioning")
+    crop = importlib.import_module(f"{pkg}.pipelines.detailer.region").Crop(32, 16, 96, 80, 512, 512)
+    extras = sys.modules[nodes.NODE_CLASS_MAPPINGS["QwenImageDiffsynthControlnet"].__module__]
+
+    class VAE:
+        """Qwen-Image's VAE as the patches see it: 8x, a (B, 16, 1, h, w) latent."""
+
+        def __init__(self):
+            self.encoded = []
+
+        def encode(self, pixels):
+            self.encoded.append(tuple(pixels.shape))
+            return torch.zeros(pixels.shape[0], 16, 1, pixels.shape[1] // 8, pixels.shape[2] // 8)
+
+        def spacial_compression_encode(self):
+            return 8
+
+    image, video, mask, vae = torch.rand(1, 96, 128, 3), torch.rand(2, 96, 128, 3), torch.zeros(1, 96, 128), VAE()
+    mask[:, 20:60, 40:90] = 1.0
+    box, box_hwc = (..., slice(16, 80), slice(32, 96)), (slice(None), slice(16, 80), slice(32, 96))
+
+    # DiffSynth: the mask scaled onto the latent as it is (same aspect here), the hint encoded when applied
+    diffsynth = types.SimpleNamespace(model=types.SimpleNamespace(additional_in_dim=4, process_input_latent_image=lambda x: x,
+                                                                  control_block=lambda img, hint, index: torch.zeros_like(img)))
+    patched = nodes.NODE_CLASS_MAPPINGS["QwenImageDiffsynthControlnet"]().diffsynth_controlnet(detailer_model(), diffsynth, vae, image, 0.8,
+                                                                                                mask=mask, end_percent=0.5)[0]
+    patch = patched.model_options["transformer_options"]["patches"]["double_block"][0]
+    out = cond.crop_model(patched, crop, 128, 96)
+    cut = out.model_options["transformer_options"]["patches"]["double_block"][0]
+    out.model_patches_to(torch.device("cpu"))
+    vae.encoded.clear()
+    cut({"x": torch.zeros(1, 16, 1, crop.height // 8, crop.width // 8), "img": torch.zeros(1, 32, 8), "block_index": 0,
+         "transformer_options": {"sigmas": torch.tensor([0.9])}})
+    check("Detailer DiffSynth ControlNet: core's patch copied on a clone, its hint and mask cut, strength and sigma range kept",
+          type(cut) is extras.DiffSynthCnetPatch and cut is not patch and torch.equal(cut.image, image[box_hwc])
+          and torch.equal(cut.mask, patch.mask[box]) and (cut.strength, cut.sigma_range) == (0.8, patch.sigma_range))
+    check("Detailer DiffSynth ControlNet: core's call encodes the cut hint at the crop's sampling size; the model connected keeps "
+          "its patch and its encode", vae.encoded == [(1, 512, 512, 3)] and tuple(cut.encoded_image.shape) == (1, 17, 1, 64, 64)
+          and patched.model_options["transformer_options"]["patches"]["double_block"] == [patch]
+          and tuple(patch.encoded_image.shape) == (1, 17, 1, 12, 16)
+          and patch.encoded_image_size == (96, 128), f"{vae.encoded} {tuple(cut.encoded_image.shape)}")
+
+    # Wan's Uni3C
+    patched = detailer_model().clone()
+    patch = extras.WanUni3CCnetPatch(types.SimpleNamespace(), video, vae, None, 0.8, 1.0, 0.25)
+    patched.set_model_double_block_patch(patch)
+    out = cond.crop_model(patched, crop, 128, 96)
+    cut = out.model_options["transformer_options"]["patches"]["double_block"][0]
+    out.model_patches_to(torch.device("cpu"))
+    check("Detailer Uni3C ControlNet: core's patch copied on a clone, its render video cut, nothing encoded kept, settings kept",
+          type(cut) is extras.WanUni3CCnetPatch and cut is not patch and torch.equal(cut.render_video, video[box_hwc])
+          and cut.prepared_render is None and (cut.strength, cut.sigma_start, cut.sigma_end, cut.vae) == (0.8, 1.0, 0.25, vae)
+          and patch.render_video is video)
+
+    # Anima's LLLite: the patch and the three that read what it computes by the patch object
+    import comfy.ldm.anima.lllite as lllite
+
+    anima = types.SimpleNamespace(model=types.SimpleNamespace(cond_in_channels=4))  # an inpaint LLLite: hint and mask
+    patched = nodes.NODE_CLASS_MAPPINGS["AnimaLLLiteApply"]().apply_patch(detailer_model(), anima, image, 0.8, 0.0, 0.5, mask=mask)[0]
+    lists = patched.model_options["transformer_options"]["patches"]
+    patch = lists["post_input"][0]
+    out = cond.crop_model(patched, crop, 128, 96)
+    cut_lists = out.model_options["transformer_options"]["patches"]
+    cut = cut_lists["post_input"][0]
+    out.model_patches_to(torch.device("cpu"))
+    check("Detailer Anima LLLite: core's patch copied on a clone, its hint and mask cut, settings kept",
+          type(cut) is lllite.AnimaLLLitePatch and cut is not patch and torch.equal(cut.image, image[box_hwc])
+          and torch.equal(cut.mask, mask[box])
+          and (cut.strength, cut.sigma_start, cut.sigma_end) == (0.8, patch.sigma_start, patch.sigma_end))
+    check("Detailer Anima LLLite: its attention and MLP patches copied, each reaching the copy; the model connected keeps its own",
+          all(type(cut_lists[n][0]) is type(lists[n][0]) and cut_lists[n][0].patch is cut and lists[n][0].patch is patch
+              for n in ("attn1_patch", "attn2_patch", "mlp_patch")) and cut_lists["attn1_patch"][0].targets is lists["attn1_patch"][0].targets)
+
+    # MiniMax H3's Fun ControlNet: a wrapper and a block patch per injection layer
+    minimax = nodes.NODE_CLASS_MAPPINGS["MiniMaxH3FunControlNetApply"]
+    patched = minimax.execute(detailer_model(), types.SimpleNamespace(model=types.SimpleNamespace(injection_layers=(0, 5))), vae, 0.8, 0.0, 0.5,
+                              control_video=video, mask=mask, source_video=video).args[0]
+    kind = comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL
+    patch = patched.wrappers[kind][None][0].__self__
+    out = cond.crop_model(patched, crop, 128, 96)
+    cut = out.wrappers[kind][None][0].__self__
+    blocks = out.model_options["transformer_options"]["patches_replace"]["dit"]
+    out.model_patches_to(torch.device("cpu"))
+    check("Detailer MiniMax H3 ControlNet: core's patch copied on a clone, its wrapper and block patches reaching the copy, its "
+          "videos and mask cut, nothing computed kept, settings kept",
+          type(cut) is type(patch) and cut is not patch and sorted(blocks) == [("double_block", 0), ("double_block", 5)]
+          and all(b.control_patch is cut for b in blocks.values()) and torch.equal(cut.control_video, patch.control_video[box])
+          and torch.equal(cut.source_video, patch.source_video[box]) and torch.equal(cut.mask, mask[box]) and cut.control_latent is None
+          and (cut.strength, cut.sigma_start, cut.sigma_end) == (0.8, patch.sigma_start, patch.sigma_end)
+          and all(b.control_patch is patch for b in patched.model_options["transformer_options"]["patches_replace"]["dit"].values()))
+
+    # SUPIR: the whole image's latent
+    patched = detailer_model().clone()
+    comfy.ldm.supir.supir_patch.SUPIRPatch(types.SimpleNamespace(), [], torch.zeros(1, 4, 12, 16), 1.0, 1.0).register(patched)
+    try:
+        cond.crop_model(patched, crop, 128, 96)
+        error = ""
+    except ValueError as e:
+        error = str(e)
+    check("Detailer SUPIR: core's SUPIRPatch on the model is an error that names it", "SUPIRPatch" in error and "cannot use" in error, error)
 
 
 def lm_core():

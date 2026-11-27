@@ -639,3 +639,29 @@ def test_bcnodes_mask_nodes_keep_the_dtype(em):
     rows = rows_of(em, p)
     assert [rows[node]["transient"] for node in "3456"] == [0, 0, 0, 0]
     assert [rows[node]["output_bytes"] for node in "3456"] == [609 * MASK] * 3 + [609 * FRAME]
+
+
+@pytest.mark.parametrize("class_type, inputs, widgets, follow", [
+    ("BC_ImageResize", ("image", "mask"), dict(width=32, height=24, keep_proportion="stretch"), (0, 3)),
+    ("BC_ImageScaleByAspectRatio", ("image", "mask"), {}, (0, 1)),
+    ("BC_MaskGrow", ("mask",), {}, (0,)), ("BC_RepeatMaskBatch", ("mask",), dict(amount=2), (0,)),
+    ("BC_DrawMaskOnImage", ("image", "mask"), {}, (0,)), ("BC_BiRefNetRemoveBackground", ("image",), {}, (0, 1, 2)),
+    ("BC_DepthAnythingV2", ("image",), {}, (0,)), ("BC_PostFxApply", ("image",), dict(theme="a_theme"), (0,)),
+    ("BC_SkinTexture", ("image",), {}, (0, 1)), ("BC_Detailer", ("image", "mask"), {}, (0, 1)),
+    ("BC_FaceDetailer", ("image",), {}, (0, 1)), ("BCVConformVideo", ("images",), {}, (0,)),
+    ("BCVPoseDetection", ("images",), {}, (0,)), ("BCVSAM3VideoTrack", ("images",), {}, (0,)),
+    ("BCVWanAnimatePreprocess", ("images",), {}, (0, 2, 7, 8)),  # its face crops are float32
+    ("BCVSCAIL2Preprocess", ("images", "reference_image"), dict(black_background=True, mode="prompt"), (0, 1, 2, 3, 4)),
+    ("BCVSCAIL2ColoredMask", ("driving_mask", "reference_mask"), {}, (0, 1)),
+    ("BCVWanAnimate2LongVideoSampler", ("pose_video",), dict(width=48, height=64), (0,)),
+])
+def test_a_half_input_keeps_its_dtype_name(pf, class_type, inputs, widgets, follow):
+    # a node that keeps its input's half dtype keeps bfloat16 too: the same bytes and transient as float16, its name kept
+    def run(dtype):
+        made = {name: (pf.mask if "mask" in name else pf.image)(5, 64, 48, dtype) for name in inputs}
+        node = N(class_type, **{name: [name, 0] for name in inputs}, **widgets)
+        ctx = pf.Ctx(node, {name: {0: est} for name, est in made.items()}, None, Env(), {0, 1, 2, 3, 4, 7, 8})
+        return pf.PROFILES[class_type](ctx)[:2]
+    (f16, f16_transient), (bf16, bf16_transient) = run("float16"), run("bfloat16")
+    assert {s: o["bytes"] for s, o in bf16.items()} == {s: o["bytes"] for s, o in f16.items()} and bf16_transient == f16_transient
+    assert [(f16[s]["dtype"], bf16[s]["dtype"]) for s in follow] == [("float16", "bfloat16")] * len(follow)

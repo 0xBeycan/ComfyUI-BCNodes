@@ -1,7 +1,8 @@
 """Emulate's profiles of Frequency Merge and SeedVR2 Framing Downscale (pipelines/process_monitor/
 profiles.py), worked out by hand from each node's code; the graph helpers are the emulate test's.
 
-  - Frequency Merge: the output at base's size, float16 only when both inputs are; on the CPU the
+  - Frequency Merge: the output at base's size in the inputs' promoted dtype (torch.promote_types: float16
+    or bfloat16 only when both inputs are, float16 with bfloat16 float32); on the CPU the
     per-image float32 working set (detail's high-pass, gauss_reflect's row-padded copy, row sum and
     column-padded copy, a float32 copy of each input that is not float32); on the gpu choice none in
     RAM; inputs of another size, a split_sigma the image cannot hold or one from a link: not counted;
@@ -10,6 +11,7 @@ profiles.py), worked out by hand from each node's code; the graph helpers are th
 """
 
 import pytest
+import torch
 
 import test_pipe_process_monitor_emulate as emulate
 from test_pipe_process_monitor_emulate import N, loader, rows_of
@@ -27,6 +29,11 @@ SMALL = N("BC_ImageResize", image=["9", 0], width=64, height=48, upscale_method=
 @pytest.fixture
 def em(bcnodes):
     return bcnodes["pipelines.process_monitor.emulate"]
+
+
+@pytest.fixture
+def pf(bcnodes):
+    return bcnodes["pipelines.process_monitor.profiles"]
 
 
 def rows(em, prompt):
@@ -66,6 +73,22 @@ def test_frequency_merge_dtypes(em):
     p["3"] = merge(["2", 1], ["1", 0])  # float16 base, float32 detail: a float32 output, base copied
     row = rows(em, p)["3"]
     assert row["output_bytes"] == 5 * 1280 * 720 * 3 * 4 and row["transient"] == 2 * one + pads + one
+
+
+@pytest.mark.parametrize("base, detail, out, size", [
+    ("float16", "float16", "float16", 2), ("bfloat16", "bfloat16", "bfloat16", 2),
+    ("float16", "bfloat16", "float32", 4), ("bfloat16", "float16", "float32", 4),  # both two bytes, promoted to float32
+    ("float32", "float16", "float32", 4), ("bfloat16", "float32", "float32", 4), ("float32", "float32", "float32", 4),
+])
+def test_frequency_merge_output_in_the_promoted_dtype(pf, base, detail, out, size):
+    assert torch.promote_types(getattr(torch, base), getattr(torch, detail)) == getattr(torch, out)
+    upstream = {"1": {0: pf.image(2, 64, 48, base)}, "2": {0: pf.image(2, 64, 48, detail)}}
+    outputs, transient, _ = pf.PROFILES["BC_FrequencyMerge"](pf.Ctx(merge(["1", 0], ["2", 0]), upstream, None, Env(), {0}))
+    assert outputs[0]["dtype"] == out and outputs[0]["bytes"] == 2 * 64 * 48 * 3 * size
+    one = 64 * 48 * 3 * 4
+    # sigma 3: a 9 px reflect pad; each input that is not float32 copied to float32 per image
+    copies = [base, detail].count("float16") + [base, detail].count("bfloat16")
+    assert transient == 2 * one + 64 * (48 + 18) * 3 * 4 + (64 + 18) * 48 * 3 * 4 + copies * one
 
 
 @pytest.mark.parametrize("prompt, why", [

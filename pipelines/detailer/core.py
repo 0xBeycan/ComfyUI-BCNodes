@@ -6,9 +6,9 @@ longer side is `size` px, sampled, shrunk back and pasted through the region's o
   more is left as it is.
 - Sampling: the model with core's Differential Diffusion (a clone), core's inpaint conditioning of the
   crop with the region's mask, softened at its edge, as the noise mask, every ControlNet's hint cut to the
-  crop (conditioning.py: those in the conditioning, and Z-Image's Fun ControlNet on a clone of the model per
-  region). One sampling at `denoise`; at 0 no region is detailed (run): nothing is encoded, sampled, decoded or
-  pasted, and no region is marked.
+  crop (conditioning.py: those in the conditioning, and core's model-patch ControlNets on a clone of the model
+  per region; a ControlNet it cannot cut is an error). One sampling at `denoise`; at 0 no region is detailed
+  (run): nothing is encoded, sampled, decoded or pasted, and no region is marked.
 - The paste: the decoded crop shrunk back, its colour matched to the image's in the mask's edge band
   (libs/color.match_band), Laplacian-pyramid blended under the mask softened inward (libs/blend), and
   only the pixels inside the mask taken: every other pixel keeps its exact value.
@@ -95,8 +95,8 @@ def _sample(base, region, crop, model, s, image_width, image_height):
     done = {}
     positive = crop_conditioning(s.positive, crop, image_width, image_height, done)
     negative = crop_conditioning(s.negative, crop, image_width, image_height, done)
+    model = crop_model(model, crop, image_width, image_height)  # before the encode: a ControlNet it cannot cut raises
     positive, negative, latent = inpaint(positive, negative, s.vae, pixels, noise_mask)
-    model = crop_model(model, crop, image_width, image_height)
     latent = ksampler(model, s.seed, s.steps, s.cfg, s.sampler_name, s.scheduler, positive, negative,
                       {"samples": latent, "noise_mask": noise_mask}, s.denoise)["samples"]
     images = s.vae.decode(latent)
