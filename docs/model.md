@@ -180,8 +180,8 @@ The node puts a `PREDICT_NOISE` wrapper on the clone (ComfyUI's patcher wrappers
 | `max_seq_len` | 8192 | 1 to 1000000 | `dynamic` mode: the tokens that get `max_shift` |
 | `base_shift` | 0.5 | 0 to 100, step 0.01 | `dynamic` mode: mu at `base_seq_len` |
 | `max_shift` | 0.9 | 0 to 100, step 0.01 | `dynamic` mode: mu at `max_seq_len` |
-| `refine_threshold` | 9600 | 0 to 1000000 | `dynamic` mode, refine passes (below) |
-| `refine_rate` | 0.17 | −1 to 2, step 0.01 | `dynamic` mode, refine passes (below) |
+| `refine_threshold` | 10816 | 0 to 1000000 | `dynamic` mode, refine passes (below) |
+| `refine_rate` | 0.15 | −1 to 2, step 0.01 | `dynamic` mode, refine passes (below) |
 
 `refine_threshold` and `refine_rate` are optional inputs, so a prompt saved before they were added runs with their defaults. In `dynamic` mode a `max_seq_len` equal to `base_seq_len` stops the node with an error: the two points of the shift line must differ.
 
@@ -192,9 +192,9 @@ The official pipeline (diffusers' QwenImagePipeline with FlowMatchEulerDiscreteS
 | Image | Tokens | Shift | 1.25x latent (w × h) | Tokens | Own shift | As a refine pass (defaults) |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1024 × 1024 | 4096 | 2.001 | 160 × 160 | 6400 | 2.247 | 2.247 |
-| 1328 × 1328 | 6889 | 2.303 | 208 × 208 | 10816 | 2.807 | 2.668 |
+| 1328 × 1328 | 6889 | 2.303 | 208 × 208 | 10816 | 2.807 | 2.807 |
 | 1664 × 928 | 6032 | 2.206 | 260 × 145 | 9490 | 2.626 | 2.626 |
-| 1472 × 1104 | 6348 | 2.241 | 230 × 172 | 9890 | 2.679 | 2.647 |
+| 1472 × 1104 | 6348 | 2.241 | 230 × 172 | 9890 | 2.679 | 2.679 |
 
 ### `mode`
 
@@ -205,21 +205,21 @@ The official pipeline (diffusers' QwenImagePipeline with FlowMatchEulerDiscreteS
 
 ### Refine passes (`refine_threshold`, `refine_rate`)
 
-A refine pass is a sampler run whose schedule starts below sigma 1 (denoise below 1, or a later start step) on new noise: a hires or latent-upscaled second pass, Dual Sampler's second pass, a detailer's crop. At the latent's own shift a large one rewrites the structure: a 2x latent upscale of 1024 × 1536 (24576 tokens) at denoise 0.45 gets 5.62. So a refine pass of more than `refine_threshold` tokens (default 9600: 1024 × 1536 upscaled 1.25x) takes mu `refine_rate` of the way from the threshold's mu to its own:
+A refine pass is a sampler run whose schedule starts below sigma 1 (denoise below 1, or a later start step) on new noise: a hires or latent-upscaled second pass, Dual Sampler's second pass, a detailer's crop. At the latent's own shift a large one rewrites the structure: a 2x latent upscale of 1024 × 1536 (24576 tokens) at denoise 0.45 gets 5.62. So a refine pass of more than `refine_threshold` tokens (default 10816: 1328 × 1328, the largest official size, upscaled 1.25x to 1664 × 1664; every official size upscaled 1.25x is at or below it, every one upscaled 1.5x above it) takes mu `refine_rate` of the way from the threshold's mu to its own:
 
 mu = mu(`refine_threshold`) + `refine_rate` × (mu(tokens) − mu(`refine_threshold`)), shift = e^mu × `multiplier`
 
 mu is linear in the tokens, so the node computes it as the mu of `refine_threshold` + `refine_rate` × (tokens − `refine_threshold`) tokens, one point on the same line: `refine_rate` 1 is the latent's own shift and 0 the threshold's, bit for bit. `shift_terminal` stretches the result as in any run.
 
-| 1024 × 1536 upscaled | Tokens | Own shift | `refine_rate` 0.17 (default) | 0 | −1 |
+| 1024 × 1536 upscaled | Tokens | Own shift | `refine_rate` 0.15 (default) | 0 | −1 |
 | --- | --- | --- | --- | --- | --- |
-| 1.25x | 9600 | 2.640 | 2.640 (at the threshold: own) | 2.640 | 2.640 |
-| 1.5x | 13824 | 3.267 | 2.738 | 2.640 | 2.134 |
-| 2x | 24576 | 5.617 | 3.002 | 2.640 | 1.241 |
+| 1.25x | 9600 | 2.640 | 2.640 (below the threshold: own) | 2.640 | 2.640 |
+| 1.5x | 13824 | 3.267 | 2.872 | 2.807 | 2.412 |
+| 2x | 24576 | 5.617 | 3.115 | 2.807 | 1.403 |
 
 Unchanged: every run from full noise (a schedule starting at sigma 1), a refine pass at or below `refine_threshold` tokens, and `fixed` mode. The later part of a split run is no refine pass: KSamplerAdvanced with `add_noise` off (or SamplerCustomAdvanced with DisableNoise) gives the run all-zero noise, which adds nothing to the latent, so one generation split in two keeps one shift. A later part with `add_noise` on adds new noise and is a refine pass. Neither the denoise nor `add_noise` reaches the shift; the node reads both from the run (its first sigma, its noise).
 
-The console line of a refine pass above the threshold: `latent 256x384, refine: yes, tokens 24576, threshold 9600, rate 0.17, mu 1.0993, shift 3.0020`.
+The console line of a refine pass above the threshold: `latent 256x384, refine: yes, tokens 24576, threshold 10816, rate 0.15, mu 1.1363, shift 3.1152`.
 
 ### Schedulers in `dynamic` mode
 

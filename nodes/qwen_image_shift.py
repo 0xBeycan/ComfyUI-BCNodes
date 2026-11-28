@@ -35,8 +35,8 @@ import math
 
 WRAPPER_KEY = "bcnodes_qwen_image_shift"
 PREFIX = "[BCNodes] Qwen Image Shift:"
-REFINE_THRESHOLD = 9600  # tokens: a 1024 x 1536 image upscaled 1.25x
-REFINE_RATE = 0.17       # 2x of 1024 x 1536 (24576 tokens): shift 3.0
+REFINE_THRESHOLD = 10816  # tokens: 1328 x 1328 (the largest official size) upscaled 1.25x, 1664 x 1664
+REFINE_RATE = 0.15        # 2x of 1024 x 1536 (24576 tokens): shift 3.12
 
 
 class Shift:
@@ -131,12 +131,12 @@ class QwenImageShift:
                                      "Dynamic mode: a refine pass (denoise below 1 on new noise: a hires or "
                                      "upscaled second pass) on a latent of more tokens than this gets a lower "
                                      "shift (refine_rate). At or below it, and in a generation from noise, the "
-                                     "latent's own shift. 9600: 1024 x 1536 upscaled 1.25x."}),
+                                     "latent's own shift. 10816: 1328 x 1328 upscaled 1.25x."}),
                 "refine_rate": ("FLOAT", {"default": REFINE_RATE, "min": -1.0, "max": 2.0, "step": 0.01, "tooltip":
                                 "Dynamic mode, a refine pass above refine_threshold tokens: mu moves this part of "
                                 "the way from refine_threshold's mu to the latent's own. 1: the latent's own "
-                                "shift; 0: the threshold's shift; below 0: lower than the threshold's. 0.17: a 2x "
-                                "pass of 1024 x 1536 gets shift 3.0 (its own: 5.62)."}),
+                                "shift; 0: the threshold's shift; below 0: lower than the threshold's. 0.15: a 2x "
+                                "pass of 1024 x 1536 gets shift 3.12 (its own: 5.62)."}),
             },
         }
 

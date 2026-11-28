@@ -161,14 +161,14 @@ def test_widgets_and_defaults(node):
     opt = node.INPUT_TYPES()["optional"]
     assert list(opt) == ["refine_threshold", "refine_rate"]
     assert opt["refine_threshold"][0] == "INT" and opt["refine_rate"][0] == "FLOAT"
-    assert [opt["refine_threshold"][1][k] for k in ("default", "min", "max")] == [9600, 0, 1000000]
-    assert [opt["refine_rate"][1][k] for k in ("default", "min", "max", "step")] == [0.17, -1.0, 2.0, 0.01]
+    assert [opt["refine_threshold"][1][k] for k in ("default", "min", "max")] == [10816, 0, 1000000]
+    assert [opt["refine_rate"][1][k] for k in ("default", "min", "max", "step")] == [0.15, -1.0, 2.0, 0.01]
 
 
 def test_refine_widgets_missing_take_their_defaults(node, comfy_api):
     """An API prompt saved before the two widgets: patch gets the ten required inputs only."""
     out = node.patch(Patcher(), "dynamic", 3.0, 1.0, True, 0.02, 256, 8192, 0.5, 0.9)[0]
-    assert wrapper(out).dynamic == (1.0, 256, 8192, 0.5, 0.9, 9600, 0.17)
+    assert wrapper(out).dynamic == (1.0, 256, 8192, 0.5, 0.9, 10816, 0.15)
 
 
 def test_none_model(node):
@@ -282,7 +282,7 @@ def test_seq_len_line_needs_two_points(node, comfy_api):
 
 
 TWO_X = (1, 16, 1, 384, 256)          # 2048 x 3072 px (1024 x 1536 upscaled 2x): 24576 tokens
-AT_THRESHOLD = (1, 16, 1, 240, 160)   # 1280 x 1920 px (1024 x 1536 upscaled 1.25x): 9600 tokens
+AT_THRESHOLD = (1, 16, 1, 208, 208)   # 1664 x 1664 px (1328 x 1328 upscaled 1.25x): 10816 tokens
 
 
 def own(fs, sigmas, tokens, multiplier=1.0, terminal=0.02):
@@ -316,27 +316,27 @@ def test_split_runs_later_part_is_no_refine(node, comfy_api, fs):
     assert first.calls[0][2] == shift and later.calls[0][2] == shift
     assert torch.equal(got_first, expected[:5]) and torch.equal(got_later, expected[4:])
     noised, _ = sample(wrapper(out), out, grid(8)[4:], latent=TWO_X)
-    assert round(noised.calls[0][2], 4) == 3.0020
+    assert round(noised.calls[0][2], 4) == 3.1152
 
 
 def test_refine_at_or_below_the_threshold_unchanged_bit_for_bit(node, comfy_api, fs):
     out = run(node, Patcher())
-    for latent in (AT_THRESHOLD, (1, 16, 1, 160, 160)):
+    for latent in (AT_THRESHOLD, (1, 16, 1, 240, 160), (1, 16, 1, 160, 160)):
         ex, got = sample(wrapper(out), out, grid(20)[-10:], latent=latent)
         shift, expected = own(fs, grid(20)[-10:], fs.image_seq_len(*latent[-2:]))
         assert ex.calls[0][2] == shift and torch.equal(got, expected)
-    assert round(math.exp(fs.mu(9600, 256, 8192, 0.5, 0.9)), 4) == 2.6405
+    assert round(math.exp(fs.mu(10816, 256, 8192, 0.5, 0.9)), 4) == 2.8074
 
 
-@pytest.mark.parametrize("rate, rounded", [(0.17, 3.0020), (1.0, 5.6170), (0.0, 2.6405), (-1.0, 1.2413)])
+@pytest.mark.parametrize("rate, rounded", [(0.15, 3.1152), (1.0, 5.6170), (0.0, 2.8074), (-1.0, 1.4031)])
 def test_refine_above_the_threshold(node, comfy_api, fs, rate, rounded):
-    """2048 x 3072, denoise 0.5: mu = mu(9600) + rate x (mu(24576) - mu(9600)); rate 1 is the latent's own shift
+    """2048 x 3072, denoise 0.5: mu = mu(10816) + rate x (mu(24576) - mu(10816)); rate 1 is the latent's own shift
     and rate 0 the threshold's, bit for bit; the stretch on top; model_sampling at that shift for the run only."""
     out = run(node, Patcher(), refine_rate=rate)
     sigmas = grid(20)[-11:]
     ex, got = sample(wrapper(out), out, sigmas, latent=TWO_X)
     shift = ex.calls[0][2]
-    mu_t, mu_h = (fs.mu(n, 256, 8192, 0.5, 0.9) for n in (9600, 24576))
+    mu_t, mu_h = (fs.mu(n, 256, 8192, 0.5, 0.9) for n in (10816, 24576))
     assert round(shift, 4) == rounded and math.isclose(math.log(shift), mu_t + rate * (mu_h - mu_t), rel_tol=1e-12)
     assert torch.equal(got, fs.stretch_to_terminal(time_snr_shift(shift, sigmas), 0.02))
     if rate == 1.0:
@@ -374,7 +374,7 @@ def test_console_line_names_the_refine_state(node, comfy_api, caplog):
         sample(wrapper(out), out, grid(8)[-5:], latent=AT_THRESHOLD)
     assert [r.getMessage() for r in caplog.records] == [
         "[BCNodes] Qwen Image Shift: latent 256x384, refine: no, tokens 24576, mu 1.7258, shift 5.6170",
-        "[BCNodes] Qwen Image Shift: latent 256x384, refine: yes, tokens 24576, threshold 9600, rate 0.17, mu 1.0993, "
-        "shift 3.0020",
-        "[BCNodes] Qwen Image Shift: latent 160x240, refine: yes, tokens 9600 <= threshold 9600, mu 0.9710, "
-        "shift 2.6405"]
+        "[BCNodes] Qwen Image Shift: latent 256x384, refine: yes, tokens 24576, threshold 10816, rate 0.15, mu 1.1363, "
+        "shift 3.1152",
+        "[BCNodes] Qwen Image Shift: latent 208x208, refine: yes, tokens 10816 <= threshold 10816, mu 1.0323, "
+        "shift 2.8074"]

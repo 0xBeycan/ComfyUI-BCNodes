@@ -1726,7 +1726,7 @@ async def qwen_image_shift():
     check("QwenImageShift: dynamic: one console line per run with its size, refine state, tokens, mu and shift",
           dyn_lines == [f"[BCNodes] Qwen Image Shift: latent 64x48, refine: no, tokens {seq1}, mu {mu1:.4f}, "
                         f"shift {math.exp(mu1):.4f}",
-                        f"[BCNodes] Qwen Image Shift: latent 80x60, refine: yes, tokens {seq2} <= threshold 9600, "
+                        f"[BCNodes] Qwen Image Shift: latent 80x60, refine: yes, tokens {seq2} <= threshold 10816, "
                         f"mu {mu2:.4f}, shift {math.exp(mu2):.4f}"],
           f"{dyn_lines}")
 
@@ -1921,7 +1921,7 @@ async def dype_run_start():
     """Dual Sampler's DyPE start sigma under Qwen Image Shift, on tiny Qwen-Image: a 1024 x 1536 px first pass, the
     second at 2048 x 3072 px (dype auto). The second pass is stopped at its first model call (the model is not run at
     that size); there the start sigma DyPE uses must equal the sigma that call is given. dynamic (shift_terminal on):
-    the run's own first sigma (the second pass is a refine pass: the shift at refine_rate 0.17 from refine_threshold's
+    the run's own first sigma (the second pass is a refine pass: the shift at refine_rate 0.15 from refine_threshold's
     mu toward the second pass's latent's, then the terminal stretch), which core's KSampler
     schedule outside the run (shift 1, no stretch) does not give: the start sigma was read from that schedule before.
     fixed, shift 3, shift_terminal off: the same sigma as that schedule's first, as before. fixed with shift_terminal on:
@@ -1962,16 +1962,16 @@ async def dype_run_start():
                 drop_test_nodes()
             ok = "call" in seen and seen["start"] == seen["call"]
             if mode == "dynamic":
-                # a refine pass (denoise 0.45 on new noise) of 24576 tokens: refine_rate 0.17 from 9600 tokens' mu
+                # a refine pass (denoise 0.45 on new noise) of 24576 tokens: refine_rate 0.15 from 10816 tokens' mu
                 firsts = {}
-                for rate in (0.17, 1.0):
-                    s = math.exp(0.5 + 0.4 * (9600 + rate * (24576 - 9600) - 256) / 7936)
+                for rate in (0.15, 1.0):
+                    s = math.exp(0.5 + 0.4 * (10816 + rate * (24576 - 10816) - 256) / 7936)
                     t = [s * x / (1 + (s - 1) * x) for x in grid]
                     firsts[rate] = 1 - (1 - t[0]) / ((1 - t[-2]) / (1 - 0.02))
                 check(f"Dual Sampler under Qwen Image Shift {label}: the start sigma at 2048 x 3072 is the second pass's "
-                      "first model call's, the refine pass's shift (refine_rate 0.17, not the latent's own), not the "
+                      "first model call's, the refine pass's shift (refine_rate 0.15, not the latent's own), not the "
                       "schedule core's KSampler gives outside the run",
-                      ok and seen["call"] != before and abs(seen["call"] - firsts[0.17]) < 1e-6
+                      ok and seen["call"] != before and abs(seen["call"] - firsts[0.15]) < 1e-6
                       and abs(seen["call"] - firsts[1.0]) > 1e-3, f"{seen} {firsts} schedule outside the run {before}")
             elif terminal:
                 check(f"Dual Sampler under Qwen Image Shift {label}: the start sigma at 2048 x 3072 is the second pass's "
