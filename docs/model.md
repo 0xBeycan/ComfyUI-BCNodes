@@ -305,18 +305,18 @@ Sampled above its training resolution (a 2x hires pass of Z-Image Turbo, say 102
 | `base_resolution` | 1024 px | 1328 px | yes |
 | `dype_scale` (λs) | 2.0 | 2.0 | yes |
 | `dype_exponent` (λt) | from the scale: 2.0 at 4x `base_resolution` and above (from 4096 px), 1.0 from 2x (from 2048 px), 0.5 below | from the scale, the same tiers: 2.0 from 5312 px, 1.0 from 2656 px, 0.5 below | yes (then fixed) |
-| `auto_threshold` | 1920 px | 1920 px | yes |
 | `yarn_alt_scaling` | — (Z-Image's `yarn` has none) | off | yes |
 
-The scale is the latent's longer side in px over `base_resolution` (2048 × 3072 on Z-Image: 3.0). Each model has its own `auto_threshold`; the samplers hold none. The model's shift is never changed: DyPE's own shift override (the original node replaces `model_sampling` with a resolution-dependent one, which keeps a hires pass from cleaning the latent upscale's residue) is not ported, so ModelSamplingAuraFlow's shift, Qwen Image Shift's, or the model's own, stays.
+The scale is the latent's longer side in px over `base_resolution` (2048 × 3072 on Z-Image: 3.0). The model's shift is never changed: DyPE's own shift override (the original node replaces `model_sampling` with a resolution-dependent one, which keeps a hires pass from cleaning the latent upscale's residue) is not ported, so ModelSamplingAuraFlow's shift, Qwen Image Shift's, or the model's own, stays.
 
 The models are ComfyUI core's configs `ZImage` and `QwenImage`. Core's `QwenImage` config also holds the Qwen-Image Edit and Layered checkpoints (it cannot tell 2509 Edit from 2512), so DyPE takes them too; they are not tested. Qwen-Image 2.1, Krea-2, Lumina 2 and other models are refused with an error naming the models DyPE takes (set the mode to `disable` for them).
 
 ### `mode`
 
-- `auto` (default): DyPE only for a latent whose longer side is over the model's `auto_threshold` (1920 px for both). At or below it the model runs exactly as unpatched (bit-identical output). Z-Image Turbo at 1024 × 1536: 1.25x (1280 × 1920) stays clean without DyPE, 1.5x (1536 × 2304) starts to repeat.
-- `enable`: DyPE for every latent larger than `base_resolution`.
+- `enable` (default): DyPE for every latent larger than `base_resolution`, as the original. At or below it the model runs exactly as unpatched (bit-identical output).
 - `disable`: the model is returned as it is.
+
+The node has no `auto` mode: put it on the sampler run that needs DyPE. Dual Sampler's `dype` has one, from its `scale_by` ([Dual Sampler](sampling.md#bc_dualsampler--dual-sampler)).
 
 ### `dype_start_sigma`
 
@@ -352,7 +352,7 @@ The time / caption axis keeps core's rotary table. On Qwen-Image the caption tok
 
 ## `BC_DyPEConfig` — DyPE Config
 
-`model` + `method` + `base_resolution` + `dype_scale` + `dype_exponent` + `auto_threshold` + `yarn_alt_scaling` + `edited` (hidden) → `dype_config` (`BC_DYPE_CONFIG`), for DyPE Patcher's and Dual Sampler's optional `dype_config`. Only the fields you change on the node, or feed by a link, are applied; every other field keeps the automatic value of the model selected in `model` (the table in DyPE Patcher).
+`model` + `method` + `base_resolution` + `dype_scale` + `dype_exponent` + `yarn_alt_scaling` + `edited` (hidden) → `dype_config` (`BC_DYPE_CONFIG`), for DyPE Patcher's and Dual Sampler's optional `dype_config`. Only the fields you change on the node, or feed by a link, are applied; every other field keeps the automatic value of the model selected in `model` (the table in DyPE Patcher).
 
 | Widget | Default | Range | Meaning |
 | --- | --- | --- | --- |
@@ -361,7 +361,6 @@ The time / caption axis keeps core's rotary table. On Qwen-Image the caption tok
 | `base_resolution` | 1024 | 256 to 4096, step 16 | the model's training resolution, px |
 | `dype_scale` | 2.0 | 0 to 8, step 0.1 | DyPE's magnitude (λs) |
 | `dype_exponent` | 1.0 | 0 to 1000, step 0.1 | how fast DyPE's effect decays over the run (λt); changed, it replaces the per-scale choice with that value at every size |
-| `auto_threshold` | 1920 | 0 to 16384, step 16 | `auto` mode: DyPE for a latent whose longer side is over this, px |
 | `yarn_alt_scaling` | off | | Qwen-Image's `yarn` only: each image axis stretched to its own length |
 | `edited` | empty | hidden | the fields changed on this node, comma-separated |
 

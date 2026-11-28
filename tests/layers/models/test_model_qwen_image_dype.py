@@ -15,8 +15,7 @@
 - the adapter takes core's QwenImage config only (not Qwen-Image 2.1 or a subclass), takes the InstantX ControlNet
   model (core's QwenImageControlNetModel) as one with its own embedder, reads theta and axes_dim from the module's own
   embedder, YaRN's original length as base_resolution in tokens (8 px cells, the module's patch size) and each image
-  axis's scale from the latent's size; its automatic values are vision_yarn, 1328 px, 2.0, auto_threshold 1920 px, no
-  yarn_alt_scaling.
+  axis's scale from the latent's size; its automatic values are vision_yarn, 1328 px, 2.0, no yarn_alt_scaling.
 
 core's rope is restated in tests/_rope.py.
 """
@@ -176,8 +175,7 @@ def patcher(config):
 def test_the_adapter_takes_qwen_image_only(adapter):
     assert adapter.matches(patcher(QwenImage()))
     assert not any(adapter.matches(patcher(c)) for c in (QwenImage21(), Subclass(), object()))
-    assert adapter.defaults == {"method": "vision_yarn", "base_resolution": 1328, "dype_scale": 2.0, "auto_threshold": 1920,
-                                "yarn_alt_scaling": False}
+    assert adapter.defaults == {"method": "vision_yarn", "base_resolution": 1328, "dype_scale": 2.0, "yarn_alt_scaling": False}
     assert adapter.latent_scale == 8 and adapter.attribute == "pe_embedder"
 
 
@@ -189,9 +187,8 @@ def test_the_instantx_controlnet_carries_its_own_embedder(adapter):
 def test_the_adapter_reads_the_modules_own_rope(adapter, bcnodes, mm):
     rope = types.SimpleNamespace(theta=THETA, axes_dim=list(AXES))
     module = types.SimpleNamespace(pe_embedder="a step's embedder", patch_size=2)
-    s = bcnodes["models.common.dype"].Settings(mode="enable", method="yarn", base_resolution=1328, dype_scale=1.5,
-                                               dype_exponent=None, auto_threshold=1920, yarn_alt_scaling=True,
-                                               start_sigma=0.6)
+    s = bcnodes["models.common.dype"].Settings(method="yarn", base_resolution=1328, dype_scale=1.5, dype_exponent=None,
+                                               yarn_alt_scaling=True, start_sigma=0.6)
     e = adapter.embedder(module, rope, s, 928, 2656, 2.0, 0.5, 1.0)
     assert (e.theta, list(e.axes_dim), e.base_len, e.method, e.scales, e.scale, e.t, e.yarn_alt_scaling) == (
         THETA, list(AXES), 83, "yarn", (1.0, 2.0), 2.0, 0.5, True)

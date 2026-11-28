@@ -13,9 +13,9 @@ kind than the one selected is an error.
 
 from .common import LINK_INPUTS, edited_fields
 
-MODE_TOOLTIP = ("auto: DyPE only for a latent whose longer side is over the model's auto_threshold (1920 px for Z-Image "
-                "and Qwen-Image; DyPE Config can set it); below it the model runs unchanged. enable: DyPE for every "
-                "latent larger than base_resolution. disable: the model is returned as it is.")
+MODE_TOOLTIP = ("enable: DyPE for every latent larger than the model's base_resolution (Z-Image 1024, Qwen-Image 1328 "
+                "px), as the original; at or below it the model runs unchanged. disable: the model is returned as it "
+                "is.")
 
 
 class DyPEPatcher:
@@ -28,7 +28,7 @@ class DyPEPatcher:
                 "model": ("MODEL", {"tooltip": "The model (Z-Image or Qwen-Image). The input model is not changed; the "
                                     "output is a patched clone. Its shift (ModelSamplingAuraFlow or the model's own) is "
                                     "kept."}),
-                "mode": (list(MODES), {"default": "auto", "tooltip": MODE_TOOLTIP}),
+                "mode": (list(MODES), {"default": "enable", "tooltip": MODE_TOOLTIP}),
                 "dype_start_sigma": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 1.0, "step": 0.001, "tooltip":
                                      "The sigma below which DyPE's attention scale starts to decay: the first sigma of "
                                      "the sampler run this model is used in (for a second pass at a denoise below 1, "
@@ -91,9 +91,6 @@ class DyPEConfig:
                                   "How fast DyPE's effect decays over the run (lambda_t; 2: quadratic). Not changed: "
                                   "from the scale, 2.0 at 4x base_resolution and above, 1.0 from 2x, 0.5 below "
                                   "(Z-Image: 4096 / 2048 px; Qwen-Image: 5312 / 2656 px)."}),
-                "auto_threshold": ("INT", {"default": 1920, "min": 0, "max": 16384, "step": 16, "tooltip":
-                                   "auto mode: DyPE turns on for a latent whose longer side is over this many px "
-                                   "(automatic: the model's own, 1920 for Z-Image and Qwen-Image)."}),
                 "yarn_alt_scaling": ("BOOLEAN", {"default": False, "tooltip":
                                      "yarn only, Qwen-Image only: each image axis stretched to its own length "
                                      "(anisotropic; an axis not over base_resolution stays plain) in place of both to "
@@ -114,18 +111,18 @@ class DyPEConfig:
     DESCRIPTION = ("DyPE's values for DyPE Patcher and Dual Sampler, for the model selected in `model`. Only the "
                    "fields you change, or feed by a link, are applied; every other field keeps that model's automatic "
                    "value (vision_yarn, base_resolution Z-Image 1024 / Qwen-Image 1328, dype_scale 2.0, dype_exponent "
-                   "from the scale, auto_threshold 1920), shown greyed on the classic canvas; selecting another model "
+                   "from the scale), shown greyed on the classic canvas; selecting another model "
                    "shows its values. The node's menu item Reset to automatic values clears the changes. A model of "
                    "another kind than the one selected is an error. The shift is not a DyPE value: it stays the "
                    "model's.")
 
-    def build(self, model, method, base_resolution, dype_scale, dype_exponent, auto_threshold, yarn_alt_scaling, edited,
+    def build(self, model, method, base_resolution, dype_scale, dype_exponent, yarn_alt_scaling, edited,
               prompt_graph=None, unique_id=None):
         from ..models.common.dype import Config, ConfigValues
 
         fields = ConfigValues.__annotations__  # in widget order, each with the type its value leaves with
         values = {"method": method, "base_resolution": base_resolution, "dype_scale": dype_scale,
-                  "dype_exponent": dype_exponent, "auto_threshold": auto_threshold, "yarn_alt_scaling": yarn_alt_scaling}
+                  "dype_exponent": dype_exponent, "yarn_alt_scaling": yarn_alt_scaling}
         names = edited_fields("DyPE Config", edited, fields, prompt_graph, unique_id)
         return (Config(model=model, values=ConfigValues(**{name: fields[name](values[name]) for name in names})),)
 

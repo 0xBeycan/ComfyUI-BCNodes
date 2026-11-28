@@ -4,7 +4,8 @@
   of a 16 or 32 px VAE);
 - DyPE first: model_2 patched (the mode, the config, and no start sigma: DyPE reads the second pass's first model
   call's) before the first pass, so a model DyPE does not take stops the run before any sampling; no schedule is
-  computed before the run; at denoise 0 no DyPE;
+  computed before the run; at denoise 0 no DyPE; auto is enable when scale_by is over dype_auto_scale, disable at or
+  below it;
 - the first pass: model_1 at denoise 1.0 with the seed, on the latent given;
 - the second pass: model_2's DyPE clone, the seed itself or the next one (the last seed's next is 0);
 - blend_factor 0: core's Upscale Latent By (common_upscale, no crop) alone, no decode or encode before the second
@@ -89,7 +90,7 @@ def flow(bcnodes, monkeypatch, comfy_stubs):
 def settings(module, **kw):
     values = dict(seed=5, first=module.Pass(9, 1.0, "dpmpp_sde", "beta", 1.0), second=module.Pass(8, 1.5, "euler", "simple", 0.45),
                   upscale_method="bislerp", scale_by=2.0, blend_factor=0.0, pixel_upscale_method="lanczos",
-                  second_seed="increment", dype="auto", dype_config=CONFIG)
+                  second_seed="increment", dype="auto", dype_auto_scale=1.25, dype_config=CONFIG)
     values.update(kw)
     return module.Settings(**values)
 
@@ -117,7 +118,7 @@ def test_blend_zero_is_the_core_chain(flow):
     assert (one["model"], one["seed"], one["steps"], one["cfg"], one["sampler"], one["scheduler"], one["denoise"]) == (
         "m1", 5, 9, 1.0, "dpmpp_sde", "beta", 1.0)
     assert seen["upscales"] == [(384, 256, "bislerp", "disabled")] and not seen["resizes"] and not vae.encoded
-    assert seen["patches"] == [("m2", "auto", None, CONFIG)]
+    assert seen["patches"] == [("m2", "enable", None, CONFIG)]  # auto: scale_by 2.0 over dype_auto_scale 1.25
     assert seen["order"] == ["dype", "pass", "pass"]  # DyPE before any sampling
     assert (two["model"], two["seed"], two["steps"], two["cfg"], two["sampler"], two["scheduler"], two["denoise"]) == (
         ("dype", "m2"), 6, 8, 1.5, "euler", "simple", 0.45)
@@ -166,6 +167,20 @@ def test_seeds_and_no_dype_at_denoise_zero(flow):
     seen["patches"].clear()
     module.run("m1", "m2", "p", "n", latent(), VAE(), settings(module, second=module.Pass(8, 1.0, "euler", "simple", 0.0)))
     assert not seen["patches"] and seen["passes"][1]["model"] == "m2"
+
+
+def test_auto_follows_scale_by_over_dype_auto_scale(flow):
+    module, seen = flow
+    cases = [(1.25, 1.25, "disable"), (1.26, 1.25, "enable"), (1.5, 1.25, "enable"), (2.0, 2.0, "disable"),
+             (1.5, 2.0, "disable"), (1.1, 1.0, "enable"), (1.25, 0.0, "enable")]
+    for scale_by, threshold, mode in cases:
+        seen["patches"].clear()
+        module.run("m1", "m2", "p", "n", latent(), VAE(), settings(module, scale_by=scale_by, dype_auto_scale=threshold))
+        assert seen["patches"] == [("m2", mode, None, CONFIG)], (scale_by, threshold)
+    for given in ("enable", "disable"):  # the other modes take no notice of it
+        seen["patches"].clear()
+        module.run("m1", "m2", "p", "n", latent(), VAE(), settings(module, scale_by=1.0, dype=given))
+        assert seen["patches"] == [("m2", given, None, CONFIG)]
 
 
 def test_a_vae_of_another_latent_is_an_error(flow):

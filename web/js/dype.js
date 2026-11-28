@@ -10,7 +10,7 @@ import { after, afterChange, installEditedFields, see, setEdited, showValues, wi
 
 const CONFIG_TYPE = "BC_DYPE_CONFIG";
 // BC_DyPEConfig's fields in widget order; `edited` lists them in this order. `model` is not one: it is always applied.
-const FIELDS = ["method", "base_resolution", "dype_scale", "dype_exponent", "auto_threshold", "yarn_alt_scaling"];
+const FIELDS = ["method", "base_resolution", "dype_scale", "dype_exponent", "yarn_alt_scaling"];
 
 function installConfigNode(nodeType, nodeData) {
 	const required = nodeData?.input?.required ?? {};

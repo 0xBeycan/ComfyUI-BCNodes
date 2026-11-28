@@ -20,11 +20,10 @@ since core detaches a clone of the same model with unpatch_all=False (comfy/mode
 and the next run of another clone (the first pass's model) would run with it. The model's model_sampling, and so
 its shift, is never touched.
 
-When DyPE is on, per call: the scale is the latent's longer side in px over base_resolution; auto mode leaves a
-latent whose longer side is auto_threshold px or less alone, and any mode one not larger than base_resolution.
-dype_exponent, unless given, follows the scale (exponent()). The values come from the adapter (defaults: method,
-base_resolution, dype_scale, auto_threshold, and yarn_alt_scaling where the model's yarn has it), each replaced by DyPE
-Config's edited or linked field when one is given; a DyPE Config set for another model is an error.
+When DyPE is on, per call: the scale is the latent's longer side in px over base_resolution; a latent not larger
+than base_resolution is left alone. dype_exponent, unless given, follows the scale (exponent()). The values come from
+the adapter (defaults: method, base_resolution, dype_scale, and yarn_alt_scaling where the model's yarn has it), each
+replaced by DyPE Config's edited or linked field when one is given; a DyPE Config set for another model is an error.
 """
 
 import logging
@@ -37,7 +36,7 @@ import torch
 from ...libs.dype.rope import METHODS
 from . import registry
 
-MODES = ("auto", "enable", "disable")
+MODES = ("enable", "disable")
 WRAPPER_KEY = "bcnodes_dype"
 _CALLS = threading.local()  # per thread (multi-GPU: a thread a device): {id(wrapper): the sizes of the calls in progress}
 PREFIX = "[BCNodes] DyPE:"
@@ -50,7 +49,6 @@ class ConfigValues(TypedDict, total=False):
     base_resolution: int
     dype_scale: float
     dype_exponent: float
-    auto_threshold: int
     yarn_alt_scaling: bool
 
 
@@ -62,12 +60,10 @@ class Config(TypedDict):
 
 @dataclass(frozen=True)
 class Settings:
-    mode: str                         # auto or enable
     method: str
     base_resolution: int              # px
     dype_scale: float                 # DyPE's lambda_s
     dype_exponent: Optional[float]    # DyPE's lambda_t; None: from the scale
-    auto_threshold: int               # px
     start_sigma: Optional[float]      # in [0.001, 1]; None: the sigma of each run's first model call
     yarn_alt_scaling: bool = False    # yarn: each image axis stretched to its own length (a model whose defaults have it)
 
@@ -77,8 +73,8 @@ class Adapter(Protocol):
     name: str
     attribute: str       # the rotary embedder attribute of the diffusion model (and of a ControlNet that has its own)
     latent_scale: int    # px per latent cell
-    defaults: dict       # method, base_resolution, dype_scale, auto_threshold for this model, and yarn_alt_scaling for a
-                         # model whose yarn has that option
+    defaults: dict       # method, base_resolution, dype_scale for this model, and yarn_alt_scaling for a model whose
+                         # yarn has that option
 
     def matches(self, model) -> bool:
         """Whether the ModelPatcher `model` is this adapter's model."""
@@ -116,11 +112,11 @@ def clamp_start(start_sigma):
     return max(0.001, min(1.0, float(start_sigma)))
 
 
-def settings(entry, mode, start_sigma, values):
-    """The Settings of `entry`'s model for `mode`, with DyPE Config's values (ConfigValues) over the automatic ones.
-    start_sigma is clamped (clamp_start); None stays None: each run's first sigma."""
+def settings(entry, start_sigma, values):
+    """The Settings of `entry`'s model, with DyPE Config's values (ConfigValues) over the automatic ones. start_sigma
+    is clamped (clamp_start); None stays None: each run's first sigma."""
     merged = {**entry.defaults, "dype_exponent": None, **(values or {})}
-    return Settings(mode=mode, start_sigma=None if start_sigma is None else clamp_start(start_sigma), **merged)
+    return Settings(start_sigma=None if start_sigma is None else clamp_start(start_sigma), **merged)
 
 
 class Wrapper:
@@ -141,12 +137,8 @@ class Wrapper:
 
     def scale(self, height, width):
         """The scale of a call of height x width px, or None when DyPE leaves it alone."""
-        s = self.settings
-        longer = max(height, width)
-        scale = longer / s.base_resolution
-        if (s.mode == "auto" and longer <= s.auto_threshold) or scale <= 1.0:
-            return None
-        return scale
+        scale = max(height, width) / self.settings.base_resolution
+        return None if scale <= 1.0 else scale
 
     def sizes(self):
         """This thread's stack of call sizes (a size, or None: not known)."""
@@ -244,10 +236,8 @@ class Wrapper:
         self.reported.add((height, width))
         s = s or self.settings
         if scale is None:
-            why = (f"longer side not over auto_threshold {s.auto_threshold} px (auto)"
-                   if s.mode == "auto" and max(height, width) <= s.auto_threshold
-                   else f"not larger than base_resolution {s.base_resolution} px")
-            logging.info("%s %s %dx%d px: off, %s", PREFIX, self.adapter.name, width, height, why)
+            logging.info("%s %s %dx%d px: off, not larger than base_resolution %d px", PREFIX, self.adapter.name, width,
+                         height, s.base_resolution)
             return
         source = "from the scale" if s.dype_exponent is None else "set"
         method = s.method
@@ -303,7 +293,7 @@ def patch(model, mode, start_sigma, config=None):
     if config is not None and config["model"] != entry.name:
         raise ValueError(f"DyPE: DyPE Config is set for {config['model']}, the model is {entry.name}. Set DyPE Config's "
                          f"model to {entry.name}.")
-    s = settings(entry, mode, start_sigma, config["values"] if config is not None else None)
+    s = settings(entry, start_sigma, config["values"] if config is not None else None)
     if s.method not in METHODS:
         raise ValueError(f"DyPE: unknown method {s.method!r}; the methods are {', '.join(METHODS)}")
     from comfy.patcher_extension import WrappersMP

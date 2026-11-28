@@ -59,13 +59,13 @@ class DualSampler:
                                          "The pixel way's resize (lanczos as core's: PIL on 8 bits)."}),
                 "second_seed": (["fixed", "increment"], {"default": "increment", "tooltip":
                                 "The second pass's seed: the seed itself, or seed + 1."}),
-                "dype": (list(MODES), {"default": "auto", "tooltip":
-                         "DyPE on the second pass only (DyPE Patcher's modes; Z-Image and Qwen-Image), its start sigma "
-                         "the sigma of that pass's first model call (after a shift the model applies per run, such as "
-                         "Qwen Image Shift's dynamic one). auto: only for a second latent whose longer side is "
-                         "over the model's auto_threshold (1920 px for both; DyPE Config can set it). disable: the "
-                         "second pass's model as it is, for any model; any other mode on a model DyPE does not take "
-                         "stops the run before the first pass."}),
+                "dype": (["auto", *MODES], {"default": "auto", "tooltip":
+                         "DyPE on the second pass only (Z-Image and Qwen-Image), its start sigma the sigma of that "
+                         "pass's first model call (after a shift the model applies per run, such as Qwen Image Shift's "
+                         "dynamic one). auto: enable when scale_by is over dype_auto_scale, disable otherwise. enable: "
+                         "DyPE for a second latent larger than the model's base_resolution, as DyPE Patcher. disable: "
+                         "the second pass's model as it is, for any model; enable on a model DyPE does not take stops "
+                         "the run before the first pass."}),
             },
             "optional": {
                 "model_2": ("MODEL", {"tooltip": "Optional: the second pass's own model (e.g. other LoRAs or "
@@ -74,6 +74,10 @@ class DualSampler:
                 "dype_config": ("BC_DYPE_CONFIG", {"tooltip": "DyPE Config: the automatic DyPE values it changes. Its "
                                 "model must be the second pass's model's kind (model_2, or model when model_2 is not "
                                 "linked)."}),
+                # added after the node's release, optional so an API-format prompt saved without it still validates
+                "dype_auto_scale": ("FLOAT", {"default": 1.25, "min": 0.0, "max": 8.0, "step": 0.01, "tooltip":
+                                    "dype auto: DyPE on the second pass when scale_by is over this. 1.25: Z-Image "
+                                    "Turbo's 1.25x pass stays clean without DyPE, a 1.5x one repeats."}),
             },
             "hidden": dict(LINK_INPUTS),
         }
@@ -90,19 +94,19 @@ class DualSampler:
                    "latent upscaled by scale_by to a multiple of 16 px (core's latent upscale, a decode -> resize -> "
                    "encode, or blend_factor of the two), and the second pass at denoise_2 with model_2 (model when it "
                    "is not linked) and DyPE on that pass only (Z-Image, Qwen-Image; start sigma: that pass's first "
-                   "model call's; dype disable for other models). The same as the core chain KSampler -> Upscale "
-                   "Latent By -> KSampler -> VAE Decode x2 at blend_factor 0. Outputs both images and the second "
-                   "latent. The defaults are Z-Image Turbo's.")
+                   "model call's; auto: when scale_by is over dype_auto_scale; dype disable for other models). The "
+                   "same as the core chain KSampler -> Upscale Latent By -> KSampler -> VAE Decode x2 at blend_factor "
+                   "0. Outputs both images and the second latent. The defaults are Z-Image Turbo's.")
 
     def sample(self, model, positive, negative, latent_image, vae, seed, steps_1, cfg_1, sampler_1, scheduler_1,
                steps_2, cfg_2, sampler_2, scheduler_2, denoise_2, upscale_method, scale_by, blend_factor,
-               pixel_upscale_method, second_seed, dype, model_2=None, dype_config=None, prompt_graph=None,
-               unique_id=None):
+               pixel_upscale_method, second_seed, dype, model_2=None, dype_config=None, dype_auto_scale=1.25,
+               prompt_graph=None, unique_id=None):
         from ..pipelines.dual_sampler import Pass, Settings, run
 
         settings = Settings(seed, Pass(steps_1, cfg_1, sampler_1, scheduler_1, 1.0),
                             Pass(steps_2, cfg_2, sampler_2, scheduler_2, denoise_2), upscale_method, scale_by,
-                            blend_factor, pixel_upscale_method, second_seed, dype, dype_config)
+                            blend_factor, pixel_upscale_method, second_seed, dype, dype_auto_scale, dype_config)
         wanted = heavy_wanted(type(self), prompt_graph, unique_id)
         return drop_unwanted(type(self), run(model, model if model_2 is None else model_2, positive, negative,
                                              latent_image, vae, settings, want_first=wants(wanted, "first_image"),

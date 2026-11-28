@@ -15,8 +15,7 @@ class QwenImageDyPE:
     name = "Qwen-Image"
     attribute = "pe_embedder"  # the rotary embedder of the diffusion model and of the InstantX ControlNet
     latent_scale = 8           # px per latent cell
-    defaults = {"method": "vision_yarn", "base_resolution": 1328, "dype_scale": 2.0, "auto_threshold": 1920,
-                "yarn_alt_scaling": False}
+    defaults = {"method": "vision_yarn", "base_resolution": 1328, "dype_scale": 2.0, "yarn_alt_scaling": False}
 
     def matches(self, model):
         """Whether the ModelPatcher `model` is a Qwen-Image model."""

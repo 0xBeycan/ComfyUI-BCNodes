@@ -1,16 +1,14 @@
 """DyPE on a model (models/common/dype.py):
 
 - dype_exponent from the scale: 2.0 at 4x and above, 1.0 from 2x, 0.5 below;
-- the settings: the adapter's values (auto_threshold among them: each model's own; yarn_alt_scaling where the model's
-  yarn has it, off otherwise) and dype_exponent from the scale, each replaced by a DyPE Config field it holds;
+- the settings: the adapter's values (yarn_alt_scaling where the model's yarn has it, off otherwise) and dype_exponent from the scale, each replaced by a DyPE Config field it holds;
   start_sigma clamped to [0.001, 1]; the console names yarn_alt_scaling as on only for a model whose yarn has it;
-- patch: disable returns the model itself; a model no adapter takes is an error naming the supported models, and so
+- patch: disable returns the model itself; any other mode than enable is an error; a model no adapter takes is an error naming the supported models, and so
   is a DyPE Config set for another model; a clone carries one CALC_COND_BATCH wrapper and one APPLY_MODEL wrapper
   under its key (a second patch replaces the first's), the model's other wrappers and its object patches
   (model_sampling: the shift) untouched;
-- the window, one sampling step (core's calc_cond_batch: the ControlNets' get_control, then the model): auto at or
-  below the adapter's auto_threshold, and any mode at or below base_resolution, run the step with the modules' own
-  embedders and the arguments unchanged; above, the diffusion model (each multi-GPU clone's too) and every ControlNet
+- the window, one sampling step (core's calc_cond_batch: the ControlNets' get_control, then the model): a latent at
+  or below base_resolution runs the step with the modules' own embedders and the arguments unchanged; above, the diffusion model (each multi-GPU clone's too) and every ControlNet
   model of the step's conditioning (its chain, its multi-GPU copies) that carries its own embedder compute, each call,
   with the adapter's embedder for the size of that call (the step's sigma over sigma_max clamped to [0, 1], the
   exponent, the settings) or with their own when DyPE leaves that size alone: a model call sized from its latent (the
@@ -40,8 +38,7 @@ class Adapter:
     name = "Test"
     attribute = "rope_embedder"
     latent_scale = 8
-    defaults = {"method": "vision_yarn", "base_resolution": 1024, "dype_scale": 2.0, "auto_threshold": 1600,
-                "yarn_alt_scaling": False}
+    defaults = {"method": "vision_yarn", "base_resolution": 1024, "dype_scale": 2.0, "yarn_alt_scaling": False}
 
     def matches(self, model):
         return getattr(model, "kind", None) == "test"
@@ -102,24 +99,22 @@ def test_the_exponent_follows_the_scale(dype):
 
 
 def test_the_settings(dype):
-    s = dype.settings(Adapter(), "auto", 0.6944, {})
-    assert (s.mode, s.method, s.base_resolution, s.dype_scale, s.dype_exponent, s.auto_threshold, s.yarn_alt_scaling,
-            s.start_sigma) == ("auto", "vision_yarn", 1024, 2.0, None, 1600, False, 0.6944)
-    s = dype.settings(Adapter(), "enable", 5.0, {"method": "pi", "dype_exponent": 0.5, "auto_threshold": 2048,
-                                                 "yarn_alt_scaling": True})
-    assert (s.method, s.dype_exponent, s.auto_threshold, s.yarn_alt_scaling, s.base_resolution, s.start_sigma) == (
-        "pi", 0.5, 2048, True, 1024, 1.0)
-    assert dype.settings(Adapter(), "auto", 0.0, None).start_sigma == 0.001
+    s = dype.settings(Adapter(), 0.6944, {})
+    assert (s.method, s.base_resolution, s.dype_scale, s.dype_exponent, s.yarn_alt_scaling, s.start_sigma) == (
+        "vision_yarn", 1024, 2.0, None, False, 0.6944)
+    s = dype.settings(Adapter(), 5.0, {"method": "pi", "dype_exponent": 0.5, "yarn_alt_scaling": True})
+    assert (s.method, s.dype_exponent, s.yarn_alt_scaling, s.base_resolution, s.start_sigma) == ("pi", 0.5, True, 1024, 1.0)
+    assert dype.settings(Adapter(), 0.0, None).start_sigma == 0.001
 
 
 def test_every_adapter_has_every_automatic_value(dype, bcnodes):
     registry = bcnodes["models.common.registry"]
-    fields = {"method", "base_resolution", "dype_scale", "auto_threshold"}
+    fields = {"method", "base_resolution", "dype_scale"}
     for name in registry.names("dype"):
         assert set(registry.get("dype", name).defaults) - {"yarn_alt_scaling"} == fields, name
     assert "yarn_alt_scaling" in registry.get("dype", "Qwen-Image").defaults
     assert "yarn_alt_scaling" not in registry.get("dype", "Z-Image").defaults
-    assert dype.settings(registry.get("dype", "Z-Image"), "auto", 1.0, {}).yarn_alt_scaling is False
+    assert dype.settings(registry.get("dype", "Z-Image"), 1.0, {}).yarn_alt_scaling is False
 
 
 def test_the_console_names_yarn_alt_scaling_only_where_it_acts(dype, bcnodes, caplog):
@@ -129,7 +124,7 @@ def test_the_console_names_yarn_alt_scaling_only_where_it_acts(dype, bcnodes, ca
         entry = registry.get("dype", name)
         caplog.clear()
         with caplog.at_level("INFO"):
-            dype.Wrapper(entry, dype.settings(entry, "enable", 1.0, {"method": "yarn", "yarn_alt_scaling": True})).report(
+            dype.Wrapper(entry, dype.settings(entry, 1.0, {"method": "yarn", "yarn_alt_scaling": True})).report(
                 2048, 2048, 2.0, 1.0)
         assert note in caplog.text, caplog.text
 
@@ -140,11 +135,13 @@ def test_patch(dype):
     assert dype.patch(model, "disable", 1.0, config("Z-Image")) is model
     with pytest.raises(ValueError, match="DyPE supports Test, Z-Image, Qwen-Image models; this one is object. Set the "
                                          "DyPE mode to disable"):
-        dype.patch(Patcher("other"), "auto", 1.0, None)
+        dype.patch(Patcher("other"), "enable", 1.0, None)
     with pytest.raises(ValueError, match="DyPE Config is set for Qwen-Image, the model is Test. Set DyPE Config's model "
                                          "to Test"):
-        dype.patch(model, "auto", 1.0, config("Qwen-Image"))
-    out = dype.patch(model, "auto", 0.7, config(method="ntk"))
+        dype.patch(model, "enable", 1.0, config("Qwen-Image"))
+    with pytest.raises(ValueError, match="DyPE: unknown mode 'auto'; the modes are enable, disable"):
+        dype.patch(model, "auto", 1.0, None)
+    out = dype.patch(model, "enable", 0.7, config(method="ntk"))
     assert out is not model and model.wrappers[CALC] == {"another": ["theirs"]} and APPLY not in model.wrappers
     (w,) = out.wrappers[CALC][KEY]
     assert out.wrappers[APPLY][KEY] == [w.apply_model]
@@ -152,10 +149,10 @@ def test_patch(dype):
     assert w.settings.method == "ntk" and w.settings.start_sigma == 0.7
     again = dype.patch(out, "enable", 1.0, None)
     (w2,) = again.wrappers[CALC][KEY]
-    assert w2 is not w and w2.settings.mode == "enable" and w2.settings.method == "vision_yarn"
+    assert w2 is not w and w2.settings.method == "vision_yarn"
     assert again.wrappers[APPLY][KEY] == [w2.apply_model]
     with pytest.raises(ValueError, match="unknown method 'nope'"):
-        dype.patch(model, "auto", 1.0, config(method="nope"))
+        dype.patch(model, "enable", 1.0, config(method="nope"))
 
 
 class Own(torch.nn.Module):
@@ -250,17 +247,16 @@ def on(name, height, width, scale, sigma=0.5, exponent=1.0, method="vision_yarn"
     return ("embedder", name, method, height, width, scale, sigma, 0.7, 2.0, exponent, alt)
 
 
-def test_auto_leaves_a_latent_at_or_below_the_threshold_alone(dype):
-    assert step(dype, "auto", (1280, 1600)) == [("own", "dm")]   # the adapter's auto_threshold
-    assert step(dype, "auto", (1024, 1536)) == [("own", "dm")]
-    assert step(dype, "auto", (1536, 2304), cfg=config(auto_threshold=2304)) == [("own", "dm")]
-    assert step(dype, "enable", (1024, 1024)) == [("own", "dm")]  # not larger than base_resolution
+def test_a_latent_at_or_below_base_resolution_is_left_alone(dype):
+    assert step(dype, "enable", (1024, 1024)) == [("own", "dm")]  # the adapter's base_resolution
+    assert step(dype, "enable", (768, 1024)) == [("own", "dm")]
+    assert step(dype, "enable", (1536, 1536), cfg=config(base_resolution=1536)) == [("own", "dm")]
 
 
 def test_above_it_a_call_computes_with_the_adapters_embedder(dype):
-    assert step(dype, "auto", (2048, 3072), sigma=0.6) == [on("dm", 2048, 3072, 3.0, 0.6)]  # scale 3, exponent 1.0
-    # just over the adapter's auto_threshold; a sigma over sigma_max clamped
-    assert step(dype, "auto", (1600, 1608), sigma=1.4) == [on("dm", 1600, 1608, 1608 / 1024, 1.0, 0.5)]
+    assert step(dype, "enable", (2048, 3072), sigma=0.6) == [on("dm", 2048, 3072, 3.0, 0.6)]  # scale 3, exponent 1.0
+    # just over base_resolution; a sigma over sigma_max clamped
+    assert step(dype, "enable", (1024, 1040), sigma=1.4) == [on("dm", 1024, 1040, 1040 / 1024, 1.0, 0.5)]
     assert step(dype, "enable", (1280, 1280), cfg=config(dype_exponent=3.0, base_resolution=512, yarn_alt_scaling=True)) == [
         on("dm", 1280, 1280, 2.5, exponent=3.0, alt=True)]
     assert step(dype, "enable", (4096, 1024)) == [on("dm", 4096, 1024, 4.0, exponent=2.0)]
@@ -273,9 +269,6 @@ def test_each_call_is_sized_from_its_own_input(dype):
     calls[3] = ("other", model.diffusion_model)  # a call nothing sizes: the step's latent
     assert step(dype, "enable", (2048, 2048), calls, model=model) == [
         on("dm", 2048, 2048, 2.0), on("dm", 1024, 2048, 2.0), ("own", "dm"), on("dm", 2048, 2048, 2.0)]
-    # auto: an area crop at or under the adapter's auto_threshold (1600 px) runs with the model's own embedder
-    assert step(dype, "auto", (2048, 2048), [("model", latent(1024, 1600)), ("model", full)]) == [
-        ("own", "dm"), on("dm", 2048, 2048, 2.0)]
 
 
 def test_a_controlnet_computes_at_its_own_inputs_size(dype):
@@ -293,7 +286,7 @@ def test_a_controlnet_computes_at_its_own_inputs_size(dype):
         on("dm", 1024, 2048, 2.0)]
     assert plain.control_model.rope_embedder.name == "plain" and isinstance(plain.control_model.rope_embedder, Own)
     assert all(not c.control_model._forward_pre_hooks and not c.control_model._forward_hooks for c in (first, chained, plain, copy))
-    assert step(dype, "auto", (1536, 1536), [("control", first, latent(1536, 1536))], conds=conds) == [("own", "first")]
+    assert step(dype, "enable", (1024, 1024), [("control", first, latent(1024, 1024))], conds=conds) == [("own", "first")]
 
 
 def test_a_control_model_given_no_x_keeps_the_size_it_is_called_in(dype):

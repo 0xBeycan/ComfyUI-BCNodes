@@ -2,11 +2,11 @@
 
 ## `BC_DualSampler` — Dual Sampler
 
-`model` (`MODEL`) + `positive`, `negative` + `latent_image` + `vae` + `seed` + the two passes' settings + the upscale's + `second_seed` + `dype` + optional `model_2` (`MODEL`) and `dype_config` → `first_image`, `second_image` (`IMAGE`) + `latent` (the second pass's `LATENT`): a two-pass hires fix in one node, for any model. DyPE takes Z-Image and Qwen-Image (2512); for another model set `dype` to `disable`. The defaults are Z-Image Turbo's.
+`model` (`MODEL`) + `positive`, `negative` + `latent_image` + `vae` + `seed` + the two passes' settings + the upscale's + `second_seed` + `dype` + optional `model_2` (`MODEL`), `dype_config` and `dype_auto_scale` → `first_image`, `second_image` (`IMAGE`) + `latent` (the second pass's `LATENT`): a two-pass hires fix in one node, for any model. DyPE takes Z-Image and Qwen-Image (2512); for another model set `dype` to `disable`. The defaults are Z-Image Turbo's.
 
 ### What it runs
 
-1. DyPE first, before any sampling: DyPE (DyPE Patcher's code, [docs](model.md#bc_dypepatcher--dype-patcher)) goes on a clone of the second pass's model (`model_2`, or `model` when `model_2` is not linked), in the `dype` mode, with `dype_config`'s values; its start sigma is the sigma of the second pass's first model call, read by DyPE in the run: the schedule as that pass gets it, after any shift the model's wrappers apply per run (Qwen Image Shift's dynamic shift from the second pass's latent size, with its refine-pass rule, and its `shift_terminal` stretch). A start sigma taken from the schedule before the run would miss what those wrappers apply: in Qwen Image Shift's dynamic mode the model is at shift 1 outside a run. A model DyPE does not take (with `dype` not `disable`), or a DyPE Config of another model, stops the run here, before the first pass. At `denoise_2` 0 no DyPE is put on.
+1. DyPE first, before any sampling: DyPE (DyPE Patcher's code, [docs](model.md#bc_dypepatcher--dype-patcher)) goes on a clone of the second pass's model (`model_2`, or `model` when `model_2` is not linked), in the `dype` mode, with `dype_config`'s values. `dype` modes: `auto` (default) is `enable` when `scale_by` is over `dype_auto_scale` (default 1.25: Z-Image Turbo's 1.25x second pass stays clean without DyPE, a 1.5x one repeats, a square one too) and `disable` at or below it; `enable` is DyPE for a second latent larger than the model's `base_resolution`, as DyPE Patcher; `disable` is the model as it is. DyPE's its start sigma is the sigma of the second pass's first model call, read by DyPE in the run: the schedule as that pass gets it, after any shift the model's wrappers apply per run (Qwen Image Shift's dynamic shift from the second pass's latent size, with its refine-pass rule, and its `shift_terminal` stretch). A start sigma taken from the schedule before the run would miss what those wrappers apply: in Qwen Image Shift's dynamic mode the model is at shift 1 outside a run. A model DyPE does not take (with `dype` on `enable`, or `auto` resolving to it), or a DyPE Config of another model, stops the run here, before the first pass. At `denoise_2` 0 no DyPE is put on.
 2. The first pass: ComfyUI's KSampler with `model`, `seed`, `steps_1`, `cfg_1`, `sampler_1`, `scheduler_1`, always at denoise 1.0.
 3. The upscale to the first latent's size × `scale_by`, each side rounded to the nearest multiple of 16 px (8 px VAE cells × Z-Image's and Qwen-Image's 2 × 2 patches; 1024 × 1536 × 2.0 = 2048 × 3072; one cell for a VAE of 16 px or more):
    - the latent way: ComfyUI's *Upscale Latent By* with `upscale_method` (no crop);
@@ -19,7 +19,7 @@
 
 ### Defaults
 
-Both passes 9 steps, cfg 1.0, `dpmpp_sde`, `beta`; `denoise_2` 0.45; `bislerp` × 2.0; `blend_factor` 0.5, `lanczos`; `second_seed` increment; `dype` auto (on for a second latent whose longer side is over the model's `auto_threshold`: 1920 px for Z-Image and Qwen-Image, or DyPE Config's).
+Both passes 9 steps, cfg 1.0, `dpmpp_sde`, `beta`; `denoise_2` 0.45; `bislerp` × 2.0; `blend_factor` 0.5, `lanczos`; `second_seed` increment; `dype` auto, `dype_auto_scale` 1.25 (DyPE on for `scale_by` over 1.25). `dype_auto_scale` is an optional input, so a prompt saved before it was added runs with 1.25.
 
 ### Against the chain it replaces
 

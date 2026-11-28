@@ -13,7 +13,7 @@ class ZImageDyPE:
     attribute = "rope_embedder"  # the diffusion model's rotary embedder, replaced during a step
     latent_scale = 8             # px per latent cell
     # no yarn_alt_scaling: Z-Image's yarn has no alternative scaling (the original's Z-Image embedder ignores it)
-    defaults = {"method": "vision_yarn", "base_resolution": 1024, "dype_scale": 2.0, "auto_threshold": 1920}
+    defaults = {"method": "vision_yarn", "base_resolution": 1024, "dype_scale": 2.0}
 
     def matches(self, model):
         """Whether the ModelPatcher `model` is a Z-Image model."""

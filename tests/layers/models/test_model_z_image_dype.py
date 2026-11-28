@@ -13,7 +13,7 @@
   model as one with its own embedder, reads theta and axes_dim from the model's own rotary embedder (given, not the
   attribute, which holds the step's during a step) and the longer
   image-axis RoPE length from axes_lens, and the settings' method, start sigma and dype_scale; its automatic values
-  are vision_yarn, 1024 px, 2.0, auto_threshold 1920 px, and no yarn_alt_scaling (its yarn has no such option).
+  are vision_yarn, 1024 px, 2.0, and no yarn_alt_scaling (its yarn has no such option).
 
 core's rope is restated in tests/_rope.py.
 """
@@ -137,7 +137,7 @@ def patcher(config):
 def test_the_adapter_takes_z_image_only(adapter):
     assert adapter.matches(patcher(ZImage()))
     assert not adapter.matches(patcher(MingImage())) and not adapter.matches(patcher(object()))
-    assert adapter.defaults == {"method": "vision_yarn", "base_resolution": 1024, "dype_scale": 2.0, "auto_threshold": 1920}
+    assert adapter.defaults == {"method": "vision_yarn", "base_resolution": 1024, "dype_scale": 2.0}
     assert adapter.latent_scale == 8 and adapter.attribute == "rope_embedder"
     assert not adapter.own_embedder(types.SimpleNamespace(rope_embedder=object()))
 
@@ -145,9 +145,8 @@ def test_the_adapter_takes_z_image_only(adapter):
 def test_the_adapter_reads_the_models_own_rope(adapter, bcnodes, mm):
     rope = types.SimpleNamespace(theta=THETA, axes_dim=list(AXES))
     dm = types.SimpleNamespace(rope_embedder="a step's embedder", axes_lens=[1536, 512, 640])
-    s = bcnodes["models.common.dype"].Settings(mode="enable", method="ntk", base_resolution=1024, dype_scale=1.5,
-                                               dype_exponent=None, auto_threshold=1920, yarn_alt_scaling=True,
-                                               start_sigma=0.6)
+    s = bcnodes["models.common.dype"].Settings(method="ntk", base_resolution=1024, dype_scale=1.5, dype_exponent=None,
+                                               yarn_alt_scaling=True, start_sigma=0.6)
     e = adapter.embedder(dm, rope, s, 1536, 2048, 2.0, 0.5, 1.0)
     assert (e.theta, list(e.axes_dim), e.base_len, e.method, e.scale, e.t) == (THETA, list(AXES), 640, "ntk", 2.0, 0.5)
     assert e.k_t == 1.5 * 0.5 and e.mscale == pytest.approx(1 + 0.05 * math.log(2.0) * (0.5 / 0.6))

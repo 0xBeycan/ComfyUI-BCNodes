@@ -53,7 +53,8 @@ pipelines/detailer/           region (the crop around a region: sampled at crop_
 pipelines/quality_gate.py     shot profiles, QualityCheck, verdict, report, badge
 pipelines/social_export.py    Social Media Export engine: plan, crop/pad, encode, report line
 pipelines/dual_sampler.py     Dual Sampler (any model): DyPE on model_2 before any sampling (start sigma: the second pass's
-                              first model call's, read by DyPE in the run), first pass, the upscale (latent way, pixel way decode -> resize
+                              first model call's, read by DyPE in the run; auto: on when scale_by is over
+                              dype_auto_scale), first pass, the upscale (latent way, pixel way decode -> resize
                               -> encode, core's Latent Blend of the two; 16 px sides; a 5-D latent as it is), second pass,
                               the decodes wanted
 pipelines/save_image.py       name grammar, PROMPT walking, job JSON, save loop; Save Image With Caption's folder,
@@ -97,9 +98,9 @@ models/common/                registry.py (families matting, depth, lm_family, l
                               latent_upscale entry upscale(samples, path) -> samples, a dype entry a model's DyPE adapter),
                               download.py (fetch_with_progress; model_file: a file in a ComfyUI model folder, downloaded
                               there when missing), dype.py (DyPE on a model for DyPE Patcher and Dual Sampler: the
-                              adapter, the values (each adapter's own, auto_threshold among them; DyPE Config's for its
-                              model only), a CALC_COND_BATCH wrapper setting a step embedder for one sampling step on the
-                              diffusion model and on a ControlNet model with its own, and putting each back; each call
+                              adapter, the values (each adapter's own; DyPE Config's for its model only), a
+                              CALC_COND_BATCH wrapper setting a step embedder for one sampling step on the diffusion
+                              model and on a ControlNet model with its own, and putting each back; each call
                               sized from its own input (an APPLY_MODEL wrapper: the model's latent; a control model's
                               forward hook: its x), so an area crop runs at its size; no object patch, the shift never
                               touched)
